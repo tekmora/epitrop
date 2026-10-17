@@ -1782,7 +1782,7 @@ func errorWithoutPanic(t *testing.T, name string, call func() error) (err error)
 
 func assertSafeSignalPID(t *testing.T, pid int) {
 	t.Helper()
-	if pid <= 1 || pid == os.Getpid() || pid == syscall.Getpgrp() {
+	if unsafeSignalTarget(pid) {
 		t.Fatalf("refuse unsafe signal pid %d", pid)
 	}
 }
