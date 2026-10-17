@@ -386,6 +386,13 @@ func (s *Supervisor) Supervise(ctx context.Context) error {
 	if err := readyContext(ctx, "supervise"); err != nil {
 		return err
 	}
+	writer, err := eventlog.Open(s.cfg.EventLog.Dir, s.signer, s.eventLogLimits())
+	if err != nil {
+		return fmt.Errorf("supervisor: open event log %s: %w", s.cfg.EventLog.Dir, err)
+	}
+	if _, err = writer.RepairTail(ctx); err != nil {
+		return fmt.Errorf("supervisor: repair event log tail %s: %w", s.cfg.EventLog.Dir, err)
+	}
 	for tick := 0; tick < maxSuperviseTicks; tick++ {
 		if err := s.Reconcile(ctx); err != nil {
 			return err

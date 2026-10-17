@@ -39,6 +39,8 @@ For each script, over seven consecutive days of the parallel run:
 - **Sessions do not matter.** At least one operator session ends during the week, and `jobs_status` through MCP from a new session shows every shadow job with the same state as `epitropctl jobs status`.
 - **A planted event fires.** One planted queue entry is seen by the dry mode after a supervisor restart.
 
+A full disk under the event log makes the supervisor exit with an error naming the job, the event type and the event-log directory. Once disk space is freed, restarting the supervisor automatically repairs any half-written append past HEAD and re-adopts the running jobs without duplicate starts.
+
 A mismatch restarts the week for that script once its cause is fixed.
 
 ## Retired scripts
