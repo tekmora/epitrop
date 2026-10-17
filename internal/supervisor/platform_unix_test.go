@@ -528,7 +528,11 @@ func withPassthroughSignaller(t *testing.T) *[]recordedSignal {
 	old := processSignaller
 	processSignaller = func(pid int, sig unix.Signal) error {
 		records = append(records, recordedSignal{pid: pid, sig: sig})
-		return unix.Kill(pid, sig)
+		if err := guardedKill(pid, sig, unix.Kill); err != nil {
+			t.Errorf("passthrough signaller: %v", err)
+			return err
+		}
+		return nil
 	}
 	t.Cleanup(func() {
 		processSignaller = old

@@ -89,7 +89,7 @@ func withShimExitOnProbe(t *testing.T, lockPath string, killAt int) {
 		if calls != killAt {
 			return old(pid, sig)
 		}
-		if err := unix.Kill(pid, unix.SIGKILL); err != nil {
+		if err := guardedKill(pid, unix.SIGKILL, unix.Kill); err != nil {
 			t.Errorf("kill shim %d: %v", pid, err)
 		}
 		waitLockFree(t, lockPath)
