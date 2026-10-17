@@ -271,6 +271,10 @@ func readJobRecord(path string) (jobRecord, bool) {
 	return rec, true
 }
 
+// appendEvent writes one event to the event log. It is a package seam replaced in tests
+// to simulate disk errors (such as ENOSPC) during event logging.
+var appendEvent = (*eventlog.Writer).Append
+
 func (s *Supervisor) appendJobEvent(ctx context.Context, typ string, name string, payload map[string]any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -278,10 +282,12 @@ func (s *Supervisor) appendJobEvent(ctx context.Context, typ string, name string
 	}
 	writer, err := eventlog.Open(s.cfg.EventLog.Dir, s.signer, s.eventLogLimits())
 	if err != nil {
-		return err
+		return fmt.Errorf("supervisor: record %s for job %s in event log %s: %w", typ, name, s.cfg.EventLog.Dir, err)
 	}
-	_, err = writer.Append(ctx, eventlog.Event{Type: typ, TaskID: name, Payload: body})
-	return err
+	if _, err = appendEvent(writer, ctx, eventlog.Event{Type: typ, TaskID: name, Payload: body}); err != nil {
+		return fmt.Errorf("supervisor: record %s for job %s in event log %s: %w", typ, name, s.cfg.EventLog.Dir, err)
+	}
+	return nil
 }
 
 func (s *Supervisor) reconcileJob(ctx context.Context, job config.JobConfig, st eventlog.Job, matches []uint64, replayHead uint64) error {
