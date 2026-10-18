@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jonboulle/clockwork"
+	"github.com/tekmora/epitrop/internal/atomicfile"
 	"github.com/tekmora/epitrop/internal/config"
 	"github.com/tekmora/epitrop/internal/egressproxy"
 	"github.com/tekmora/epitrop/internal/eventlog"
@@ -254,6 +255,10 @@ func openAppendLog(path string) (*os.File, error) {
 	return f, nil
 }
 
+// recordSync flushes the staged record and its folder to disk; tests replace
+// it to simulate a sync failure.
+var recordSync = atomicfile.Sync
+
 func writeRecord(cfg shimConfig, pid int, started string) error {
 	if err := os.MkdirAll(filepath.Dir(cfg.RecordPath), 0o750); err != nil {
 		return fmt.Errorf("job-shim: mkdir state dir: %w", err)
@@ -263,8 +268,10 @@ func writeRecord(cfg shimConfig, pid int, started string) error {
 	if err != nil {
 		return fmt.Errorf("job-shim: marshal record: %w", err)
 	}
-	// #nosec G304 -- record path is derived from configured state dir plus checked job name.
-	return os.WriteFile(cfg.RecordPath, append(body, '\n'), 0o600)
+	if err := atomicfile.ReplaceWithSync(cfg.RecordPath, append(body, '\n'), 0o600, recordSync); err != nil {
+		return fmt.Errorf("job-shim: write record: %w", err)
+	}
+	return nil
 }
 
 func shimWriter(cfg shimConfig) (*eventlog.Writer, error) {

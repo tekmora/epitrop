@@ -1,0 +1,2 @@
+type: changed
+title: 'The Claude ceiling store and the job record a job shim writes are replaced atomically through one shared helper: the new file is synced beside the old one, renamed into place and the folder synced, so a failed write leaves the previous file intact and no staged file behind'

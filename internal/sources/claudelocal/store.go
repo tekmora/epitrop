@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"runtime"
 	"time"
+
+	"github.com/tekmora/epitrop/internal/atomicfile"
 )
 
 // The ceiling store keeps each window's calibrated ceiling between fetches,
@@ -31,7 +33,8 @@ const (
 	maxStoreBytes        = 64 << 10
 	maxStoredWindows     = 64
 	maxSourceFileBytes   = 1024
-	// pendingSuffix names the staged file a store write renames into place.
+	// pendingSuffix names the staged file earlier releases wrote beside the
+	// store; a write removes one that an interrupted run left behind.
 	pendingSuffix = ".new"
 )
 
@@ -151,10 +154,11 @@ func (c storedCeiling) validate(limitType string) error {
 	return nil
 }
 
-// saveStore writes the store atomically: the whole file is written and
-// synced as path+".new", then renamed onto path, so a reader sees either the
-// old store or the new one, never a partial file. A failed write removes
-// the staged file and leaves path untouched.
+// saveStore writes the store atomically through atomicfile: the whole file is
+// written and synced beside path, then renamed onto path and the folder
+// synced, so a reader sees either the old store or the new one, never a
+// partial file. A failed write removes the staged file and leaves path
+// untouched.
 func saveStore(path string, store *ceilingStore) error {
 	data, err := json.MarshalIndent(store, "", "  ")
 	if err != nil {
@@ -163,38 +167,15 @@ func saveStore(path string, store *ceilingStore) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create ceiling store folder: %w", err)
 	}
-	return replaceFile(path, append(data, '\n'), writeAndSync)
+	return replaceFile(path, append(data, '\n'), atomicfile.Sync)
 }
 
-// writeAndSync writes data to f and flushes it to disk; tests substitute a
-// writer that fails part-way to simulate an interrupted write.
-func writeAndSync(f *os.File, data []byte) error {
-	if _, err := f.Write(data); err != nil {
-		return err
+func replaceFile(path string, data []byte, syncFn func(*os.File) error) error {
+	if err := removeIfPresent(path + pendingSuffix); err != nil {
+		return fmt.Errorf("replace ceiling store: %w", err)
 	}
-	return f.Sync()
-}
-
-func replaceFile(path string, data []byte, write func(*os.File, []byte) error) (err error) {
-	pending := path + pendingSuffix
-	// #nosec G304 -- pending is storePath plus a fixed suffix.
-	f, err := os.OpenFile(pending, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("stage ceiling store: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, removeIfPresent(pending))
-		}
-	}()
-	if writeErr := write(f, data); writeErr != nil {
-		return errors.Join(fmt.Errorf("write ceiling store: %w", writeErr), f.Close())
-	}
-	if closeErr := f.Close(); closeErr != nil {
-		return fmt.Errorf("close staged ceiling store: %w", closeErr)
-	}
-	if renameErr := os.Rename(pending, path); renameErr != nil {
-		return fmt.Errorf("replace ceiling store: %w", renameErr)
+	if err := atomicfile.ReplaceWithSync(path, data, 0o600, syncFn); err != nil {
+		return fmt.Errorf("replace ceiling store: %w", err)
 	}
 	return nil
 }
