@@ -41,6 +41,8 @@ For each script, over seven consecutive days of the parallel run:
 
 A full disk under the event log makes the supervisor exit with an error naming the job, the event type and the event-log directory. Once disk space is freed, restarting the supervisor automatically repairs any half-written append past HEAD and re-adopts the running jobs without duplicate starts.
 
+The supervisor's host unit sets `SyslogIdentifier=` to the unit's own name ([systemd.exec(5)](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#SyslogIdentifier=)). The supervisor runs inside `bwrap`, and without the setting its output, including the error line it exits with, is tagged `bwrap`. After the 2026-10-17 full-disk exit that line carried no unit, so `journalctl --user -u <unit>` showed the exit status but not the reason ([#263](https://github.com/tekmora/epitrop/issues/263)). With the setting, `journalctl --user -t <unit name>` lists every line the supervisor wrote, the last one included.
+
 A mismatch restarts the week for that script once its cause is fixed.
 
 ## Retired scripts
