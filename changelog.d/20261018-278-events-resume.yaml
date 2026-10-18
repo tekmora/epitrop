@@ -1,0 +1,4 @@
+type: changed
+title: 'The /events HTTP stream serves signed event-log records in sequence order, replacing unit and job diff summaries; each event carries the record sequence number as its id and the event type as its event name, and clients can resume from any record with Last-Event-ID'
+issue: "278"
+breaking: true

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -493,5 +494,118 @@ func TestServeUnitSetRunsOncePerKey(t *testing.T) {
 	}
 	if err := stop(); err != nil {
 		t.Fatalf("serve after client close = %v, want nil", err)
+	}
+}
+
+// readOneSSE reads the lines of one event and returns its id, event and data.
+func readOneSSE(t *testing.T, s *bufio.Scanner) (string, string, string) {
+	t.Helper()
+	var id, ev, data string
+	for range 1000 {
+		if !s.Scan() {
+			t.Fatalf("stream ended: %v", s.Err())
+		}
+		line := s.Text()
+		switch {
+		case strings.HasPrefix(line, "id: "):
+			id = strings.TrimPrefix(line, "id: ")
+		case strings.HasPrefix(line, "event: "):
+			ev = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			data = strings.TrimPrefix(line, "data: ")
+		case line == "":
+			if id != "" || ev != "" || data != "" {
+				return id, ev, data
+			}
+		}
+	}
+	t.Fatal("stream yielded no complete SSE event within 1000 lines")
+	return "", "", ""
+}
+
+// readNumericSSE reads one event, checks that it is the record recordUnit appends, and
+// returns its id.
+func readNumericSSE(t *testing.T, s *bufio.Scanner) uint64 {
+	t.Helper()
+	idStr, ev, data := readOneSSE(t, s)
+	if ev != "unit.recorded" || !strings.Contains(data, `"seq":`+idStr+`,`) {
+		t.Fatalf("event id %q, event %q, data %q; want the unit.recorded record with that seq", idStr, ev, data)
+	}
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		t.Fatalf("event id %q not numeric: %v", idStr, err)
+	}
+	return id
+}
+
+func openEvents(t *testing.T, base, lastEventID string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(testContext(t), http.MethodGet, base+mcp.PathEvents, nil)
+	if err != nil {
+		t.Fatalf("NewRequest = %v", err)
+	}
+	if lastEventID != "" {
+		req.Header.Set("Last-Event-ID", lastEventID)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /events = %v", err)
+	}
+	return resp
+}
+
+func closeBody(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+}
+
+// checkConsecutive fails unless ids follow each other with no gap and no repeat: each
+// recordUnit appends one record.
+func checkConsecutive(t *testing.T, ids ...uint64) {
+	t.Helper()
+	for i := 1; i < len(ids); i++ {
+		if ids[i] != ids[i-1]+1 {
+			t.Fatalf("ids not consecutive at index %d: %v", i, ids)
+		}
+	}
+}
+
+// TestEventsResume reconnects with Last-Event-ID and wants every later record once, in
+// order, across the replay-to-live handover.
+func TestEventsResume(t *testing.T) {
+	cfgPath := writeConfigServing(t, `{"transport":"http","listen":"127.0.0.1:0"}`)
+	base, cancel, done := serveHTTPConfig(t, cfgPath)
+	waitReady(t, base)
+
+	resp1 := openEvents(t, base, "")
+	recordUnit(t, cfgPath)
+	s1 := bufio.NewScanner(resp1.Body)
+	id1 := readNumericSSE(t, s1)
+	closeBody(t, resp1)
+
+	recordUnit(t, cfgPath)
+	recordUnit(t, cfgPath)
+
+	resp2 := openEvents(t, base, strconv.FormatUint(id1, 10))
+	s2 := bufio.NewScanner(resp2.Body)
+	id2 := readNumericSSE(t, s2)
+	id3 := readNumericSSE(t, s2)
+
+	recordUnit(t, cfgPath)
+	id4 := readNumericSSE(t, s2)
+	closeBody(t, resp2)
+
+	checkConsecutive(t, id1, id2, id3, id4)
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve after cancel = %v, want nil", err)
+		}
+	case <-time.After(shutdownTimeout):
+		t.Fatal("serve did not stop after cancel")
 	}
 }

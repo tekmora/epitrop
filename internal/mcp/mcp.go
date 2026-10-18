@@ -13,6 +13,7 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/tekmora/epitrop/internal/broker"
 	"github.com/tekmora/epitrop/internal/eventlog"
 	"github.com/tekmora/epitrop/internal/supervisor"
 	"github.com/tekmora/epitrop/internal/units"
@@ -50,6 +51,8 @@ type Sources struct {
 	Watches WatchReader
 	// Mutate, when not nil, adds the mutating tools.
 	Mutate *Mutators
+	// Events, when set, feeds the server-sent event stream at /events.
+	Events *broker.Tail
 }
 
 // NewServer returns a server with every read-only tool registered over src, and the
@@ -124,15 +127,6 @@ func jobsStatus(jobs JobLister) sdkmcp.ToolHandlerFor[JobsStatusIn, JobsStatusOu
 
 func jobOf(st supervisor.JobStatus) Job {
 	return Job{Name: st.Name, State: string(st.State), PID: st.PID, Since: st.Since, Restarts: st.Restarts, Sandbox: st.Sandbox, Stale: st.Stale, LastBeat: st.LastBeat}
-}
-
-// jobsOf keys the jobs by name.
-func jobsOf(statuses []supervisor.JobStatus) map[string]Job {
-	out := make(map[string]Job, len(statuses))
-	for i := 0; i < len(statuses); i++ {
-		out[statuses[i].Name] = jobOf(statuses[i])
-	}
-	return out
 }
 
 // UnitsListIn narrows the list.
