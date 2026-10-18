@@ -22,6 +22,8 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tekmora/epitrop/internal/config"
 	"github.com/tekmora/epitrop/internal/egressproxy"
+	"github.com/tekmora/epitrop/internal/eventlog"
+	"github.com/tekmora/epitrop/internal/jobfailure"
 	"github.com/tekmora/epitrop/internal/logsetup"
 	"github.com/tekmora/epitrop/internal/mcp"
 	"github.com/tekmora/epitrop/internal/supervisor"
@@ -608,4 +610,124 @@ func TestEventsResume(t *testing.T) {
 	case <-time.After(shutdownTimeout):
 		t.Fatal("serve did not stop after cancel")
 	}
+}
+
+// TestJobFailureClassifiedKnownFlake tests that a job whose log ends in a known-flake signature
+// and an exited code 1 record gets a job.dead_lettered record with class known-flake.
+func TestJobFailureClassifiedKnownFlake(t *testing.T) {
+	ctx := testContext(t)
+	cfgPath := writeFlakeConfig(t, "build log\nflake: connection reset by peer\n")
+	cfg, err := config.Load(ctx, cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load() = %v", err)
+	}
+	cs, stop := stdioClient(t, []string{"--config=" + cfgPath})
+	if cs == nil {
+		t.Fatal("expected non-nil client session")
+	}
+	time.Sleep(100 * time.Millisecond)
+	exitedRec := appendExitedRecord(t, ctx, cfg, 1)
+	foundRec := waitForDeadLetter(t, ctx, cfg, exitedRec.Seq)
+	if err := stop(); err != nil {
+		t.Fatalf("stop() = %v", err)
+	}
+
+	var p struct {
+		ExitedSeq uint64 `json:"exited_seq"`
+		Class     string `json:"class"`
+		Retry     bool   `json:"retry"`
+		Parked    bool   `json:"parked"`
+		Attempt   int    `json:"attempt"`
+		Code      *int   `json:"code"`
+	}
+	if err := json.Unmarshal(foundRec.Payload, &p); err != nil {
+		t.Fatalf("unmarshal dead_lettered payload: %v", err)
+	}
+	if p.ExitedSeq != exitedRec.Seq || p.Class != "known-flake" || p.Code == nil || *p.Code != 1 || !p.Retry {
+		t.Fatalf("unexpected payload: %+v", p)
+	}
+}
+
+func writeFlakeConfig(t *testing.T, logBody string) string {
+	t.Helper()
+	base := t.TempDir()
+	keyPath := filepath.Join(base, "seed.hex")
+	if err := os.WriteFile(keyPath, []byte(hex.EncodeToString(bytes.Repeat([]byte{9}, 32))), 0o600); err != nil {
+		t.Fatalf("WriteFile(key) = %v", err)
+	}
+	logPath := filepath.Join(base, "worker.log")
+	if err := os.WriteFile(logPath, []byte(logBody), 0o600); err != nil {
+		t.Fatalf("WriteFile(log) = %v", err)
+	}
+	cfgPath := filepath.Join(base, "config.json")
+	body := fmt.Sprintf(`{
+		"server": {"transport": "stdio"},
+		"event_log": {"dir": %s, "signing_key_path": %s},
+		"broker": {
+			"dead_letter": {
+				"capacity": 16,
+				"fallback": "real-failure",
+				"classes": [
+					{"name": "known-flake", "signatures": ["flake: connection reset.*"], "max_retries": 1}
+				]
+			}
+		},
+		"jobs": [
+			{"name": "worker", "command": ["sleep", "1"], "log_path": %s, "schedule": "always", "sandbox": {"mode": "off", "reason": "server test"}}
+		]
+	}`, jsonQuote(filepath.Join(base, "state")), jsonQuote(keyPath), jsonQuote(logPath))
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile(config) = %v", err)
+	}
+	return cfgPath
+}
+
+func appendExitedRecord(t *testing.T, ctx context.Context, cfg config.Config, code int) eventlog.Record {
+	t.Helper()
+	signer, clk, err := logsetup.Signer(cfg)
+	if err != nil {
+		t.Fatalf("logsetup.Signer() = %v", err)
+	}
+	limits := logsetup.Limits(cfg, clk)
+	writer, err := eventlog.Open(cfg.EventLog.Dir, signer, limits)
+	if err != nil {
+		t.Fatalf("eventlog.Open() = %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{"state": "dead", "code": code})
+	if err != nil {
+		t.Fatalf("json.Marshal() = %v", err)
+	}
+	rec, err := writer.Append(ctx, eventlog.Event{
+		Type:    "job.exited",
+		TaskID:  "worker",
+		Payload: payload,
+	})
+	if err != nil {
+		t.Fatalf("writer.Append(job.exited) = %v", err)
+	}
+	return rec
+}
+
+func waitForDeadLetter(t *testing.T, ctx context.Context, cfg config.Config, afterSeq uint64) eventlog.Record {
+	t.Helper()
+	signer, clk, err := logsetup.Signer(cfg)
+	if err != nil {
+		t.Fatalf("logsetup.Signer() = %v", err)
+	}
+	limits := logsetup.Limits(cfg, clk)
+	pub := signer.PublicKey()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		recs, rErr := eventlog.ReplayAfter(ctx, cfg.EventLog.Dir, pub, limits, afterSeq)
+		if rErr == nil {
+			for _, r := range recs {
+				if r.Type == jobfailure.RecordType {
+					return r
+				}
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for job.dead_lettered after seq %d", afterSeq)
+	return eventlog.Record{}
 }

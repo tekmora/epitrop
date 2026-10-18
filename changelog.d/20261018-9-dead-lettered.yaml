@@ -1,0 +1,3 @@
+type: added
+title: 'epitrop-server classifies each failed job exit with the dead-letter classes and appends one `job.dead_lettered` record'
+issue: "9"
