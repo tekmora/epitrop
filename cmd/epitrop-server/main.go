@@ -24,6 +24,7 @@ import (
 	"github.com/tekmora/epitrop/internal/config"
 	"github.com/tekmora/epitrop/internal/egressproxy"
 	"github.com/tekmora/epitrop/internal/eventlog"
+	"github.com/tekmora/epitrop/internal/jobfailure"
 	"github.com/tekmora/epitrop/internal/logsetup"
 	"github.com/tekmora/epitrop/internal/mcp"
 	"github.com/tekmora/epitrop/internal/releasewatch"
@@ -88,6 +89,12 @@ func serve(ctx context.Context, args []string, in io.ReadCloser, out io.WriteClo
 	if err != nil {
 		return err
 	}
+	w, err := openFailures(cfg)
+	if err != nil {
+		return err
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	go w.Run(ctx, watchInterval, logger)
 	if cfg.Server.Transport == config.TransportHTTP {
 		return serveHTTP(ctx, cfg.Server.Listen, src, out)
 	}
@@ -221,6 +228,88 @@ func openTail(cfg config.Config) (*broker.Tail, error) {
 		return nil, fmt.Errorf("epitrop-server: %w", err)
 	}
 	return tail, nil
+}
+
+// openFailures opens the job failure watcher that routes failed job exits to dead-letter classes.
+func openFailures(cfg config.Config) (*jobfailure.Watcher, error) {
+	dl, err := broker.NewDeadLetters(cfg.Broker.DeadLetter.Specs(), cfg.Broker.DeadLetter.Fallback, cfg.Broker.DeadLetter.Capacity)
+	if err != nil {
+		return nil, fmt.Errorf("epitrop-server: %w", err)
+	}
+	signer, clk, err := logsetup.Signer(cfg)
+	if err != nil {
+		return nil, err
+	}
+	limits := logsetup.Limits(cfg, clk)
+	pub := signer.PublicKey()
+
+	replay := func(ctx context.Context, after uint64) ([]eventlog.Record, error) {
+		return eventlog.ReplayAfter(ctx, cfg.EventLog.Dir, pub, limits, after)
+	}
+	head := func(ctx context.Context) (uint64, error) {
+		return eventlog.HeadSeq(ctx, cfg.EventLog.Dir, pub)
+	}
+	appendFn := func(ctx context.Context, check func(context.Context) (eventlog.Event, error)) (eventlog.Record, error) {
+		writer, wErr := eventlog.Open(cfg.EventLog.Dir, signer, limits)
+		if wErr != nil {
+			return eventlog.Record{}, fmt.Errorf("epitrop-server: open event log: %w", wErr)
+		}
+		return writer.AppendChecked(ctx, check)
+	}
+	jobLogs := make(map[string]string, len(cfg.Jobs))
+	for _, j := range cfg.Jobs {
+		jobLogs[j.Name] = j.LogPath
+	}
+	output := func(_ context.Context, job string) (string, error) {
+		path := jobLogs[job]
+		if path == "" {
+			return "", nil
+		}
+		return readLogTail(path)
+	}
+
+	w, err := jobfailure.New(dl, replay, head, appendFn, output)
+	if err != nil {
+		return nil, fmt.Errorf("epitrop-server: %w", err)
+	}
+	return w, nil
+}
+
+// readLogTail reads at most the last MaxOutputBytes of path.
+func readLogTail(path string) (tail string, err error) {
+	// #nosec G304 -- path comes from declared job configuration.
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("epitrop-server: open %s: %w", path, err)
+	}
+	defer func() {
+		if cErr := f.Close(); cErr != nil {
+			err = errors.Join(err, fmt.Errorf("epitrop-server: close %s: %w", path, cErr))
+		}
+	}()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("epitrop-server: stat %s: %w", path, err)
+	}
+	size := info.Size()
+	var offset int64
+	if size > jobfailure.MaxOutputBytes {
+		offset = size - jobfailure.MaxOutputBytes
+	}
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return "", fmt.Errorf("epitrop-server: seek %s: %w", path, err)
+		}
+	}
+	b, err := io.ReadAll(io.LimitReader(f, jobfailure.MaxOutputBytes))
+	if err != nil {
+		return "", fmt.Errorf("epitrop-server: read %s: %w", path, err)
+	}
+	return string(b), nil
 }
 
 // jobService reads the jobs' state and, for the mutating tools, starts and stops them.
