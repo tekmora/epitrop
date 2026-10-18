@@ -79,7 +79,7 @@ func fillHome(home *config.SandboxHome, dir string, until time.Time) error {
 		if err := checkHomeBind(home.Source, home.Bind[i], until); err != nil {
 			return err
 		}
-		if err := writeHomeFile(filepath.Join(dir, home.Bind[i].File), nil); err != nil {
+		if err := writeHomeBindTarget(dir, home.Bind[i].File); err != nil {
 			return err
 		}
 	}
@@ -128,6 +128,34 @@ func homeDirElement(dir string, last bool) error {
 	return nil
 }
 
+// writeHomeBindTarget puts the empty file a bind lands on, making the folders a login file
+// below a folder needs. The home is fresh and of the shim's making, so each folder is new.
+func writeHomeBindTarget(dir string, file string) error {
+	parts := strings.Split(file, "/")
+	for i := 0; i < len(parts)-1; i++ {
+		dir = filepath.Join(dir, parts[i])
+		if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("home: %w", err)
+		}
+		if err := requireRealDirectory(dir); err != nil {
+			return err
+		}
+	}
+	return writeHomeFile(filepath.Join(dir, parts[len(parts)-1]), nil)
+}
+
+// requireRealDirectory refuses a path that is a symlink or no directory.
+func requireRealDirectory(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("home: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("home: %s is no directory", dir)
+	}
+	return nil
+}
+
 func copyHomeFile(source string, dir string, entry config.SandboxHomeCopy) error {
 	body, err := readHomeSource(source, entry.File)
 	if err != nil {
@@ -140,10 +168,19 @@ func copyHomeFile(source string, dir string, entry config.SandboxHomeCopy) error
 	return writeHomeFile(filepath.Join(dir, entry.File), body)
 }
 
-// readHomeSource reads a regular file of the home's source. A symlink is refused: it could
-// lead anywhere the configuration's checks never saw.
+// readHomeSource reads a regular file of the home's source. A symlink is refused, the file's
+// and each folder's on the way to it: it could lead anywhere the configuration's checks
+// never saw.
 func readHomeSource(source string, name string) ([]byte, error) {
-	path := filepath.Join(source, name)
+	parts := strings.Split(name, "/")
+	path := source
+	for i := 0; i < len(parts)-1; i++ {
+		path = filepath.Join(path, parts[i])
+		if err := requireRealDirectory(path); err != nil {
+			return nil, err
+		}
+	}
+	path = filepath.Join(path, parts[len(parts)-1])
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, fmt.Errorf("home: %w", err)
@@ -185,49 +222,85 @@ func writeHomeFile(path string, body []byte) error {
 	return nil
 }
 
-// checkHomeBind refuses a bind file that is no regular file, and one whose token expires
-// before until. The token itself never leaves this function, not in an error either.
+// checkHomeBind refuses a bind file that is no regular file, one that names no expiry, and
+// one whose token expires before until. The token itself never leaves this function, not in
+// an error either.
 func checkHomeBind(source string, entry config.SandboxHomeBind, until time.Time) error {
 	body, err := readHomeSource(source, entry.File)
 	if err != nil {
 		return err
 	}
-	if entry.JWT == "" {
-		return nil
+	path, exp := entry.JWT, time.Time{}
+	switch {
+	case entry.JWT != "":
+		exp, err = jwtExpiry(body, entry.JWT)
+	case entry.ExpiresMS != "":
+		path = entry.ExpiresMS
+		exp, err = millisExpiry(body, entry.ExpiresMS)
+	default:
+		return fmt.Errorf("home: bind %s names no expiry; the configuration checks it", entry.File)
 	}
-	exp, err := jwtExpiry(body, entry.JWT)
 	if err != nil {
-		return fmt.Errorf("home: bind %s: the token at %s: %w", entry.File, entry.JWT, err)
+		return fmt.Errorf("home: bind %s: the token's expiry at %s: %w", entry.File, path, err)
 	}
 	if !exp.After(until) {
 		return fmt.Errorf("%w: bind %s: the token at %s expires at %s, the run may last until %s; refresh the login outside the slot, an operator act, and start the run again",
-			errHomeToken, entry.File, entry.JWT, exp.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339))
+			errHomeToken, entry.File, path, exp.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339))
 	}
 	return nil
 }
 
-// jwtExpiry reads the exp claim of the JSON Web Token at the dotted path in a JSON document.
-// The signature is not checked: the token is the client's, and only its expiry is wanted.
-func jwtExpiry(body []byte, path string) (time.Time, error) {
+// jsonValueAt returns the value at the dotted path in a JSON document. Numbers stay
+// json.Number.
+func jsonValueAt(body []byte, path string) (any, error) {
 	var doc any
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return time.Time{}, errors.New("the file is no JSON document")
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&doc); err != nil {
+		return nil, errors.New("the file is no JSON document")
 	}
 	names := strings.Split(path, ".")
 	for i := 0; i < len(names); i++ {
 		object, ok := doc.(map[string]any)
 		if !ok {
-			return time.Time{}, errors.New("the path leads through no object")
+			return nil, errors.New("the path leads through no object")
 		}
 		if doc, ok = object[names[i]]; !ok {
-			return time.Time{}, errors.New("the path names no value")
+			return nil, errors.New("the path names no value")
 		}
+	}
+	return doc, nil
+}
+
+// jwtExpiry reads the exp claim of the JSON Web Token at the dotted path in a JSON document.
+// The signature is not checked: the token is the client's, and only its expiry is wanted.
+func jwtExpiry(body []byte, path string) (time.Time, error) {
+	doc, err := jsonValueAt(body, path)
+	if err != nil {
+		return time.Time{}, err
 	}
 	token, ok := doc.(string)
 	if !ok {
 		return time.Time{}, errors.New("the value is no string")
 	}
 	return jwtClaimExp(token)
+}
+
+// millisExpiry reads the number of Unix milliseconds at the dotted path in a JSON document.
+func millisExpiry(body []byte, path string) (time.Time, error) {
+	doc, err := jsonValueAt(body, path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	number, ok := doc.(json.Number)
+	if !ok {
+		return time.Time{}, errors.New("the value is no number")
+	}
+	ms, err := number.Int64()
+	if err != nil || ms <= 0 || ms >= math.MaxInt64/2 {
+		return time.Time{}, errors.New("the value is no time in milliseconds")
+	}
+	return time.UnixMilli(ms), nil
 }
 
 func jwtClaimExp(token string) (time.Time, error) {
@@ -255,15 +328,37 @@ func jwtClaimExp(token string) (time.Time, error) {
 }
 
 // appendHomeArgs binds each bind file read-only over the empty file the shim made for it,
-// and points the client at the home.
+// and points the client at the home. Each folder between the home and a bind file is pinned
+// first, as the read-only paths' are, so that the job cannot move it aside and put a
+// writable file where the client looks for its login. A home that takes HOME is set where
+// the sandbox sets HOME, once, so that no later setting replaces it.
 func appendHomeArgs(args []string, sandbox config.SandboxConfig) []string {
 	home := sandbox.Home
 	if home == nil {
 		return args
 	}
 	dir := homeDir(sandbox)
+	targets := make([]string, 0, len(home.Bind))
 	for i := 0; i < len(home.Bind); i++ {
-		args = append(args, "--ro-bind", filepath.Join(home.Source, home.Bind[i].File), filepath.Join(dir, home.Bind[i].File))
+		targets = append(targets, filepath.Join(dir, filepath.FromSlash(home.Bind[i].File)))
+	}
+	ancestors := readOnlyAncestors(dir, targets)
+	for i := 0; i < len(ancestors); i++ {
+		args = append(args, "--bind", ancestors[i], ancestors[i])
+	}
+	for i := 0; i < len(home.Bind); i++ {
+		args = append(args, "--ro-bind", filepath.Join(home.Source, filepath.FromSlash(home.Bind[i].File)), targets[i])
+	}
+	if home.Env == "HOME" {
+		return args
 	}
 	return append(args, "--setenv", home.Env, dir)
+}
+
+// jobHome is the job's HOME: its home when the home takes HOME, else its workspace.
+func jobHome(sandbox config.SandboxConfig) string {
+	if sandbox.Home != nil && sandbox.Home.Env == "HOME" {
+		return homeDir(sandbox)
+	}
+	return sandbox.Workspace
 }

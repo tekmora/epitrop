@@ -147,7 +147,7 @@ func handoverUnit(u eventlog.Unit, answers map[string]string) HandoverUnit {
 	if filepath.Base(u.Evidence.Path) != ReportFile {
 		return h
 	}
-	report, err := readPointedReport(*u.Evidence)
+	report, err := ReadPointedReport(*u.Evidence)
 	if err != nil {
 		h.ReportError = err.Error()
 		return h
@@ -157,10 +157,10 @@ func handoverUnit(u eventlog.Unit, answers map[string]string) HandoverUnit {
 	return h
 }
 
-// readPointedReport reads the report an evidence pointer names and refuses one whose digest
+// ReadPointedReport reads the report an evidence pointer names and refuses one whose digest
 // does not start with the pointer's, which holds 12 to 64 digits: the report changed after
 // the run was recorded.
-func readPointedReport(pointer eventlog.UnitEvidence) (Report, error) {
+func ReadPointedReport(pointer eventlog.UnitEvidence) (Report, error) {
 	body, err := readRegular(pointer.Path, maxReportBytes)
 	if err != nil {
 		return Report{}, err

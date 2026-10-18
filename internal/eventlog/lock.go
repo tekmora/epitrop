@@ -35,15 +35,18 @@ func acquireLock(ctx context.Context, eventsDir string, timeout time.Duration) (
 	return &fileLock{lock: lock}, nil
 }
 
-// tryLock tries once when timeout is not positive and otherwise until timeout or ctx ends,
-// which both report as not locked.
+// tryLock tries once, and when the lock is held and timeout is positive, again until timeout
+// or ctx ends, which both report as not locked. The first try comes before the wait: the
+// timeout bounds the wait for a held lock, and TryLockContext gives up on an ended context
+// before it tries, so a short timeout that ran out on a busy machine would refuse a free lock.
 func tryLock(ctx context.Context, lock *flock.Flock, timeout time.Duration) (bool, error) {
-	if timeout <= 0 {
-		return lock.TryLock()
+	locked, err := lock.TryLock()
+	if locked || err != nil || timeout <= 0 {
+		return locked, err
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	locked, err := lock.TryLockContext(waitCtx, lockRetryDelay)
+	locked, err = lock.TryLockContext(waitCtx, lockRetryDelay)
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false, nil
 	}

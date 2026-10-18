@@ -11,10 +11,11 @@ epitrop/
   Makefile                   [now]     verify-all target (Praetor)
   catalog/                   [now]     model catalog records and snapshots
   cmd/epitropctl/           [now]     operator CLI (show, sync)
-  cmd/epitrop-server/       [planned] REST, SSE and MCP gateway
+  cmd/epitrop-server/       [now]     MCP server on stdio or loopback HTTP, probes, SSE, opt-in mutating tools
   internal/sources/          [now]     catalog sources (gateway, local, public)
   internal/sot/              [planned] task graph and state
-  internal/mcp/              [planned] MCP bridge
+  internal/mcp/              [now]     MCP tools over the run record
+  internal/logsetup/         [now]     opens the shared event log for every binary
   internal/telemetry/        [now]     spans and metrics for runs, tasks and side effects
   crates/epitrop-graph/     [planned] Rust vector kernel
   ui/                        [planned] Svelte 5 operator UI

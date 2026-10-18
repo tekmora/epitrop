@@ -50,7 +50,7 @@ func homeTestSandbox(t *testing.T, exp int64) config.SandboxConfig {
 
 func TestShimArgsCarryTheHome(t *testing.T) {
 	sandbox := homeTestSandbox(t, time.Now().Add(time.Hour).Unix())
-	sandbox.Home.Bind = append(sandbox.Home.Bind, config.SandboxHomeBind{File: "plain"})
+	sandbox.Home.Bind = append(sandbox.Home.Bind, config.SandboxHomeBind{File: "plain", ExpiresMS: "login.expiresAt"})
 	cfg := withShimSandbox(validShimConfig(t, "home-args"), sandbox)
 	parsed, err := parseShimArgs(shimArgs(t, cfg))
 	if err != nil {
@@ -77,6 +77,7 @@ func TestShimRefusesABadHomeFlag(t *testing.T) {
 		{homeFlags{source: "/s", env: "E", copies: []string{"config.toml"}}, "is no file=sha256", false},
 		{homeFlags{source: "/s", env: "E", binds: []string{"auth.json"}}, "is no file=jwt", false},
 		{homeFlags{source: "/s", env: "E", binds: []string{"auth.json="}}, "", true},
+		{homeFlags{source: "/s", env: "E", binds: []string{"auth.json==a.b"}}, "", true},
 	}
 	for _, tc := range cases {
 		_, err := tc.flag.home()
@@ -85,9 +86,9 @@ func TestShimRefusesABadHomeFlag(t *testing.T) {
 		}
 	}
 	cfg := withShimSandbox(validShimConfig(t, "home-bad"), homeTestSandbox(t, time.Now().Add(time.Hour).Unix()))
-	cfg.Sandbox.Home.Env = "HOME"
-	if _, err := parseShimArgs(shimArgs(t, cfg)); err == nil || !strings.Contains(err.Error(), "home.env: HOME is set by the sandbox") {
-		t.Fatalf("parseShimArgs(home env HOME) = %v, want the configuration's refusal", err)
+	cfg.Sandbox.Home.Env = "PATH"
+	if _, err := parseShimArgs(shimArgs(t, cfg)); err == nil || !strings.Contains(err.Error(), "home.env: PATH is set by the sandbox") {
+		t.Fatalf("parseShimArgs(home env PATH) = %v, want the configuration's refusal", err)
 	}
 }
 

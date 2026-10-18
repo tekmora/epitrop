@@ -148,7 +148,11 @@ func TestRunSync_Positive(t *testing.T) {
 	defer ollama.Close()
 
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"id":"vendor-a/model-1","owned_by":"vendor-a"}]}`)) //nolint:errcheck // test httptest server response; a write failure here would fail the test's own HTTP round trip, not silently corrupt anything
+		body := `{"data":[{"id":"vendor-a/model-1","owned_by":"vendor-a"}]}`
+		if r.URL.Path == "/key/info" {
+			body = `{"info":{"key_alias":"agent-lane","spend":5,"max_budget":50,"budget_duration":"30d","status":"active"}}`
+		}
+		_, _ = w.Write([]byte(body)) //nolint:errcheck // test httptest server response; a write failure here would fail the test's own HTTP round trip, not silently corrupt anything
 	}))
 	defer gateway.Close()
 
@@ -208,12 +212,12 @@ func checkSyncSnapshot(t *testing.T, out string) {
 	if err != nil {
 		t.Fatalf("ParseSnapshot() = %v", err)
 	}
-	// codex-local(1) + litellm-gateway(1) + ollama-local(1) + public-catalog(2)
-	if len(snap.Records) != 5 {
-		t.Fatalf("got %d records, want 5: %+v", len(snap.Records), snap.Records)
+	// codex-local(1) + litellm-gateway(1) + litellm-key-budget(1) + ollama-local(1) + public-catalog(2)
+	if len(snap.Records) != 6 {
+		t.Fatalf("got %d records, want 6: %+v", len(snap.Records), snap.Records)
 	}
-	if len(snap.SourceRuns) != 4 {
-		t.Fatalf("got %d source runs, want 4", len(snap.SourceRuns))
+	if len(snap.SourceRuns) != 5 {
+		t.Fatalf("got %d source runs, want 5", len(snap.SourceRuns))
 	}
 	for _, run := range snap.SourceRuns {
 		if run.Status != catalog.StatusOK {
@@ -369,6 +373,29 @@ func TestRunSync_GatewayUnsetBase_ZeroRequests(t *testing.T) {
 	}
 	if !strings.Contains(snap.SourceRuns[0].Detail, "--litellm-base") {
 		t.Fatalf("Detail = %q, want mention of --litellm-base", snap.SourceRuns[0].Detail)
+	}
+}
+
+// TestRunSync_KeyBudget confirms litellm-key-budget skips without its flags,
+// reads a live key's budget, and fails without a record for a key the
+// gateway reports as expired.
+func TestRunSync_KeyBudget(t *testing.T) {
+	status := "active"
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"info":{"spend":1,"max_budget":4,"status":"` + status + `"}}`)) //nolint:errcheck // test server response
+	}))
+	defer gateway.Close()
+	_, tokenFile := setupSyncFixtures(t)
+	if got := runOneSource(context.Background(), "litellm-key-budget", syncFlags{}); got.Status != catalog.StatusSkip || !strings.Contains(got.Detail, "required for litellm-key-budget") {
+		t.Fatalf("runOneSource(no flags) = %+v, want a skip naming the flags", got)
+	}
+	f := syncFlags{litellmBase: gateway.URL, litellmToken: tokenFile}
+	if got := runOneSource(context.Background(), "litellm-key-budget", f); got.Status != catalog.StatusOK || len(got.Records) != 1 || *got.Records[0].UsageWindow.UsedPercent != 25 {
+		t.Fatalf("runOneSource(active key) = %+v, want one record at 25%%", got)
+	}
+	status = "expired"
+	if got := runOneSource(context.Background(), "litellm-key-budget", f); got.Status != catalog.StatusFail || len(got.Records) != 0 || !strings.Contains(got.Detail, "not active") {
+		t.Fatalf("runOneSource(expired key) = %+v, want a failure and no record", got)
 	}
 }
 

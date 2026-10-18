@@ -33,12 +33,14 @@ type Telemetry struct {
 	checkpointWrites         metric.Int64Counter
 	admissionDecisions       metric.Int64Counter
 	graphTasks               metric.Int64Gauge
+	budgetUsed               metric.Int64Gauge
 	allowedEffectOutcome     map[string]struct{}
 	allowedSlotOutcome       map[string]struct{}
 	allowedJobOutcome        map[string]struct{}
 	allowedCheckpointOutcome map[string]struct{}
 	allowedAdmissionOutcome  map[string]struct{}
 	allowedGraphStatus       map[string]struct{}
+	allowedBudgetLayer       map[string]struct{}
 }
 
 // New constructs Telemetry with instruments created on the provided meter provider
@@ -111,8 +113,11 @@ func (t *Telemetry) setCounter(name string, c metric.Int64Counter) {
 }
 
 func (t *Telemetry) setGauge(name string, g metric.Int64Gauge) {
-	if name == MetricGraphTasks {
+	switch name {
+	case MetricGraphTasks:
 		t.graphTasks = g
+	case MetricBudgetUsedFrontierTokens:
+		t.budgetUsed = g
 	}
 }
 
@@ -136,6 +141,8 @@ func (t *Telemetry) applyAllowedLimits(def metricdef.Def) {
 		t.allowedAdmissionOutcome = toAllowSet(def.Limits["outcome"].Allow)
 	case MetricGraphTasks:
 		t.allowedGraphStatus = toAllowSet(def.Limits["status"].Allow)
+	case MetricBudgetUsedFrontierTokens:
+		t.allowedBudgetLayer = toAllowSet(def.Limits["layer"].Allow)
 	}
 }
 
@@ -225,6 +232,19 @@ func (t *Telemetry) GraphTasks(ctx context.Context, counts map[graph.StatusName]
 	for s, c := range recorded {
 		t.graphTasks.Record(ctx, c, metric.WithAttributes(attribute.String("status", s)))
 	}
+}
+
+// BudgetUsed records the frontier tokens layer has used. A nil used means the ledger
+// has not measured them; nothing is recorded then, so the metric never shows a zero
+// that was not measured.
+func (t *Telemetry) BudgetUsed(ctx context.Context, layer string, used *int64) {
+	if t == nil || t.budgetUsed == nil || used == nil {
+		return
+	}
+	if _, ok := t.allowedBudgetLayer[layer]; !ok {
+		layer = metricdef.OtherValue
+	}
+	t.budgetUsed.Record(ctx, *used, metric.WithAttributes(attribute.String("layer", layer)))
 }
 
 // StartSpan starts an OpenTelemetry span on the configured tracer.

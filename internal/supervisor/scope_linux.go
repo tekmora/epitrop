@@ -35,6 +35,7 @@ var (
 	procCgroupReadFile = os.ReadFile
 	procExeReadlink    = os.Readlink
 	scopeConfirmSleep  = time.Sleep
+	startingImage      = os.Executable
 )
 
 // newScopeName names the systemd scope of one job start. The shim asks systemd-run for
@@ -53,13 +54,16 @@ func newScopeName() (string, error) {
 // says why when it does not. systemd-run execs the job only after the user manager placed
 // it in the scope, so the shim reads three things in this order: whether the process has
 // exited, which program it is, and its cgroup. A process in the scope is confirmed. One
-// that has exited, or is no longer systemd-run, outside the scope is refused at once: the
-// job would run without its memory, CPU and task limits. While it is still systemd-run the
-// shim waits, up to scopeConfirmPolls.
+// that has exited, or runs a third program, outside the scope is refused at once: the job
+// would run without its memory, CPU and task limits. While it is still systemd-run the shim
+// waits, up to scopeConfirmPolls. It also waits while the process still shows the shim's
+// own program: right after the start the kernel may name the parent's program for a moment
+// before the new one (#228).
 func confirmJobScope(pid int, scope string, runner string) error {
 	if scope == "" {
 		return nil
 	}
+	starter := ownImage()
 	cgroup := ""
 	for i := 0; i < scopeConfirmPolls; i++ {
 		gone, err := processGone(pid)
@@ -76,12 +80,28 @@ func confirmJobScope(pid int, scope string, runner string) error {
 		if gone {
 			return fmt.Errorf("sandbox: job exited in cgroup %s before it entered scope %s", cgroup, scope)
 		}
-		if image != "" && image != runner {
+		if thirdProgram(image, runner, starter) {
 			return fmt.Errorf("sandbox: job runs as %s in cgroup %s, outside scope %s", image, cgroup, scope)
 		}
 		scopeConfirmSleep(scopeConfirmInterval)
 	}
 	return fmt.Errorf("sandbox: job is still in cgroup %s, not in scope %s, after %s", cgroup, scope, scopeConfirmPolls*scopeConfirmInterval)
+}
+
+// ownImage returns the program of this process, or "" when that cannot be read. Without it
+// every program but the runner counts as a third one.
+func ownImage() string {
+	image, err := startingImage()
+	if err != nil {
+		return ""
+	}
+	return image
+}
+
+// thirdProgram reports whether image is a program the process runs once it left both the
+// shim and the runner. An unreadable image is none.
+func thirdProgram(image string, runner string, starter string) bool {
+	return image != "" && image != runner && image != starter
 }
 
 // cgroupInScope reports whether a cgroup path ends in the scope unit. The kernel appends

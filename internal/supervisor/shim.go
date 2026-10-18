@@ -73,6 +73,7 @@ func parseShimArgs(args []string) (shimConfig, error) {
 	fs.StringVar(&cfg.Sandbox.Reason, "sandbox-reason", "", "")
 	fs.StringVar(&cfg.Sandbox.Workspace, "sandbox-workspace", "", "")
 	fs.Var((*stringListFlag)(&cfg.Sandbox.Inputs), "sandbox-input", "")
+	fs.Var((*stringListFlag)(&cfg.Sandbox.ReadOnly), "sandbox-read-only", "")
 	fs.Var((*stringListFlag)(&cfg.Sandbox.EnvAllow), "sandbox-env-allow", "")
 	fs.StringVar(&cfg.Sandbox.Network, "sandbox-network", "", "")
 	fs.Var((*stringListFlag)(&cfg.Sandbox.Destinations), "sandbox-destination", "")

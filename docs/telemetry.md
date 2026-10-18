@@ -40,8 +40,9 @@ Metric definitions are declared in the central catalog with bounded label cardin
 | `epitrop_job_runs_total` | counter | `outcome` (`failed`, `refused`, `started`) | Supervisor job start attempts, by outcome. |
 | `epitrop_checkpoint_writes_total` | counter | `outcome` (`failed`, `written`) | Event log checkpoint write attempts, by outcome. |
 | `epitrop_admission_decisions_total` | counter | `outcome` (`admitted`, `refused`, `unknown`) | Admission decisions for router aliases, by outcome. |
+| `epitrop_budget_used_frontier_tokens` | gauge | `layer` (`platform`) | Frontier tokens a budget layer has used, as the Praetor efficiency ledger measured them; no value while the ledger has not measured them. |
 | `epitrop_graph_tasks` | gauge | `status` (`blocked`, `claimed`, `dropped`, `fix-round`, `implementing`, `landed`, `landing`, `proposed`, `queued`, `ready`, `review`) | Tasks in the task graph per status after the last committed change (queue depth). |
 
-Budget accounting metrics will arrive with issue [#6](https://github.com/tekmora/epitrop/issues/6). The admission gate (`internal/admission`) counts one decision each time it admits or refuses work for a router alias.
+The admission gate (`internal/admission`) counts one decision each time it admits or refuses work for a router alias.
 
-Budget use becomes a metric with [#6](https://github.com/tekmora/epitrop/issues/6). Until then, the catalog declares only metrics that something writes.
+The budget check (`internal/budget`, [#6](https://github.com/tekmora/epitrop/issues/6)) writes `epitrop_budget_used_frontier_tokens` each time it reads a ledger that measured frontier tokens. While the ledger reports them as not measured, the check refuses the task and the gauge keeps no value, so a dashboard shows a gap rather than zero use. With the platform budget off (`budgets.platform.frontier_tokens: 0`), the check reads nothing and writes nothing.

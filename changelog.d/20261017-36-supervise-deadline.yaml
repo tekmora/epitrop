@@ -1,0 +1,3 @@
+type: fixed
+title: '`epitropctl jobs supervise` no longer ends after 30 seconds with a deadline error; it runs until SIGTERM or an interrupt and then exits 0'
+issue: "36"

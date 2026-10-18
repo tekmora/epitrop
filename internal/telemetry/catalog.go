@@ -17,6 +17,9 @@ import (
 	"github.com/tekmora/epitrop/internal/graph"
 )
 
+// BudgetLayerPlatform is the platform budget layer (#6).
+const BudgetLayerPlatform = "platform"
+
 const (
 	// MetricEffectRunsTotal counts outbound side effect runs by outcome.
 	MetricEffectRunsTotal = "epitrop_effect_runs_total"
@@ -28,6 +31,8 @@ const (
 	MetricCheckpointWritesTotal = "epitrop_checkpoint_writes_total"
 	// MetricAdmissionDecisionsTotal counts router alias admission decisions by outcome.
 	MetricAdmissionDecisionsTotal = "epitrop_admission_decisions_total"
+	// MetricBudgetUsedFrontierTokens tracks the frontier tokens a budget layer has used.
+	MetricBudgetUsedFrontierTokens = "epitrop_budget_used_frontier_tokens" // #nosec G101 -- a metric name; "tokens" counts model tokens, not credentials.
 	// MetricGraphTasks tracks tasks in the task graph per status.
 	MetricGraphTasks = "epitrop_graph_tasks"
 )
@@ -112,6 +117,17 @@ func admissionMetricDefs() []metricdef.Def {
 			Limits: map[string]metricdef.LabelLimit{
 				"outcome": {
 					Allow: []string{"admitted", "refused", "unknown"},
+				},
+			},
+		},
+		{
+			Name:   MetricBudgetUsedFrontierTokens,
+			Help:   "Frontier tokens a budget layer has used, as the Praetor efficiency ledger measured them; no value while the ledger has not measured them.",
+			Kind:   metricdef.KindGauge,
+			Labels: []string{"layer"},
+			Limits: map[string]metricdef.LabelLimit{
+				"layer": {
+					Allow: []string{BudgetLayerPlatform},
 				},
 			},
 		},

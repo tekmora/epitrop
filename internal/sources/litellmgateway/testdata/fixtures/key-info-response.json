@@ -1,0 +1,1 @@
+{"key":"example-key-hash","info":{"key_alias":"agent-lane","spend":12.5,"max_budget":50.0,"budget_duration":"30d","budget_reset_at":"2026-11-01T00:00:00+00:00","model_max_budget":{},"budget_limits":null,"models":["cordana/auto"],"tpm_limit":200000,"rpm_limit":60,"metadata":{},"blocked":null,"expires":null,"last_active":"2026-10-17T08:00:00+00:00","status":"active"}}

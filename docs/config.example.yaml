@@ -4,6 +4,11 @@ budgets:
   default:
     tokens: 200000
     wall_clock_seconds: 3600
+  # Frontier tokens the whole platform may spend, read against the Praetor efficiency ledger.
+  # A task whose declared tokens exceed what the ledger leaves is refused before it starts, and
+  # so is every task while the ledger has not measured the spend. 0 turns the check off.
+  platform:
+    frontier_tokens: 0
 # Every sandboxed job's workspace and inputs must lie in one of these directories once
 # symlinks are resolved; with none, no job runs sandboxed. A directory containing HOME is
 # refused, and a login location below HOME (.ssh, .config/gh, a coding client's folder and
@@ -27,6 +32,11 @@ jobs:
     stop:
       signal: TERM
       grace_seconds: 10
+    # A running job silent longer than this (no log write since the last one or since its
+    # start) is hung: the supervisor records job.stale, ends it like `jobs stop`, and the
+    # restart policy decides. 0 (the default) turns the check off.
+    heartbeat:
+      max_age_seconds: 0
     sandbox:
       mode: enforce
       # Use a dedicated directory per job; it is the only path the job can write.
@@ -47,9 +57,12 @@ jobs:
       tasks_max: 512
       # A coding client's home, made fresh in <workspace>/.slot/home before each start
       # (ADR-0009). The source lies in a root and is none of the operator's login folders;
-      # copy files must hash as named, bind files are bound read-only one by one. A bind's
-      # jwt names the token whose expiry must lie 10 minutes past max_runtime_seconds and the
-      # stop grace; a home needs max_runtime_seconds.
+      # copy files must hash as named, bind files are bound read-only one by one. Each bind
+      # names its token's expiry, which must lie 10 minutes past max_runtime_seconds and the
+      # stop grace: jwt is the dotted path of a JSON Web Token in the file, expires_ms that of
+      # a number of Unix milliseconds. A home needs max_runtime_seconds. A bind file is one
+      # plain name or a measured login file (.credentials.json for Claude Code, with
+      # env: CLAUDE_CONFIG_DIR and expires_ms: claudeAiOauth.expiresAt); env may be HOME.
       #   home:
       #     source: /var/tmp/slot-home
       #     env: CODEX_HOME
@@ -115,6 +128,21 @@ event_log:
 # hour, below the default rate_limit_floor, so every pass would stop after one request.
 # If the floor is at or above that limit, the run logs both numbers once and keeps going,
 # with its GitHub requests throttled.
+# On a host, run the supervisor of this job as a systemd user unit that loads the token as
+# an encrypted credential, so it is never stored in clear or passed on a command line:
+#   systemd-creds encrypt --user --name=release-watch-token - ~/.config/epitrop/release-watch-token.cred
+#   [Service]
+#   LoadCredentialEncrypted=release-watch-token:%h/.config/epitrop/release-watch-token.cred
+#   SyslogIdentifier=epitrop-release-watch
+#   ExecStart=%h/.local/share/epitrop/release-watch-run.sh
+# where release-watch-run.sh reads "$CREDENTIALS_DIRECTORY/release-watch-token" into GITHUB_TOKEN
+# and execs `epitropctl jobs supervise`. Keep that step in a script: systemd expands $ in
+# ExecStart= itself. A fine-grained token needs only Issues read and write on the sink
+# repositories; it reads public upstream releases without any permission on them.
+# SyslogIdentifier= keeps the unit's lines findable with `journalctl --user -t` (#263).
+# Every pass ends with one line in the job log, also when it finds nothing new:
+#   release-watch: pass done: sources 10 polled, 0 failed; releases 0 new, 0 filed, 0 deferred
+# with "; stopped early by the rate-limit throttle" appended when the floor cut it short.
 release_watch:
   state_dir: /var/tmp/epitrop/release-watch
   rate_limit_floor: 100
@@ -134,3 +162,44 @@ release_watch:
         - ntfy:
             topic: example-topic
             priority: 3
+
+# epitrop-server serves its read-only MCP tools on stdin and stdout by default. With
+# transport http it serves them on listen instead, at /mcp, beside /livez, /readyz,
+# /startupz and the event stream /events. The server has no authentication, so listen
+# must name a loopback host; port 0 picks a free port and the server prints the address.
+# allow_mutations adds the tools that start and stop jobs and record a unit's status;
+# each call names an idempotency key, and a repeat with the same key and arguments is
+# recorded as skipped instead of run again.
+server:
+  transport: http
+  listen: 127.0.0.1:8899
+  allow_mutations: false
+
+# The in-process broker gives each subscriber a queue of queue_capacity messages; a publish
+# that would overflow one is refused with a retryable error. dead_letter sorts a failed
+# attempt into the first class, in this order, one of whose signatures (RE2, multi-line, so
+# ^ and $ match at line ends) matches its output; failures no class matches go to the
+# fallback class, which grants no retry. A class grants at most one retry (max_retries 0 or
+# 1); a failure past it waits in the class's queue of capacity failures.
+broker:
+  queue_capacity: 64
+  dead_letter:
+    capacity: 64
+    fallback: real-failure
+    classes:
+      - name: known-flake
+        signatures:
+          - 'TestSelfTest.*SIGSEGV'
+        max_retries: 1
+      - name: time-limit
+        signatures:
+          - 'context deadline exceeded'
+          - 'exceeded the maximum execution time'
+        max_retries: 1
+      - name: rebase-conflict
+        signatures:
+          - '^CONFLICT \('
+      - name: generated-drift
+        signatures:
+          - 'go mod tidy -diff'
+          - 'generated file .* differs'

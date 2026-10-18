@@ -57,17 +57,20 @@ func checkJob(job config.JobConfig) error {
 }
 
 func checkJobBounds(job config.JobConfig) error {
-	if job.Restart.MaxRestarts < 0 || job.Restart.MaxRestarts > config.MaxJobRestarts {
-		return fmt.Errorf("restart.max_restarts must be 0..%d", config.MaxJobRestarts)
+	bounds := []struct {
+		name       string
+		value, max int
+	}{
+		{"restart.max_restarts", job.Restart.MaxRestarts, config.MaxJobRestarts},
+		{"restart.backoff_seconds", job.Restart.BackoffSeconds, config.MaxRestartBackoff},
+		{"stop.grace_seconds", job.Stop.GraceSeconds, config.MaxStopGraceSeconds},
+		{"max_runtime_seconds", job.MaxRuntimeSeconds, config.MaxJobRuntimeSeconds},
+		{"heartbeat.max_age_seconds", job.Heartbeat.MaxAgeSeconds, config.MaxHeartbeatSeconds},
 	}
-	if job.Restart.BackoffSeconds < 0 || job.Restart.BackoffSeconds > config.MaxRestartBackoff {
-		return fmt.Errorf("restart.backoff_seconds must be 0..%d", config.MaxRestartBackoff)
-	}
-	if job.Stop.GraceSeconds < 0 || job.Stop.GraceSeconds > config.MaxStopGraceSeconds {
-		return fmt.Errorf("stop.grace_seconds must be 0..%d", config.MaxStopGraceSeconds)
-	}
-	if job.MaxRuntimeSeconds < 0 || job.MaxRuntimeSeconds > config.MaxJobRuntimeSeconds {
-		return fmt.Errorf("max_runtime_seconds must be 0..%d", config.MaxJobRuntimeSeconds)
+	for i := 0; i < len(bounds); i++ {
+		if bounds[i].value < 0 || bounds[i].value > bounds[i].max {
+			return fmt.Errorf("%s must be 0..%d", bounds[i].name, bounds[i].max)
+		}
 	}
 	return nil
 }

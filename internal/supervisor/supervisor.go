@@ -60,6 +60,10 @@ type JobStatus struct {
 	Since    string
 	Restarts int
 	Sandbox  string
+	// Stale is set for a running job whose last beat, LastBeat, is older than its heartbeat
+	// allows. LastBeat is empty for a job without a heartbeat.
+	Stale    bool
+	LastBeat string
 }
 
 type jobSignalTarget struct {
@@ -305,26 +309,62 @@ func (s *Supervisor) stopOne(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	status := s.statusFor(job, eventlog.Job{})
-	if status.State != StateRunning {
-		return s.appendJobEvent(ctx, "job.stopped", job.Name, map[string]any{"state": string(StateStopped)})
+	if s.statusFor(job, eventlog.Job{}).State == StateRunning {
+		if err = s.terminate(ctx, job); err != nil {
+			return err
+		}
 	}
+	return s.appendJobEvent(ctx, "job.stopped", job.Name, map[string]any{"state": string(StateStopped)})
+}
+
+// terminate ends a running job: its stop signal to the process group, its grace period,
+// then a kill of the group. It records nothing; the shim records the exit.
+func (s *Supervisor) terminate(ctx context.Context, job config.JobConfig) error {
 	target, err := s.signalTarget(job)
 	if err != nil {
 		return err
 	}
 	if err = signalProcessGroup(target, job.Stop.Signal); err != nil {
-		return err
+		return s.refusalStands(job, err)
 	}
 	if !s.waitStopped(ctx, job) {
 		if err = killProcess(target); err != nil {
-			return err
+			return s.refusalStands(job, err)
 		}
 		if !s.waitUnlocked(ctx, job, maxStatusPolls) {
 			return fmt.Errorf("supervisor: stop %s: lock stayed held after SIGKILL", job.Name)
 		}
 	}
-	return s.appendJobEvent(ctx, "job.stopped", job.Name, map[string]any{"state": string(StateStopped)})
+	return nil
+}
+
+// refusalStands is the result of a signal that was refused. A shim that exits releases the
+// job's lock before the kernel gives its job another parent, so a stop in that moment finds
+// the job and its shim alive and the lock free, and refuses. The job is then no longer
+// running as Status counts it, and the shim's exit kills it (Pdeathsig): the job has ended,
+// nothing is signalled, and the result is nil. While the lock is held, or cannot be read,
+// the refusal stands.
+func (s *Supervisor) refusalStands(job config.JobConfig, refusal error) error {
+	running, err := s.isRunning(job)
+	if err != nil || running {
+		return refusal
+	}
+	return nil
+}
+
+// endIfStale ends a running job whose heartbeat is stale, after recording job.stale, and
+// reports whether it did. No job.stopped is recorded: the shim records the exit, and the
+// job's restart policy decides on the next reconcile.
+func (s *Supervisor) endIfStale(ctx context.Context, job config.JobConfig, st eventlog.Job) (bool, error) {
+	status := s.statusFor(job, st)
+	if status.State != StateRunning || !status.Stale {
+		return false, nil
+	}
+	payload := map[string]any{"pid": status.PID, "shim_pid": status.ShimPID, "last_beat": status.LastBeat, "max_age_seconds": job.Heartbeat.MaxAgeSeconds}
+	if err := s.appendJobEvent(ctx, "job.stale", job.Name, payload); err != nil {
+		return false, err
+	}
+	return true, s.terminate(ctx, job)
 }
 
 func (s *Supervisor) signalTarget(job config.JobConfig) (jobSignalTarget, error) {
@@ -345,6 +385,13 @@ func (s *Supervisor) signalTarget(job config.JobConfig) (jobSignalTarget, error)
 func (s *Supervisor) Supervise(ctx context.Context) error {
 	if err := readyContext(ctx, "supervise"); err != nil {
 		return err
+	}
+	writer, err := eventlog.Open(s.cfg.EventLog.Dir, s.signer, s.eventLogLimits())
+	if err != nil {
+		return fmt.Errorf("supervisor: open event log %s: %w", s.cfg.EventLog.Dir, err)
+	}
+	if _, err = writer.RepairTail(ctx); err != nil {
+		return fmt.Errorf("supervisor: repair event log tail %s: %w", s.cfg.EventLog.Dir, err)
 	}
 	for tick := 0; tick < maxSuperviseTicks; tick++ {
 		if err := s.Reconcile(ctx); err != nil {
@@ -368,6 +415,13 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	}
 	for i := 0; i < len(s.cfg.Jobs); i++ {
 		job := s.cfg.Jobs[i]
+		ended, err := s.endIfStale(ctx, job, state.Jobs[job.Name])
+		if err != nil {
+			return err
+		}
+		if ended {
+			continue
+		}
 		if err = s.reconcileJob(ctx, job, state.Jobs[job.Name], collector.matches[job.Name], collector.head); err != nil {
 			return err
 		}

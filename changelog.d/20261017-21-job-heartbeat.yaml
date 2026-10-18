@@ -1,0 +1,4 @@
+type: added
+title: "End a hung job whose heartbeat, the last write to its log, is older than heartbeat.max_age_seconds, recording job.stale and leaving the restart to its policy"
+issue: "21"
+breaking: false

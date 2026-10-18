@@ -16,6 +16,7 @@ func TestAcquireLock(t *testing.T) {
 	t.Run("timeout while held and reacquire after close", testAcquireLockTimeoutAndReacquire)
 	t.Run("a held lock and no time to wait", testAcquireLockZeroTimeout)
 	t.Run("a held lock and an ended context", testAcquireLockEndedContext)
+	t.Run("a free lock and a deadline already past", testAcquireLockFreeAfterDeadline)
 }
 
 // holdLock takes the lock on dir for the rest of the test.
@@ -58,6 +59,21 @@ func testAcquireLockEndedContext(t *testing.T) {
 	}
 	if waited := time.Since(start); waited > 5*time.Second {
 		t.Fatalf("acquireLock(held, ended context) waited %s, want it to return at once", waited)
+	}
+}
+
+// A writer whose deadline ran out before its first try, as a short lock timeout can on a
+// busy machine, still takes a free lock: the timeout bounds the wait, and a free lock needs none.
+func testAcquireLockFreeAfterDeadline(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	free, err := acquireLock(ctx, dir, time.Millisecond)
+	if err != nil {
+		t.Fatalf("acquireLock(free, deadline past) = %v, want nil: a free lock needs no wait", err)
+	}
+	if err = free.Close(); err != nil {
+		t.Fatalf("free.Close() = %v, want nil", err)
 	}
 }
 

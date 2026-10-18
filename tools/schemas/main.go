@@ -44,6 +44,7 @@ type schemaSource struct {
 	URLTemplate        string           `json:"url_template"`
 	PinnedRevision     string           `json:"pinned_revision"`
 	PinDescription     string           `json:"pin_description,omitempty"`
+	ExtractionDate     string           `json:"extraction_date,omitempty"`
 	FullDocumentSHA256 string           `json:"full_document_sha256"`
 	SPDXLicense        string           `json:"spdx_license"`
 	CopyrightHolder    string           `json:"copyright_holder"`
@@ -175,6 +176,12 @@ func generateFragments(source schemaSource, full []byte) (map[string][]byte, err
 		"codex-rate-limit-status-details",
 		"codex-rate-limit-window-snapshot":
 		return oneFragment(source, string(full))
+	case "litellm-key-info":
+		body, err := liteLLMKeyInfoFragment(string(full))
+		if err != nil {
+			return nil, err
+		}
+		return oneFragment(source, body)
 	default:
 		return nil, fmt.Errorf("unknown schema source %q", source.ID)
 	}
@@ -201,6 +208,50 @@ func oneFragment(source schemaSource, body string) (map[string][]byte, error) {
 		result[fragment.ProvenancePath] = provenance
 	}
 	return result, nil
+}
+
+// sourceExtractionDate is the date a source's fragment was first extracted;
+// sources added after the first extraction name their own.
+func sourceExtractionDate(source schemaSource) string {
+	if source.ExtractionDate != "" {
+		return source.ExtractionDate
+	}
+	return extractionDate
+}
+
+// liteLLMKeyInfoFragment takes the docstring of LiteLLM's GET /key/info
+// handler, which documents every field of the response's info object.
+func liteLLMKeyInfoFragment(full string) (string, error) {
+	const route = `@router.get("/key/info"`
+	start := strings.Index(full, route)
+	if start < 0 {
+		return "", fmt.Errorf("litellm-key-info: missing marker %q", route)
+	}
+	rest := full[start:]
+	open := strings.Index(rest, `"""`)
+	if open < 0 {
+		return "", errors.New("litellm-key-info: the handler has no docstring")
+	}
+	rest = rest[open+3:]
+	end := strings.Index(rest, `"""`)
+	if end < 0 {
+		return "", errors.New("litellm-key-info: unterminated docstring")
+	}
+	// The curl examples carry placeholder keys a secret scanner reports;
+	// the contract is the parameters and the returned fields before them.
+	examples := strings.Index(rest[:end], "Example Curl")
+	if examples < 0 {
+		return "", errors.New("litellm-key-info: the docstring has no Example Curl section to cut at")
+	}
+	return joinSections(
+		"# LiteLLM GET /key/info",
+		"",
+		"Docstring of the handler, verbatim up to its curl examples:",
+		"",
+		"```text",
+		strings.TrimRight(rest[:examples], " \n"),
+		"```",
+	), nil
 }
 
 func liteLLMFragment(source schemaSource, full []byte) (map[string][]byte, error) {
@@ -694,7 +745,7 @@ func provenanceLines(source schemaSource) []string {
 		"Source URL: " + sourceURL(source),
 		"Pinned revision: " + source.PinnedRevision,
 		"Full document sha256: " + source.FullDocumentSHA256,
-		"Extraction date: " + extractionDate,
+		"Extraction date: " + sourceExtractionDate(source),
 		"SPDX licence: " + source.SPDXLicense,
 		"Copyright holder: " + source.CopyrightHolder,
 		"Changes: provenance header added by Epitrop; " + extractionChange(source.ID),
@@ -715,6 +766,8 @@ func extractionChange(id string) string {
 		"codex-rate-limit-status-details",
 		"codex-rate-limit-window-snapshot":
 		return "extracted the pinned Codex source file verbatim"
+	case "litellm-key-info":
+		return "extracted the /key/info handler docstring verbatim"
 	default:
 		return "extracted the pinned upstream fragment"
 	}
@@ -747,7 +800,7 @@ func jsonProvenance(source schemaSource) ([]byte, error) {
 		"source_url":             sourceURL(source),
 		"pinned_revision":        source.PinnedRevision,
 		"full_document_sha256":   source.FullDocumentSHA256,
-		"extraction_date":        extractionDate,
+		"extraction_date":        sourceExtractionDate(source),
 		"spdx_license":           source.SPDXLicense,
 		"copyright_holder":       source.CopyrightHolder,
 		"source_pin_description": source.PinDescription,

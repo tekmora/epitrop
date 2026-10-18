@@ -7,6 +7,10 @@ repository:
   description: ""
   homepage: ""
   topics: []
+# Agent clients and editors in use. The engine compiles, generates and verifies files for
+# these ids only; files of every other id are not tracked here.
+agent_clients: [claude, codex, gemini]
+editors: [universal, vscode, antigravity]
 profiles:
   - framework
 facets:
@@ -41,6 +45,8 @@ overrides:
     required_approving_reviewers: 1
     review_mode: single_maintainer
     dismiss_stale_reviews: true
+    # Declared at its live value; the forge default is the stricter one.
+    require_extra_approval_for_unattributed_changes: true
 # Documentation drift (praetorctl docs references): a change to a surface must carry a change to
 # one of its documents, or a Docs-Waiver with a reason.
 docs_surfaces:
@@ -53,6 +59,16 @@ docs_surfaces:
       - "README.md"
       - "docs/agent-onboarding.md"
       - "docs/data-sync.md"
+  - name: "epitrop-server MCP tools"
+    paths:
+      - "cmd/epitrop-server/*.go"
+      - "internal/mcp/*.go"
+    exclude:
+      - "cmd/epitrop-server/*_test.go"
+      - "internal/mcp/*_test.go"
+    docs:
+      - "README.md"
+      - "docs/agent-onboarding.md"
   - name: "model catalog and sources"
     paths:
       - "catalog/*.go"

@@ -26,6 +26,9 @@
         "default": {
           "tokens": 200000,
           "wall_clock_seconds": 3600
+        },
+        "platform": {
+          "frontier_tokens": 0
         }
       },
       "additionalProperties": false,
@@ -49,6 +52,21 @@
               "default": 3600,
               "minimum": 0,
               "maximum": 86400
+            }
+          }
+        },
+        "platform": {
+          "type": "object",
+          "default": {
+            "frontier_tokens": 0
+          },
+          "additionalProperties": false,
+          "properties": {
+            "frontier_tokens": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 1000000000000
             }
           }
         }
@@ -187,6 +205,21 @@
               }
             }
           },
+          "heartbeat": {
+            "type": "object",
+            "default": {
+              "max_age_seconds": 0
+            },
+            "additionalProperties": false,
+            "properties": {
+              "max_age_seconds": {
+                "type": "integer",
+                "default": 0,
+                "minimum": 0,
+                "maximum": 86400
+              }
+            }
+          },
           "sandbox": {
             "type": "object",
             "default": {
@@ -194,6 +227,7 @@
               "reason": "",
               "workspace": "",
               "inputs": [],
+              "read_only": [],
               "env_allow": [],
               "network": "none",
               "destinations": [],
@@ -230,6 +264,18 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 4096
+                }
+              },
+              "read_only": {
+                "type": "array",
+                "default": [],
+                "maxItems": 32,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096,
+                  "pattern": "^[^/]"
                 }
               },
               "env_allow": {
@@ -342,6 +388,11 @@
                           "maxLength": 128
                         },
                         "jwt": {
+                          "type": "string",
+                          "default": "",
+                          "maxLength": 520
+                        },
+                        "expires_ms": {
                           "type": "string",
                           "default": "",
                           "maxLength": 520
@@ -672,6 +723,112 @@
                         }
                       }
                     }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "server": {
+      "type": "object",
+      "default": {
+        "transport": "stdio",
+        "listen": "127.0.0.1:8899",
+        "allow_mutations": false
+      },
+      "additionalProperties": false,
+      "properties": {
+        "transport": {
+          "type": "string",
+          "default": "stdio",
+          "enum": [
+            "stdio",
+            "http"
+          ]
+        },
+        "listen": {
+          "type": "string",
+          "default": "127.0.0.1:8899",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "allow_mutations": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "broker": {
+      "type": "object",
+      "default": {
+        "queue_capacity": 64,
+        "dead_letter": {
+          "capacity": 64,
+          "fallback": "real-failure",
+          "classes": []
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "queue_capacity": {
+          "type": "integer",
+          "default": 64,
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "dead_letter": {
+          "type": "object",
+          "default": {
+            "capacity": 64,
+            "fallback": "real-failure",
+            "classes": []
+          },
+          "additionalProperties": false,
+          "properties": {
+            "capacity": {
+              "type": "integer",
+              "default": 64,
+              "minimum": 1,
+              "maximum": 4096
+            },
+            "fallback": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,62}$",
+              "default": "real-failure"
+            },
+            "classes": {
+              "type": "array",
+              "default": [],
+              "maxItems": 31,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "signatures"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,62}$"
+                  },
+                  "signatures": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    }
+                  },
+                  "max_retries": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 1
                   }
                 }
               }

@@ -21,7 +21,7 @@ Inside 0.1, the catalog fixes (#27, #28) and the docs (#3) are independent of ea
 
 The three cutovers each have their own issue and retire a set of operator scripts:
 
-1. Watchers and supervision ([#36](https://github.com/tekmora/epitrop/issues/36)).
+1. Watchers and supervision ([#36](https://github.com/tekmora/epitrop/issues/36)); plan in [cutover-1.md](cutover-1.md).
 2. The landing queue ([#38](https://github.com/tekmora/epitrop/issues/38)).
 3. The wave runner ([#39](https://github.com/tekmora/epitrop/issues/39)).
 

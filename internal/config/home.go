@@ -24,6 +24,15 @@ var (
 	homeJWTPath  = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}(\.[A-Za-z0-9_]{1,64}){0,7}$`)
 )
 
+// homeCredentialFiles are the login files a bind may name although the plain name rule
+// refuses them: each is the file a client keeps its login in, measured in the client
+// itself, relative to the folder home.env points at, slash-separated. Nothing else may lead
+// with a dot or name a file below a folder.
+//
+//   - .credentials.json: Claude Code 2.1.302 below CLAUDE_CONFIG_DIR; the token's expiry
+//     is claudeAiOauth.expiresAt, in Unix milliseconds.
+var homeCredentialFiles = []string{".credentials.json"}
+
 // SandboxHome is a home a coding client keeps its settings and login in, made in the job's
 // workspace at SandboxHomeDir before each start. Copy files come from Source and must hash to
 // the value named here; Bind files are bound from Source read-only, one by one, so the job
@@ -42,16 +51,20 @@ type SandboxHomeCopy struct {
 	SHA256 string `koanf:"sha256" json:"sha256"`
 }
 
-// SandboxHomeBind is a file bound into the home read-only. JWT, when set, is the dotted path
-// of a JSON Web Token in the file whose expiry must lie beyond the job's end: a client that
-// found its token expiring would try to refresh it and write the file, which it cannot.
+// SandboxHomeBind is a file bound into the home read-only. It names its token's expiry in
+// one of two ways, and the expiry must lie beyond the job's end: a client that found its
+// token expiring would try to refresh it and write the file, which it cannot. JWT is the
+// dotted path of a JSON Web Token in the file, whose exp claim is read; ExpiresMS is the
+// dotted path of a number in the file, the expiry in Unix milliseconds.
 type SandboxHomeBind struct {
-	File string `koanf:"file" json:"file"`
-	JWT  string `koanf:"jwt" json:"jwt"`
+	File      string `koanf:"file" json:"file"`
+	JWT       string `koanf:"jwt" json:"jwt"`
+	ExpiresMS string `koanf:"expires_ms" json:"expires_ms"`
 }
 
 // validateSandboxHome checks a home's shape: an absolute source, a variable the sandbox does
-// not set otherwise, and file names that are one path element each and named once.
+// not set otherwise, file names that are one path element each or a measured login file,
+// each named once, and an expiry for each bound file.
 func validateSandboxHome(sandbox SandboxConfig) error {
 	home := sandbox.Home
 	if home == nil {
@@ -79,28 +92,59 @@ func validateSandboxHome(sandbox SandboxConfig) error {
 	return validateHomeNames(names)
 }
 
-// homeFileNames checks each copy's digest and each bind's token path and returns the file
-// names of both lists, copies first.
+// homeFileNames checks each copy's digest and name and each bind's name and expiry, and
+// returns the file names of both lists, copies first.
 func homeFileNames(home *SandboxHome) ([]string, error) {
 	names := make([]string, 0, len(home.Copy)+len(home.Bind))
 	for i := 0; i < len(home.Copy); i++ {
 		if !homeSHA256.MatchString(home.Copy[i].SHA256) {
 			return nil, fmt.Errorf("home.copy/%d.sha256: not 64 lowercase hex digits", i)
 		}
+		if !homeFileName.MatchString(home.Copy[i].File) {
+			return nil, fmt.Errorf("home: file %q is not one plain path element", home.Copy[i].File)
+		}
 		names = append(names, home.Copy[i].File)
 	}
 	for i := 0; i < len(home.Bind); i++ {
-		if home.Bind[i].JWT != "" && !homeJWTPath.MatchString(home.Bind[i].JWT) {
-			return nil, fmt.Errorf("home.bind/%d.jwt: %q is no dotted path of 1..8 names", i, home.Bind[i].JWT)
+		if err := validateHomeBind(i, home.Bind[i]); err != nil {
+			return nil, err
 		}
 		names = append(names, home.Bind[i].File)
 	}
 	return names, nil
 }
 
+// validateHomeBind checks a bind's name and that it names its token's expiry exactly once.
+func validateHomeBind(i int, bind SandboxHomeBind) error {
+	if !homeFileName.MatchString(bind.File) && !slices.Contains(homeCredentialFiles, bind.File) {
+		return fmt.Errorf("home: file %q is not one plain path element nor a known login file", bind.File)
+	}
+	return validateHomeExpiry(i, bind)
+}
+
+func validateHomeExpiry(i int, bind SandboxHomeBind) error {
+	switch {
+	case bind.JWT == "" && bind.ExpiresMS == "":
+		return fmt.Errorf("home.bind/%d: names neither jwt nor expires_ms; a bound login's expiry is checked before each start", i)
+	case bind.JWT != "" && bind.ExpiresMS != "":
+		return fmt.Errorf("home.bind/%d: names both jwt and expires_ms; name the one the file holds", i)
+	case bind.JWT != "" && !homeJWTPath.MatchString(bind.JWT):
+		return fmt.Errorf("home.bind/%d.jwt: %q is no dotted path of 1..8 names", i, bind.JWT)
+	case bind.ExpiresMS != "" && !homeJWTPath.MatchString(bind.ExpiresMS):
+		return fmt.Errorf("home.bind/%d.expires_ms: %q is no dotted path of 1..8 names", i, bind.ExpiresMS)
+	}
+	return nil
+}
+
+// validateHomeEnv checks the variable that points the client at its home. HOME is the one
+// variable of the sandbox's own a home may take: a client that keeps its login below HOME
+// then sees the home in place of the workspace there.
 func validateHomeEnv(name string, allowed []string) error {
 	if !sandboxEnvName.MatchString(name) {
 		return fmt.Errorf("home.env: invalid name %q", name)
+	}
+	if name == "HOME" {
+		return nil
 	}
 	if slices.Contains(reservedSandboxEnv, name) || slices.Contains(proxySandboxEnv, name) {
 		return fmt.Errorf("home.env: %s is set by the sandbox", name)
@@ -113,9 +157,6 @@ func validateHomeEnv(name string, allowed []string) error {
 
 func validateHomeNames(names []string) error {
 	for i := 0; i < len(names); i++ {
-		if !homeFileName.MatchString(names[i]) {
-			return fmt.Errorf("home: file %q is not one plain path element", names[i])
-		}
 		if slices.Contains(names[:i], names[i]) {
 			return fmt.Errorf("home: file %s is named twice", names[i])
 		}

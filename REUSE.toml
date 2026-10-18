@@ -41,6 +41,12 @@ SPDX-FileCopyrightText = "Berri AI"
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
+path = ["internal/sources/litellmgateway/testdata/upstream/litellm-key-info.md"]
+precedence = "override"
+SPDX-FileCopyrightText = "Berri AI"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
 path = ["internal/sources/publiccatalog/testdata/upstream/openrouter-models-openapi.yaml"]
 precedence = "override"
 SPDX-FileCopyrightText = "OpenRouter"

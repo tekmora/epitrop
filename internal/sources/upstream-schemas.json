@@ -99,6 +99,21 @@
           "body_sha256": "f667756c00e512c779cb0f593737094b1292990494624492f0c0bb48dcd6918b"
         }
       ]
+    },
+    {
+      "id": "litellm-key-info",
+      "url_template": "https://raw.githubusercontent.com/BerriAI/litellm/{revision}/litellm/proxy/management_endpoints/key_management_endpoints.py",
+      "pinned_revision": "d665dc1a6315847fcad6cc2c1264ceb47c06abce",
+      "extraction_date": "2026-10-17",
+      "full_document_sha256": "c9c644c2a93e20ef9d850454ddb4b23bf1db4823b66be415b9a13a5da045b4de",
+      "spdx_license": "MIT",
+      "copyright_holder": "Berri AI",
+      "fragments": [
+        {
+          "path": "internal/sources/litellmgateway/testdata/upstream/litellm-key-info.md",
+          "body_sha256": "1d857d3e120ddda38a5f59e47f818bac88b11d6342aa4ca20ac706a641d19664"
+        }
+      ]
     }
   ]
 }

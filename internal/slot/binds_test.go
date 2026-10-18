@@ -210,7 +210,7 @@ func TestSupervisedBinds(t *testing.T) {
 		Home: &config.SandboxHome{
 			Source: "/home-src", Env: "CODEX_HOME",
 			Copy: []config.SandboxHomeCopy{{File: "config.toml", SHA256: strings.Repeat("a", 64)}},
-			Bind: []config.SandboxHomeBind{{File: "auth.json"}},
+			Bind: []config.SandboxHomeBind{{File: "auth.json"}, {File: ".client/login.json"}},
 		},
 	}
 	job := &Supervised{sandbox: sandbox}
@@ -219,6 +219,7 @@ func TestSupervisedBinds(t *testing.T) {
 		{Source: "/in", Target: "/in", Mode: BindRead},
 		{Source: "/home-src/config.toml", Target: "/ws/.slot/home/config.toml", Mode: BindCopy, SHA256: strings.Repeat("a", 64)},
 		{Source: "/home-src/auth.json", Target: "/ws/.slot/home/auth.json", Mode: BindRead},
+		{Source: "/home-src/.client/login.json", Target: "/ws/.slot/home/.client/login.json", Mode: BindRead},
 	}
 	if got := job.Binds(); !slices.Equal(got, want) {
 		t.Fatalf("Binds() = %+v, want %+v", got, want)

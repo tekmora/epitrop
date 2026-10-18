@@ -17,7 +17,7 @@ func homeFlagArgs(home *config.SandboxHome) []string {
 		args = append(args, "--sandbox-home-copy", home.Copy[i].File+"="+home.Copy[i].SHA256)
 	}
 	for i := 0; i < len(home.Bind); i++ {
-		args = append(args, "--sandbox-home-bind", home.Bind[i].File+"="+home.Bind[i].JWT)
+		args = append(args, "--sandbox-home-bind", home.Bind[i].File+"="+home.Bind[i].JWT+"="+home.Bind[i].ExpiresMS)
 	}
 	return args
 }
@@ -44,11 +44,12 @@ func (f homeFlags) home() (*config.SandboxHome, error) {
 		home.Copy = append(home.Copy, config.SandboxHomeCopy{File: file, SHA256: sum})
 	}
 	for i := 0; i < len(f.binds); i++ {
-		file, jwt, ok := strings.Cut(f.binds[i], "=")
+		file, expiry, ok := strings.Cut(f.binds[i], "=")
 		if !ok {
-			return nil, fmt.Errorf("job-shim: --sandbox-home-bind %q is no file=jwt", f.binds[i])
+			return nil, fmt.Errorf("job-shim: --sandbox-home-bind %q is no file=jwt=expires_ms", f.binds[i])
 		}
-		home.Bind = append(home.Bind, config.SandboxHomeBind{File: file, JWT: jwt})
+		jwt, expiresMS, _ := strings.Cut(expiry, "=")
+		home.Bind = append(home.Bind, config.SandboxHomeBind{File: file, JWT: jwt, ExpiresMS: expiresMS})
 	}
 	return home, nil
 }

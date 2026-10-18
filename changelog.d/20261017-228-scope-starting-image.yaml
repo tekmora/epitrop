@@ -1,0 +1,4 @@
+type: fixed
+title: A sandboxed job start is no longer refused when the kernel still shows the shim's program for the job right after the start.
+issue: "228"
+breaking: false

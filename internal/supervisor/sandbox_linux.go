@@ -79,7 +79,13 @@ func buildSandboxCommand(command []string, sandbox config.SandboxConfig, opts sa
 	if err = prepareHome(sandbox, opts.Until); err != nil {
 		return jobCommand{}, err
 	}
-	inner := bwrapArgs(resolvedCommand, command, sandbox, tools, opts.Proxy)
+	// Resolved again at every start: a path swapped for a symlink since the load must not
+	// lead the read-only bind out of the workspace.
+	readOnly, err := config.ResolveSandboxReadOnly(sandbox)
+	if err != nil {
+		return jobCommand{}, fmt.Errorf("sandbox: %w", err)
+	}
+	inner := bwrapArgs(resolvedCommand, command, sandbox, tools, opts.Proxy, readOnly)
 	if sandbox.Network == "egress" {
 		inner = append(pastaArgs(tools.Pasta), inner...)
 	}
@@ -360,13 +366,14 @@ func pastaArgs(path string) []string {
 	}
 }
 
-func bwrapArgs(commandPath string, command []string, sandbox config.SandboxConfig, tools sandboxTools, proxy sandboxProxy) []string {
+func bwrapArgs(commandPath string, command []string, sandbox config.SandboxConfig, tools sandboxTools, proxy sandboxProxy, readOnly []string) []string {
 	args := bwrapBaseArgs(tools.Bwrap, sandbox)
 	args = append(args, "--bind", sandbox.Workspace, sandbox.Workspace)
+	args = appendReadOnlyBinds(args, sandbox.Workspace, readOnly)
 	args = appendInputBinds(args, sandbox.Inputs)
 	args = appendHomeArgs(args, sandbox)
 	args = append(args, "--ro-bind", commandPath, commandPath, "--chdir", sandbox.Workspace)
-	args = append(args, "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", sandbox.Workspace, "--setenv", "TMPDIR", "/tmp")
+	args = append(args, "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", jobHome(sandbox), "--setenv", "TMPDIR", "/tmp")
 	for i := 0; i < len(busEnvNames); i++ {
 		args = append(args, "--unsetenv", busEnvNames[i])
 	}
@@ -419,6 +426,46 @@ func bwrapBaseArgs(path string, sandbox config.SandboxConfig) []string {
 		args = append(args, "--ro-bind", resolvedConfPath, "/etc/resolv.conf")
 	}
 	return append(args, "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/var/tmp")
+}
+
+// appendReadOnlyBinds binds each read-only path, resolved and below the workspace, over the
+// writable workspace. Each directory between the workspace and such a path is first bound
+// onto itself, writable as before: a mount point cannot be renamed, so the job cannot move a
+// read-only path aside and make a writable one of the same name.
+func appendReadOnlyBinds(args []string, workspace string, readOnly []string) []string {
+	ancestors := readOnlyAncestors(workspace, readOnly)
+	for i := 0; i < len(ancestors); i++ {
+		args = append(args, "--bind", ancestors[i], ancestors[i])
+	}
+	for i := 0; i < len(readOnly); i++ {
+		args = append(args, "--ro-bind", readOnly[i], readOnly[i])
+	}
+	return args
+}
+
+// readOnlyAncestors returns the directories strictly between the workspace and each
+// read-only path, each once, parents before children.
+func readOnlyAncestors(workspace string, readOnly []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	prefix := filepath.Clean(workspace) + string(os.PathSeparator)
+	for i := 0; i < len(readOnly); i++ {
+		rel := strings.TrimPrefix(filepath.Dir(readOnly[i]), prefix)
+		if rel == filepath.Dir(readOnly[i]) {
+			// The path lies directly in the workspace, or outside it, which the resolver refuses.
+			continue
+		}
+		parts := strings.Split(rel, string(os.PathSeparator))
+		dir := filepath.Clean(workspace)
+		for k := 0; k < len(parts); k++ {
+			dir = filepath.Join(dir, parts[k])
+			if !seen[dir] {
+				seen[dir] = true
+				out = append(out, dir)
+			}
+		}
+	}
+	return out
 }
 
 func appendInputBinds(args []string, inputs []string) []string {

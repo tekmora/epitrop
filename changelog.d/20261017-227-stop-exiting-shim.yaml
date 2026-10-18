@@ -1,0 +1,4 @@
+type: fixed
+title: 'Stopping a job whose shim is exiting no longer fails with "job lock is not held"; the job counts as stopped'
+issue: "227"
+breaking: false

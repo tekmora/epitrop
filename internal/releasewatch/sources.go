@@ -58,7 +58,7 @@ func fetchGitHubSource(ctx context.Context, client *Client, repo string) ([]Rele
 			htmlURL = fmt.Sprintf("https://github.com/%s/releases/tag/%s", repo, rel.TagName)
 		}
 		items = append(items, ReleaseItem{
-			ID:          fmt.Sprintf("github:%s@%s", repo, rel.TagName),
+			ID:          SeenPrefix(config.ReleaseWatchSource{GitHub: repo}) + rel.TagName,
 			SourceType:  "github",
 			SourceName:  repo,
 			TagOrModel:  rel.TagName,
@@ -95,7 +95,7 @@ func fetchGitHubTags(ctx context.Context, client *Client, repo string) ([]Releas
 	for i := 0; i < len(rawTags); i++ {
 		tag := rawTags[i]
 		items = append(items, ReleaseItem{
-			ID:          fmt.Sprintf("github:%s@%s", repo, tag.Name),
+			ID:          SeenPrefix(config.ReleaseWatchSource{GitHub: repo}) + tag.Name,
 			SourceType:  "github",
 			SourceName:  repo,
 			TagOrModel:  tag.Name,
@@ -135,7 +135,7 @@ func fetchHuggingFaceSource(ctx context.Context, client *Client, org string) ([]
 			modelName = org + "/" + modelName
 		}
 		items = append(items, ReleaseItem{
-			ID:          fmt.Sprintf("hf:%s", modelName),
+			ID:          "hf:" + modelName,
 			SourceType:  "huggingface",
 			SourceName:  org,
 			TagOrModel:  m.ID,

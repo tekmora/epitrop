@@ -1,0 +1,198 @@
+{
+  "units": [
+    {
+      "pull_request_number": 240,
+      "head_branch": "chore/140-agent-clients",
+      "title": "chore(standards): select the agent clients and editors in use and drop the rest",
+      "created_at": "2026-10-17T09:03:10Z",
+      "merged_at": "2026-10-17T09:12:37Z",
+      "closing_issues": [
+        140
+      ],
+      "issue_to_merge": "3d15h",
+      "issue_to_merge_secs": 316036,
+      "frontier_tokens": "not measured",
+      "spend": "not measured",
+      "operator_touches": "not measured",
+      "prompt_cache_hit_rate": "not measured",
+      "local_first_ratio": "not measured",
+      "fact_hit_ratio": "not measured (see #897)",
+      "checks_before_reviews": "not measured (see #897)",
+      "sources": "not measured",
+      "disposition": "qualified",
+      "metric_epoch": "2026-10-10",
+      "tokens_by_provider": null,
+      "wall_seconds": {
+        "value": 567,
+        "provenance": "measured"
+      },
+      "review_rounds": null,
+      "retries": null,
+      "operator_minutes": null,
+      "escaped_defects": null,
+      "estimate_error": "not measured"
+    },
+    {
+      "pull_request_number": 239,
+      "head_branch": "feat/24-quota-staleness",
+      "title": "feat(catalog): read a key's budget window and report stale headroom as unknown",
+      "created_at": "2026-10-17T08:46:02Z",
+      "merged_at": "2026-10-17T08:56:19Z",
+      "issue_to_merge": "not measured",
+      "frontier_tokens": "not measured",
+      "spend": "not measured",
+      "operator_touches": "not measured",
+      "prompt_cache_hit_rate": "not measured",
+      "local_first_ratio": "not measured",
+      "fact_hit_ratio": "not measured (see #897)",
+      "checks_before_reviews": "not measured (see #897)",
+      "sources": "not measured",
+      "disposition": "qualified",
+      "metric_epoch": "2026-10-10",
+      "tokens_by_provider": null,
+      "wall_seconds": {
+        "value": 617,
+        "provenance": "measured"
+      },
+      "review_rounds": null,
+      "retries": null,
+      "operator_minutes": null,
+      "escaped_defects": null,
+      "estimate_error": "not measured"
+    },
+    {
+      "pull_request_number": 238,
+      "head_branch": "feat/139-home-credential-names",
+      "title": "feat(home): bind measured login files and check expiry in milliseconds",
+      "created_at": "2026-10-17T08:23:58Z",
+      "merged_at": "2026-10-17T08:33:48Z",
+      "issue_to_merge": "not measured",
+      "frontier_tokens": "not measured",
+      "spend": "not measured",
+      "operator_touches": "not measured",
+      "prompt_cache_hit_rate": "not measured",
+      "local_first_ratio": "not measured",
+      "fact_hit_ratio": "not measured (see #897)",
+      "checks_before_reviews": "not measured (see #897)",
+      "sources": "not measured",
+      "disposition": "qualified",
+      "metric_epoch": "2026-10-10",
+      "tokens_by_provider": null,
+      "wall_seconds": {
+        "value": 590,
+        "provenance": "measured"
+      },
+      "review_rounds": null,
+      "retries": null,
+      "operator_minutes": null,
+      "escaped_defects": null,
+      "estimate_error": "not measured"
+    }
+  ],
+  "milestone_summary": {
+    "units_count": 3,
+    "qualified_units": 3,
+    "lane_counts": {
+      "qualified": 3,
+      "offered": 0,
+      "rejected": 0,
+      "abandoned": 0,
+      "reverted": 0,
+      "timed_out": 0,
+      "total": 3
+    },
+    "metric_epoch": "2026-10-10",
+    "frontier_tokens": "not measured",
+    "attributed_spend": "not measured",
+    "spend_per_qualified_unit": "not measured",
+    "unattributed_spend": "not measured",
+    "total_spend": "not measured",
+    "other_units_spend": "not measured",
+    "issue_to_merge_units": 1,
+    "avg_issue_to_merge": "3d15h (mean over 1 of 3 qualified units measured)",
+    "avg_issue_to_merge_secs": 316036,
+    "operator_touches": "not measured",
+    "prompt_cache_hit_rate": "not measured",
+    "local_first_ratio": "not measured",
+    "fact_hit_ratio": "not measured (see #897)",
+    "checks_before_reviews": "not measured (see #897)",
+    "tokens_by_provider": {
+      "display": "not measured",
+      "units_measured": 0,
+      "provenance": {
+        "measured": 0,
+        "modeled": 0,
+        "cited": 0,
+        "interval": 0
+      }
+    },
+    "wall_seconds": {
+      "display": "9m51s per qualified unit (total 29m34s over 3 units / 3 qualified) [measured 3]",
+      "units_measured": 3,
+      "provenance": {
+        "measured": 3,
+        "modeled": 0,
+        "cited": 0,
+        "interval": 0
+      },
+      "components": [
+        {
+          "total": 1774,
+          "per_qualified_unit": 591.3333333333334
+        }
+      ]
+    },
+    "review_rounds": {
+      "display": "not measured",
+      "units_measured": 0,
+      "provenance": {
+        "measured": 0,
+        "modeled": 0,
+        "cited": 0,
+        "interval": 0
+      }
+    },
+    "retries": {
+      "display": "not measured",
+      "units_measured": 0,
+      "provenance": {
+        "measured": 0,
+        "modeled": 0,
+        "cited": 0,
+        "interval": 0
+      }
+    },
+    "operator_minutes": {
+      "display": "not measured",
+      "units_measured": 0,
+      "provenance": {
+        "measured": 0,
+        "modeled": 0,
+        "cited": 0,
+        "interval": 0
+      }
+    },
+    "escaped_defects": {
+      "display": "not measured",
+      "units_measured": 0,
+      "provenance": {
+        "measured": 0,
+        "modeled": 0,
+        "cited": 0,
+        "interval": 0
+      }
+    },
+    "estimate_error": "not measured"
+  },
+  "sources_measured": {
+    "forge": true,
+    "transcripts": false,
+    "spend_log": false
+  },
+  "notes": [
+    "live forge queries merged pull requests only; unmerged rejected/abandoned units require forge records input",
+    "live forge: a merged pull request counts as qualified unless a later merged revert among the listed pull requests names its title (--limit and --milestone narrow that list, so a revert outside it is missed); check and review results are not read",
+    "live forge: tokens_by_provider, review_rounds, retries, operator_minutes and escaped_defects are not measured (the merged pull request listing carries no per-provider token, review round, retry, operator time or escaped defect data; pass --forge-records with labelled values to report them)",
+    "forge listing incomplete: 161 matching merged pull requests beyond the limit of 3 were left out"
+  ]
+}

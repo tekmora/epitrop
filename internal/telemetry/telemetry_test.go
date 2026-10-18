@@ -102,8 +102,8 @@ func TestCatalogBuilds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildCatalog: %v", err)
 	}
-	if got := len(c.Defs()); got != 6 {
-		t.Fatalf("defs count = %d, want 6", got)
+	if got := len(c.Defs()); got != 7 {
+		t.Fatalf("defs count = %d, want 7", got)
 	}
 }
 
@@ -121,6 +121,8 @@ func TestCatalogVsExposedNamesBothWays(t *testing.T) {
 	tel.CheckpointWrite(ctx, "written")
 	tel.AdmissionDecision(ctx, "admitted")
 	tel.GraphTasks(ctx, map[graph.StatusName]int{graph.StatusReady: 1})
+	used := int64(1)
+	tel.BudgetUsed(ctx, BudgetLayerPlatform, &used)
 
 	mfs, err := reg.Gather()
 	if err != nil {
@@ -322,6 +324,7 @@ func TestUnknownOutcomeAndNilReceiverBoundary(t *testing.T) {
 	nilT.JobRun(ctx, "started")
 	nilT.AdmissionDecision(ctx, "admitted")
 	nilT.GraphTasks(ctx, map[graph.StatusName]int{graph.StatusReady: 1})
+	nilT.BudgetUsed(ctx, BudgetLayerPlatform, new(int64))
 	spanCtx, span := nilT.StartSpan(ctx, "noop", attribute.String("k", "v"))
 	if spanCtx == nil || span == nil {
 		t.Fatal("nil Telemetry StartSpan returned nil context or span")
@@ -407,5 +410,34 @@ func TestDefault(t *testing.T) {
 	d := Default()
 	if d == nil {
 		t.Fatal("Default() returned nil with default providers")
+	}
+}
+
+// An unmeasured use writes nothing; a measured zero is a value.
+func TestBudgetUsedGauge(t *testing.T) {
+	rec := telemetrytest.Install(t)
+	tel, err := New(nil, rec.MeterProvider())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+
+	tel.BudgetUsed(ctx, BudgetLayerPlatform, nil)
+	if rec.Recorded(t, MetricBudgetUsedFrontierTokens, "layer", BudgetLayerPlatform) {
+		t.Fatal("unmeasured use recorded, want no value")
+	}
+	zero := int64(0)
+	tel.BudgetUsed(ctx, BudgetLayerPlatform, &zero)
+	if !rec.Recorded(t, MetricBudgetUsedFrontierTokens, "layer", BudgetLayerPlatform) {
+		t.Fatal("measured zero not recorded, want a value of 0")
+	}
+	used := int64(750000)
+	tel.BudgetUsed(ctx, BudgetLayerPlatform, &used)
+	if got := rec.Value(t, MetricBudgetUsedFrontierTokens, "layer", BudgetLayerPlatform); got != 750000 {
+		t.Fatalf("platform use = %d, want 750000", got)
+	}
+	tel.BudgetUsed(ctx, "unrecognized_layer", &used)
+	if got := rec.Value(t, MetricBudgetUsedFrontierTokens, "layer", "other"); got != 750000 {
+		t.Fatalf("unknown budget layer = %d, want 750000 under other", got)
 	}
 }

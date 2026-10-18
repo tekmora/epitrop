@@ -1,0 +1,4 @@
+type: added
+title: 'Sync reads the calling LiteLLM key''s budget window, and epitropctl headroom reports a stale or missing usage reading as unknown, never as zero'
+issue: "24"
+breaking: false

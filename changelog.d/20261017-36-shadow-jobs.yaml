@@ -1,0 +1,3 @@
+type: changed
+title: 'Cutover 1 parallel run: shadow jobs for the landing daemon, auto-rebase, the update intake and the monitor run each script''s dry mode with a heartbeat bound'
+issue: "36"

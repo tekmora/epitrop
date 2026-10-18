@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/golusoris/golusoris/core/clock"
+	"github.com/jonboulle/clockwork"
 	"github.com/tekmora/epitrop/internal/config"
+	"github.com/tekmora/epitrop/internal/eventlog"
 	"github.com/tekmora/epitrop/internal/supervisor"
 )
 
@@ -44,7 +46,7 @@ func TestRunJobsRequiresConfig(t *testing.T) {
 }
 
 func TestRunJobsAcceptsAllKnownCommands(t *testing.T) {
-	for _, action := range []string{"start", "stop", "supervise"} {
+	for _, action := range []string{"start", "stop", "supervise", "history"} {
 		t.Run(action, func(t *testing.T) {
 			err := runJobs([]string{action})
 			if err == nil || !strings.Contains(err.Error(), "--config is required") {
@@ -109,6 +111,29 @@ func TestRunJobsActionPassesPollInterval(t *testing.T) {
 	}
 }
 
+// Supervise runs until stopped: its context outlives the 30 second bound of the other jobs
+// commands, which once ended every supervise after 30 seconds with a deadline error.
+func TestJobsActionContextLetsSuperviseOutliveTheCommandTimeout(t *testing.T) {
+	ctx, cancel := jobsActionContext("supervise")
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) < 364*24*time.Hour {
+		t.Fatalf("jobsActionContext(supervise) deadline = %v (set %v), want about %s", deadline, ok, maxSuperviseRuntime)
+	}
+	cancel()
+	if ctx.Err() == nil {
+		t.Fatal("jobsActionContext(supervise) after cancel: Err() = nil, want canceled")
+	}
+	for _, action := range []string{"start", "status", "stop"} {
+		actionCtx, actionCancel := jobsActionContext(action)
+		deadline, ok = actionCtx.Deadline()
+		actionCancel()
+		if !ok || time.Until(deadline) > jobsCommandTimeout {
+			t.Fatalf("jobsActionContext(%s) deadline = %v (set %v), want within %s", action, deadline, ok, jobsCommandTimeout)
+		}
+	}
+}
+
 func TestJobsNameArgBounds(t *testing.T) {
 	if name, err := jobsNameArg("supervise", nil); err != nil || name != "" {
 		t.Fatalf("jobsNameArg(supervise) = %q, %v, want empty nil", name, err)
@@ -168,8 +193,13 @@ func TestRunLoadedJobsActionDispatchesStartStopSuperviseAndDefault(t *testing.T)
 	}
 	ctx, cancel := context.WithCancel(testContext(t))
 	cancel()
-	if err := runLoadedJobsAction(ctx, sup, "supervise", ""); err == nil || !strings.Contains(err.Error(), "context") {
-		t.Fatalf("runLoadedJobsAction(supervise canceled) = %v, want context error", err)
+	if err := runLoadedJobsAction(ctx, sup, "supervise", ""); err != nil {
+		t.Fatalf("runLoadedJobsAction(supervise stopped) = %v, want nil: a stop signal is the normal end", err)
+	}
+	expired, cancelExpired := context.WithDeadline(testContext(t), time.Now().Add(-time.Second))
+	defer cancelExpired()
+	if err := runLoadedJobsAction(expired, sup, "supervise", ""); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("runLoadedJobsAction(supervise past its bound) = %v, want context.DeadlineExceeded", err)
 	}
 	if err := runLoadedJobsAction(testContext(t), sup, "bogus", ""); err == nil {
 		t.Fatal("runLoadedJobsAction(bogus) = nil, want unknown command")
@@ -338,4 +368,106 @@ func logJobState(t *testing.T, sup *supervisor.Supervisor, base, name string) {
 	}
 	logBody, err := os.ReadFile(filepath.Join(base, name+".log"))
 	t.Logf("job log: %q, %v", logBody, err)
+}
+
+func TestJobsStatusLineNamesAStaleHeartbeat(t *testing.T) {
+	st := supervisor.JobStatus{Name: "hung", State: supervisor.StateRunning, PID: 42, Since: "2026-10-17T10:00:00Z", Sandbox: "enforce", LastBeat: "2026-10-17T10:00:05Z"}
+	if got, want := jobsStatusLine(st), "hung\trunning\t42\t2026-10-17T10:00:00Z\t0\tenforce"; got != want {
+		t.Fatalf("jobsStatusLine(fresh) = %q, want %q", got, want)
+	}
+	st.Stale = true
+	if got, want := jobsStatusLine(st), "hung\trunning\t42\t2026-10-17T10:00:00Z\t0\tenforce\tstale since 2026-10-17T10:00:05Z"; got != want {
+		t.Fatalf("jobsStatusLine(stale) = %q, want %q", got, want)
+	}
+}
+
+func TestRunJobsActionHistoryWithLoadedConfig(t *testing.T) {
+	cfgPath := writeJobsConfig(t, "valid-key")
+	args := []string{"--config", cfgPath, "--since", "2026-10-17T14:13:00Z", "idle"}
+	if runtime.GOOS != "linux" {
+		if err := runJobsAction("history", args); !errors.Is(err, supervisor.ErrNotSupported) {
+			t.Fatalf("runJobsAction(history loaded) on %s = %v, want supervisor.ErrNotSupported", runtime.GOOS, err)
+		}
+		return
+	}
+	out := captureStdout(t, func() {
+		if err := runJobsAction("history", args); err != nil {
+			t.Fatalf("runJobsAction(history loaded) = %v, want nil", err)
+		}
+	})
+	if out != "idle\t0\t0\t0\t0\t0\t0\t0\t\t\n" {
+		t.Fatalf("history output = %q, want an idle row with nothing counted", out)
+	}
+}
+
+func TestRunJobsActionHistoryCountsFromSince(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("history test needs Linux supervisor support")
+	}
+	cfgPath := writeJobsConfig(t, "valid-key")
+	appendJobsRecord(t, cfgPath, "job.started", "idle")
+	for _, tc := range []struct{ since, want string }{
+		{"2000-01-01T00:00:00Z", "idle\t1\t"},
+		{"2999-01-01T00:00:00Z", "idle\t0\t"},
+	} {
+		out := captureStdout(t, func() {
+			if err := runJobsAction("history", []string{"--config", cfgPath, "--since", tc.since}); err != nil {
+				t.Fatalf("runJobsAction(history --since %s) = %v, want nil", tc.since, err)
+			}
+		})
+		if !strings.HasPrefix(out, tc.want) {
+			t.Fatalf("history --since %s = %q, want prefix %q", tc.since, out, tc.want)
+		}
+	}
+}
+
+// appendJobsRecord signs one record of type typ for job name into the event log of the
+// configuration at cfgPath.
+func appendJobsRecord(t *testing.T, cfgPath string, typ string, name string) {
+	t.Helper()
+	cfg, err := config.Load(testContext(t), cfgPath)
+	if err != nil {
+		t.Fatalf("config.Load() = %v, want nil", err)
+	}
+	clk := clockwork.NewRealClock()
+	signer, err := eventlog.NewSignerFromKeyFile(testContext(t), cfg.EventLog.SigningKeyPath, cfg.EventLog.Dir, clk)
+	if err != nil {
+		t.Fatalf("NewSignerFromKeyFile() = %v, want nil", err)
+	}
+	w, err := eventlog.Open(cfg.EventLog.Dir, signer, eventlog.Limits{Clock: clk})
+	if err != nil {
+		t.Fatalf("eventlog.Open() = %v, want nil", err)
+	}
+	if _, err = w.Append(testContext(t), eventlog.Event{Type: typ, TaskID: name, Payload: json.RawMessage(`{"state":"running"}`)}); err != nil {
+		t.Fatalf("Append(%s) = %v, want nil", typ, err)
+	}
+}
+
+func TestRunJobsActionRefusesABadSince(t *testing.T) {
+	cfgPath := writeJobsConfig(t, "valid-key")
+	err := runJobsAction("history", []string{"--config", cfgPath, "--since", "yesterday"})
+	if err == nil || !strings.Contains(err.Error(), "jobs history: --since") {
+		t.Fatalf("runJobsAction(history bad since) = %v, want a --since parse error", err)
+	}
+	err = runJobsAction("status", []string{"--config", cfgPath, "--since", "2026-10-17T14:13:00Z"})
+	if err == nil || !strings.Contains(err.Error(), "jobs status: --since is a jobs history flag") {
+		t.Fatalf("runJobsAction(status --since) = %v, want the flag refused", err)
+	}
+}
+
+func TestJobsHistoryLineOrdersItsColumns(t *testing.T) {
+	h := supervisor.JobHistory{Name: "d", Started: 1, Exited: 2, Unclean: 3, Restarted: 4, Stale: 5, Refused: 6, Stopped: 7, First: "f", Last: "l"}
+	if got, want := jobsHistoryLine(h), "d\t1\t2\t3\t4\t5\t6\t7\tf\tl"; got != want {
+		t.Fatalf("jobsHistoryLine() = %q, want %q", got, want)
+	}
+}
+
+func TestPrintJobsHistoryRefusesAnUnknownJob(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("history test needs Linux supervisor support")
+	}
+	sup := testJobsSupervisor(t)
+	if err := printJobsHistory(testContext(t), sup, "missing", time.Time{}); !errors.Is(err, supervisor.ErrUnknownJob) {
+		t.Fatalf("printJobsHistory(missing) = %v, want supervisor.ErrUnknownJob", err)
+	}
 }

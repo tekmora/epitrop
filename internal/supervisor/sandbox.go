@@ -61,6 +61,9 @@ func sandboxFlagArgs(sandbox config.SandboxConfig) []string {
 	for i := 0; i < len(sandbox.Inputs); i++ {
 		args = append(args, "--sandbox-input", sandbox.Inputs[i])
 	}
+	for i := 0; i < len(sandbox.ReadOnly); i++ {
+		args = append(args, "--sandbox-read-only", sandbox.ReadOnly[i])
+	}
 	for i := 0; i < len(sandbox.EnvAllow); i++ {
 		args = append(args, "--sandbox-env-allow", sandbox.EnvAllow[i])
 	}

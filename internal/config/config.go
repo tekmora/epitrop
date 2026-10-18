@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 
 	coreconfig "github.com/golusoris/golusoris/core/config"
 	golusorisschema "github.com/golusoris/golusoris/jsonschema"
+	"github.com/tekmora/epitrop/internal/broker"
 	"github.com/tekmora/epitrop/internal/egressproxy"
 )
 
@@ -29,7 +31,9 @@ const (
 	MaxRestartBackoff       = 3600
 	MaxStopGraceSeconds     = 300
 	MaxJobRuntimeSeconds    = 365 * 24 * 3600
+	MaxHeartbeatSeconds     = 24 * 3600
 	MaxSandboxInputs        = 32
+	MaxSandboxReadOnly      = 32
 	MaxSandboxInputRoots    = 32
 	MaxSandboxEnvAllow      = 64
 	MaxReleaseWatchRoutes   = 32
@@ -58,6 +62,9 @@ const (
 	defaultReplayMax        = 100000
 	defaultEventLogRef      = "refs/epitrop/events"
 	defaultGitSeconds       = 30
+	defaultServerListen     = "127.0.0.1:8899"
+	defaultBrokerQueue      = 64
+	defaultFallbackClass    = "real-failure"
 	defaultJobSchedule      = "always"
 	defaultRestart          = "never"
 	defaultStopSignal       = "TERM"
@@ -109,9 +116,43 @@ type Config struct {
 	Admission    AdmissionConfig    `koanf:"admission" json:"admission"`
 	EventLog     EventLogConfig     `koanf:"event_log" json:"event_log"`
 	ReleaseWatch ReleaseWatchConfig `koanf:"release_watch" json:"release_watch"`
+	Server       ServerConfig       `koanf:"server" json:"server"`
+	Broker       BrokerConfig       `koanf:"broker" json:"broker"`
 	// SandboxInputRoots are the directories a sandboxed job's workspace and inputs must lie
 	// in once symlinks are resolved. With none, no job runs sandboxed.
 	SandboxInputRoots []string `koanf:"sandbox_input_roots" json:"sandbox_input_roots"`
+}
+
+// BrokerConfig sizes the in-process broker: the queue of each subscriber, and the
+// dead-letter class set failed attempts are sorted into.
+type BrokerConfig struct {
+	QueueCapacity int              `koanf:"queue_capacity" json:"queue_capacity"`
+	DeadLetter    DeadLetterConfig `koanf:"dead_letter" json:"dead_letter"`
+}
+
+// DeadLetterConfig declares the dead-letter classes. Classes lists the classes with
+// signatures, in match order; Fallback names the class that takes every failure none of
+// them matched, and grants no retry.
+type DeadLetterConfig struct {
+	Capacity int               `koanf:"capacity" json:"capacity"`
+	Fallback string            `koanf:"fallback" json:"fallback"`
+	Classes  []DeadLetterClass `koanf:"classes" json:"classes"`
+}
+
+type DeadLetterClass struct {
+	Name       string   `koanf:"name" json:"name"`
+	Signatures []string `koanf:"signatures" json:"signatures"`
+	MaxRetries int      `koanf:"max_retries" json:"max_retries"`
+}
+
+// Specs returns the class set for broker.NewDeadLetters: the declared classes in order, then
+// the fallback class.
+func (c DeadLetterConfig) Specs() []broker.ClassSpec {
+	specs := make([]broker.ClassSpec, 0, len(c.Classes)+1)
+	for _, class := range c.Classes {
+		specs = append(specs, broker.ClassSpec{Name: class.Name, Signatures: class.Signatures, MaxRetries: class.MaxRetries})
+	}
+	return append(specs, broker.ClassSpec{Name: c.Fallback})
 }
 
 type ReleaseWatchConfig struct {
@@ -153,7 +194,14 @@ type GraphConfig struct {
 }
 
 type BudgetsConfig struct {
-	Default TaskBudget `koanf:"default" json:"default"`
+	Default  TaskBudget     `koanf:"default" json:"default"`
+	Platform PlatformBudget `koanf:"platform" json:"platform"`
+}
+
+// PlatformBudget is the platform budget layer (#6): what the whole platform may
+// spend, read against the Praetor efficiency ledger. 0 turns the check off.
+type PlatformBudget struct {
+	FrontierTokens int `koanf:"frontier_tokens" json:"frontier_tokens"`
 }
 
 type TaskBudget struct {
@@ -174,7 +222,16 @@ type JobConfig struct {
 	MaxRuntimeSeconds int              `koanf:"max_runtime_seconds" json:"max_runtime_seconds"`
 	Restart           JobRestartConfig `koanf:"restart" json:"restart"`
 	Stop              JobStopConfig    `koanf:"stop" json:"stop"`
+	Heartbeat         JobHeartbeat     `koanf:"heartbeat" json:"heartbeat"`
 	Sandbox           SandboxConfig    `koanf:"sandbox" json:"sandbox"`
+}
+
+// JobHeartbeat says how old a running job's last sign of life may be. A write to the job's
+// log is a beat, and so is its start. A job silent for longer than MaxAgeSeconds is hung:
+// the supervisor records job.stale and ends it the way `jobs stop` would, and the restart
+// policy decides what follows. 0 turns the check off.
+type JobHeartbeat struct {
+	MaxAgeSeconds int `koanf:"max_age_seconds" json:"max_age_seconds"`
 }
 
 type JobRestartConfig struct {
@@ -193,7 +250,11 @@ type SandboxConfig struct {
 	Reason    string   `koanf:"reason" json:"reason"`
 	Workspace string   `koanf:"workspace" json:"workspace"`
 	Inputs    []string `koanf:"inputs" json:"inputs"`
-	EnvAllow  []string `koanf:"env_allow" json:"env_allow"`
+	// ReadOnly are paths inside the workspace, relative to it, that the job may read and not
+	// write: a working copy's hooks, for one. Each has to exist and stay inside the workspace
+	// when its symlinks are resolved, at load and again at every start.
+	ReadOnly []string `koanf:"read_only" json:"read_only"`
+	EnvAllow []string `koanf:"env_allow" json:"env_allow"`
 	// Network is what the job reaches: "none" nothing, "egress" the internet without the
 	// host's loopback, "proxy" the Destinations and nothing else.
 	Network string `koanf:"network" json:"network"`
@@ -257,6 +318,21 @@ type EventLogGitConfig struct {
 	Compact bool `koanf:"compact" json:"compact"`
 }
 
+// Server transports.
+const (
+	TransportStdio = "stdio"
+	TransportHTTP  = "http"
+)
+
+// ServerConfig is how epitrop-server serves its tools: on stdin and stdout, or over HTTP
+// on Listen. Listen must name a loopback host; port 0 picks a free port.
+type ServerConfig struct {
+	Transport string `koanf:"transport" json:"transport"`
+	Listen    string `koanf:"listen" json:"listen"`
+	// AllowMutations adds the tools that start and stop jobs and record unit status.
+	AllowMutations bool `koanf:"allow_mutations" json:"allow_mutations"`
+}
+
 // SchemaJSON returns the embedded JSON Schema document used by Load.
 func SchemaJSON() []byte {
 	return append([]byte(nil), schemaJSON...)
@@ -292,6 +368,11 @@ func Default() Config {
 			MaxActionsPerRun: DefaultMaxActionsPerRun,
 			PerSourceCap:     DefaultPerSourceCap,
 			Routes:           []ReleaseWatchRoute{},
+		},
+		Server: ServerConfig{Transport: TransportStdio, Listen: defaultServerListen},
+		Broker: BrokerConfig{
+			QueueCapacity: defaultBrokerQueue,
+			DeadLetter:    DeadLetterConfig{Capacity: defaultBrokerQueue, Fallback: defaultFallbackClass, Classes: []DeadLetterClass{}},
 		},
 		SandboxInputRoots: []string{},
 	}
@@ -354,6 +435,12 @@ func validateLoaded(cfg *Config, path string) error {
 		return err
 	}
 	if err := validateEventLogGit(cfg.EventLog.Git); err != nil {
+		return err
+	}
+	if err := ValidateListen(cfg.Server.Listen); err != nil {
+		return err
+	}
+	if err := validateBroker(cfg.Broker); err != nil {
 		return err
 	}
 	return validateJobSandboxes(cfg, path)
@@ -429,6 +516,9 @@ func ValidateSandbox(sandbox SandboxConfig) error {
 		return err
 	}
 	if err := validateSandboxEnv(sandbox.EnvAllow); err != nil {
+		return err
+	}
+	if err := validateSandboxReadOnly(sandbox); err != nil {
 		return err
 	}
 	return validateSandboxHome(sandbox)
@@ -548,6 +638,9 @@ func validateJobSandbox(job *JobConfig, guard protectedPaths) error {
 		return err
 	}
 	job.Sandbox.Workspace, job.Sandbox.Inputs = workspace, inputs
+	if _, err = ResolveSandboxReadOnly(job.Sandbox); err != nil {
+		return err
+	}
 	return resolveSandboxHome(&job.Sandbox, guard)
 }
 
@@ -560,6 +653,9 @@ func validateSandboxSettings(job JobConfig) error {
 		return err
 	}
 	if err := validateSandboxEnv(job.Sandbox.EnvAllow); err != nil {
+		return err
+	}
+	if err := validateSandboxReadOnly(job.Sandbox); err != nil {
 		return err
 	}
 	if err := validateSandboxHome(job.Sandbox); err != nil {
@@ -1029,6 +1125,35 @@ func validateEventLogGit(g EventLogGitConfig) error {
 	}
 	if g.Compact && !g.Enabled {
 		return errors.New("config: event_log/git: compact needs enabled: a segment leaves events/ only once a commit holds it")
+	}
+	return nil
+}
+
+// ValidateListen refuses an address whose host is not loopback: the server has no
+// authentication, so it serves only this host.
+func ValidateListen(addr string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("config: server/listen: %w", err)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 0 || n > 65535 {
+		return fmt.Errorf("config: server/listen: port %q is not 0..65535", port)
+	}
+	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("config: server/listen: host %q is not loopback", host)
+	}
+	return nil
+}
+
+// validateBroker builds the broker and the class set the block declares, so the config
+// refuses exactly what the broker would.
+func validateBroker(b BrokerConfig) error {
+	if _, err := broker.New(b.QueueCapacity); err != nil {
+		return fmt.Errorf("config: broker/queue_capacity: %w", err)
+	}
+	dl := b.DeadLetter
+	if _, err := broker.NewDeadLetters(dl.Specs(), dl.Fallback, dl.Capacity); err != nil {
+		return fmt.Errorf("config: broker/dead_letter: %w", err)
 	}
 	return nil
 }

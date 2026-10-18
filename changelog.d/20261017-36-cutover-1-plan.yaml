@@ -1,0 +1,3 @@
+type: added
+title: 'Cutover 1 plan: the fleet''s background jobs declared as Epitrop jobs in `docs/cutover-1.example.yaml`, with the parallel run and switch-over criteria in `docs/cutover-1.md`'
+issue: "36"

@@ -40,15 +40,18 @@ epitropctl sync --sources=litellm-gateway \
 # render a snapshot; print the snapshot's JSON Schema
 epitropctl show --in=/tmp/snapshot.json
 epitropctl schema
+
+# print every usage window as known or unknown; a reading older than 10m is unknown
+epitropctl headroom --in=/tmp/snapshot.json --max-age=10m
 ```
 
 The snapshot is replaced atomically: `sync` writes a temporary file beside `--out`, flushes it and renames it over the old file (`internal/atomicfile`), so a reader or a crash never sees half a snapshot. On Windows the rename is refused while another process holds `--out` open; `sync` then fails with that error and the old snapshot stays whole.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--sources` | all four, in the order of the table below | comma-separated; an empty, duplicate or unknown entry is an error |
+| `--sources` | all five, in the order of the table below | comma-separated; an empty, duplicate or unknown entry is an error |
 | `--out` | `epitrop-snapshot.json` | where the snapshot is written |
-| `--litellm-base`, `--litellm-token-file` | none | required together for `litellm-gateway`; the token is read from the file and never printed |
+| `--litellm-base`, `--litellm-token-file` | none | required together for `litellm-gateway` and `litellm-key-budget`; the token is read from the file and never printed |
 | `--ollama` | `http://localhost:11434` | Ollama daemon endpoint |
 | `--sessions-dir` | `~/.codex/sessions` | Codex CLI session logs |
 | `--openrouter-url`, `--litellm-prices-url` | the public OpenRouter API; the LiteLLM price map at a pinned commit | override only to test against a local fixture |
@@ -61,12 +64,15 @@ A snapshot is `catalog.Snapshot` with `schema_version: 1`. Its JSON Schema is `c
 
 Each record (`catalog.Record`) carries a model id, provider, access path (`api`, `subscription_cli`, `gateway` or `local`), context window, price per million tokens in and out, capabilities, rate limits and a usage window. Only the model id, access path and provenance are required. Provenance is `{source, fetched_at, kind}`: `measured` means read live from a real system, and `declared` means copied from a published catalog. A value a source does not report stays empty, and `Record.Absent` names it with a reason; nothing is guessed. A record that fails `Record.Validate` is rejected and counted in its source's line, and the rest of the snapshot is still written.
 
+A usage window holds `used_percent`, `window_minutes` and `resets_at`, and two fields a window governor paces by: `burn_percent_per_hour`, how fast `used_percent` rose over the 15 minutes before the read (not the average since the window opened), and `active_agents`, the sessions that drew on the window in those 15 minutes. Both are optional; a burn rate is a finite number of at least zero and an agent count an integer of at least zero, and the schema and `Record.Validate` refuse anything else. A measured zero is written as `0`; a field the source cannot measure is left out and named in `Absent` (`usage_window.burn_percent_per_hour`, `usage_window.active_agents`). Both fields were added in `schema_version` 1 without a version change, so a reader that validates against the v0.1.0 schema refuses a snapshot that carries them until it takes the new schema.
+
 ## Sources
 
 | Source | How | Kind | Bounds | Failure and edge cases |
 | --- | --- | --- | --- | --- |
-| `codex-local` | Reads `rate_limits.primary` from the newest `~/.codex/sessions/**/*.jsonl`, read-only | measured | 20,000 files walked, 128 MiB per file, 500,000 lines, 4 MiB per line; one record | no logs or no rate limits: skip; an empty `limit_id`: fail |
+| `codex-local` | Reads `rate_limits.primary` from the newest `~/.codex/sessions/**/*.jsonl`, read-only. The burn rate and active agents come from every session file written in the last 15 minutes: the samples of the same window (`limit_id` and `resets_at`) with a `timestamp` in [now − 15 min, now] | measured | 20,000 files walked, 128 MiB per file, 500,000 lines, 4 MiB per line; at most 64 session files read for the burn rate; one record | no logs or no rate limits: skip; an empty `limit_id`: fail. Burn rate absent with fewer than two samples at distinct times, or when `used_percent` fell; both fields absent past 64 recent files; a recent file that cannot be read, or a sample line without a valid `timestamp`: both fields absent, status degraded |
 | `litellm-gateway` | `GET <base>/v1/models` with a bearer token | measured | 15 s, 8 MiB, 5,000 models | an empty model list: fail; an entry without an id is rejected and counted; a list where no entry has an id: fail. Prices and context are absent, because `/model/info` is not readable with an agent token |
+| `litellm-key-budget` | `GET <base>/key/info` with the same bearer token and no `key` parameter, so the gateway answers for the calling key and the token never enters a URL | measured | 15 s, 1 MiB; one record, `litellm-key[/<alias>]` | a key whose `status` is not `active`, or that is `blocked`: fail; a response without `info` or `spend`: fail. The used share is `spend / max_budget × 100`; without a positive `max_budget` it is absent. The window length is absent for a calendar-month (`mo`) or sub-minute `budget_duration`, and the reset time is absent without a time zone. The burn rate and active agents are always absent: key info reports the spend, not its rate, and does not name the callers of the key |
 | `ollama-local` | `GET /api/tags` for installed models, `GET /api/ps` for loaded ones | measured | 5 s, 8 MiB, 5,000 models | no installed models: skip (a real local state); `/api/ps` unavailable: records kept, loaded state absent, status degraded |
 | `public-catalog` | OpenRouter's public models API and LiteLLM's price map | declared | 20 s and 16 MiB per sub-fetch, 4,999 records each | an empty list or map: that sub-fetch fails; one sub-fetch failing: degraded; a malformed entry is counted (`malformed=N`, `rejected=N`); an OpenRouter `-1` price is absent as `variable price`, never negative |
 
@@ -75,6 +81,16 @@ The two public catalogs use incompatible model-id schemes (for example `openai/g
 Every parser is checked against a schema fragment taken from the upstream's published document at a pinned revision (`internal/sources/upstream-schemas.json`; `make schemas-check`). Renovate moves the pins together in one pull request a week (`renovate.json`, group `upstream schema pins`). That pull request needs one `make schemas-repin` commit, and it merges once each pinned commit is at least three days old. Renovate cannot hold these back by age, because git refs carry no release timestamp. A rename or retype upstream fails a parser test instead of dropping a field.
 
 Two sources are not implemented, on purpose: a Claude subscription usage source (no current local store to read) and a Gemini quota source (no readable local store). Neither is scraped from an undocumented endpoint.
+
+## Headroom: stale is unknown, never zero
+
+`epitropctl headroom --max-age=<duration> [--in=file]` reads a snapshot through `catalog.ReadHeadroom` and prints one JSON reading per record that has a usage window. A reading is `known` and carries `used_percent` only when all of these hold; otherwise it is `unknown`, carries no `used_percent` at all, and its `reason` names the first rule it broke:
+
+- the source reported a used share, and it is a finite number of at least zero (above 100 is a real overrun and stays known);
+- it was fetched no later than now, and at most `--max-age` ago (exactly `--max-age` is still known);
+- its window has not reset since (`resets_at` later than now).
+
+`--max-age` has no default: each consumer states how old a reading it accepts. A consumer reads `unknown` as "no data", never as zero usage, so a dead or stale source cannot open a quota that may already be spent. Wiring the readings into routing and dispatch is a later step; this command and `catalog.ReadHeadroom` are the read side.
 
 ## Verification notes
 
@@ -85,7 +101,7 @@ The sources were first verified live on 2026-09-18, before their parsers were wr
 - a local Ollama daemon answered both endpoints;
 - both public catalog URLs returned real bodies.
 
-The pinned schema fragments record the revision and full-document digest each parser was last checked against (2026-10-09).
+The pinned schema fragments record the revision and full-document digest each parser was last checked against (2026-10-09; `litellm-key-info` 2026-10-17). The `litellm-key-budget` parser follows the `/key/info` docstring at the pinned LiteLLM revision and the fixture in `internal/sources/litellmgateway/testdata/fixtures/key-info-response.json`; it has not yet been run against a live gateway.
 
 ## Out of scope
 

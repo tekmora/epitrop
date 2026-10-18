@@ -105,6 +105,43 @@ func (r *Recorder) Value(t testing.TB, name, attrKey, attrVal string) int64 {
 	return sum
 }
 
+// Recorded reports whether metric name has a data point with attrKey=attrVal, so a
+// test can tell a value that was never written from a written zero.
+func (r *Recorder) Recorded(t testing.TB, name, attrKey, attrVal string) bool {
+	t.Helper()
+	if r == nil || r.reader == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var rm metricdata.ResourceMetrics
+	if err := r.reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("telemetrytest: collect metrics: %v", err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == name && hasGaugePoint(m.Data, attrKey, attrVal) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasGaugePoint(data metricdata.Aggregation, attrKey, attrVal string) bool {
+	d, ok := data.(metricdata.Gauge[int64])
+	if !ok {
+		return false
+	}
+	for _, dp := range d.DataPoints {
+		if hasAttr(dp.Attributes, attrKey, attrVal) {
+			return true
+		}
+	}
+	return false
+}
+
 func extractDataPoint(data metricdata.Aggregation, attrKey, attrVal string) int64 {
 	switch d := data.(type) {
 	case metricdata.Sum[int64]:

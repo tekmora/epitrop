@@ -40,7 +40,7 @@ func TestValidateSandboxHomeRules(t *testing.T) {
 	}{
 		{"no home", func(s *SandboxConfig) { s.Home = nil }, ""},
 		{"copy and bind", func(*SandboxConfig) {}, ""},
-		{"bind only, no token path", func(s *SandboxConfig) { s.Home.Copy, s.Home.Bind[0].JWT = nil, "" }, ""},
+		{"bind only", func(s *SandboxConfig) { s.Home.Copy = nil }, ""},
 		{"copy only", func(s *SandboxConfig) { s.Home.Bind = nil }, ""},
 		{"no file", func(s *SandboxConfig) { s.Home.Copy, s.Home.Bind = nil, nil }, "names no file"},
 		{"mode off", func(s *SandboxConfig) { s.Mode, s.Reason = "off", "legacy" }, "home: forbidden unless mode=enforce"},
@@ -48,7 +48,6 @@ func TestValidateSandboxHomeRules(t *testing.T) {
 		{"empty source", func(s *SandboxConfig) { s.Home.Source = "" }, "home.source"},
 		{"env lower case", func(s *SandboxConfig) { s.Home.Env = "codex_home" }, "home.env: invalid name"},
 		{"env empty", func(s *SandboxConfig) { s.Home.Env = "" }, "home.env: invalid name"},
-		{"env HOME", func(s *SandboxConfig) { s.Home.Env = "HOME" }, "home.env: HOME is set by the sandbox"},
 		{"env a proxy variable", func(s *SandboxConfig) { s.Home.Env = "HTTPS_PROXY" }, "is set by the sandbox"},
 		{"env also allowed", func(s *SandboxConfig) { s.EnvAllow = []string{"CODEX_HOME"} }, "also in env_allow"},
 		{"copies at limit", func(s *SandboxConfig) { s.Home.Copy = homeFiles("c", MaxSandboxHomeFiles) }, ""},
@@ -63,21 +62,74 @@ func TestValidateSandboxHomeRules(t *testing.T) {
 		{"token path with an empty name", func(s *SandboxConfig) { s.Home.Bind[0].JWT = "tokens..access" }, "home.bind/0.jwt"},
 		{"file ..", func(s *SandboxConfig) { s.Home.Bind[0].File = ".." }, "not one plain path element"},
 		{"file .", func(s *SandboxConfig) { s.Home.Copy[0].File = "." }, "not one plain path element"},
-		{"file with a slash", func(s *SandboxConfig) { s.Home.Bind[0].File = "sub/auth.json" }, "not one plain path element"},
+		{"file with a slash", func(s *SandboxConfig) { s.Home.Bind[0].File = "sub/auth.json" }, "nor a known login file"},
 		{"file empty", func(s *SandboxConfig) { s.Home.Bind[0].File = "" }, "not one plain path element"},
 		{"file name of 128", func(s *SandboxConfig) { s.Home.Bind[0].File = strings.Repeat("a", 128) }, ""},
 		{"file name of 129", func(s *SandboxConfig) { s.Home.Bind[0].File = strings.Repeat("a", 129) }, "not one plain path element"},
 		{"file named in copy and bind", func(s *SandboxConfig) { s.Home.Bind[0].File = "config.toml" }, "named twice"},
 	}
 	for _, tc := range cases {
-		sandbox := SandboxConfig{Mode: "enforce", Network: "none", MemoryMax: "2G", CPUWeight: 100, TasksMax: 512, Home: testHome()}
-		tc.edit(&sandbox)
-		err := ValidateSandbox(sandbox)
-		if tc.want == "" && err != nil {
-			t.Errorf("%s: ValidateSandbox() = %v, want nil", tc.name, err)
-		}
-		if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
-			t.Errorf("%s: ValidateSandbox() = %v, want an error holding %q", tc.name, err, tc.want)
+		checkSandboxHomeRule(t, tc.name, tc.edit, tc.want)
+	}
+}
+
+// A login file keeps its client's name, a bind names its expiry once, and a home may take
+// HOME and no other variable the sandbox sets.
+func TestValidateSandboxHomeLoginRules(t *testing.T) {
+	cases := []struct {
+		name string
+		edit func(*SandboxConfig)
+		want string
+	}{
+		{"bind with no expiry", func(s *SandboxConfig) { s.Home.Bind[0].JWT = "" }, "home.bind/0: names neither jwt nor expires_ms"},
+		{"bind with both expiries", func(s *SandboxConfig) { s.Home.Bind[0].ExpiresMS = "expiresAt" }, "home.bind/0: names both jwt and expires_ms"},
+		{"bind with an expiry in milliseconds", func(s *SandboxConfig) {
+			s.Home.Bind[0] = SandboxHomeBind{File: ".credentials.json", ExpiresMS: "claudeAiOauth.expiresAt"}
+		}, ""},
+		{"expiry path of eight names", func(s *SandboxConfig) { s.Home.Bind[0].JWT, s.Home.Bind[0].ExpiresMS = "", "a.b.c.d.e.f.g.h" }, ""},
+		{"expiry path of nine names", func(s *SandboxConfig) {
+			s.Home.Bind[0].JWT, s.Home.Bind[0].ExpiresMS = "", "a.b.c.d.e.f.g.h.i"
+		}, "home.bind/0.expires_ms"},
+		{"expiry path with a slash", func(s *SandboxConfig) { s.Home.Bind[0].JWT, s.Home.Bind[0].ExpiresMS = "", "a/b" }, "home.bind/0.expires_ms"},
+		{"env HOME", func(s *SandboxConfig) { s.Home.Env = "HOME" }, ""},
+		{"env PATH", func(s *SandboxConfig) { s.Home.Env = "PATH" }, "home.env: PATH is set by the sandbox"},
+		{"file a dotfile", func(s *SandboxConfig) { s.Home.Bind[0].File = ".auth.json" }, "nor a known login file"},
+		{"login file", func(s *SandboxConfig) { s.Home.Bind[0].File = ".credentials.json" }, ""},
+		{"login file as a copy", func(s *SandboxConfig) { s.Home.Copy[0].File = ".credentials.json" }, "is not one plain path element"},
+		{"login file below a folder", func(s *SandboxConfig) { s.Home.Bind[0].File = "sub/.credentials.json" }, "nor a known login file"},
+	}
+	for _, tc := range cases {
+		checkSandboxHomeRule(t, tc.name, tc.edit, tc.want)
+	}
+}
+
+func checkSandboxHomeRule(t *testing.T, name string, edit func(*SandboxConfig), want string) {
+	t.Helper()
+	sandbox := SandboxConfig{Mode: "enforce", Network: "none", MemoryMax: "2G", CPUWeight: 100, TasksMax: 512, Home: testHome()}
+	edit(&sandbox)
+	err := ValidateSandbox(sandbox)
+	if want == "" && err != nil {
+		t.Errorf("%s: ValidateSandbox() = %v, want nil", name, err)
+	}
+	if want != "" && (err == nil || !strings.Contains(err.Error(), want)) {
+		t.Errorf("%s: ValidateSandbox() = %v, want an error holding %q", name, err, want)
+	}
+}
+
+// A login file the list names below a folder is taken as written, and no other path.
+func TestValidateSandboxHomeTakesListedLoginPaths(t *testing.T) {
+	saved := homeCredentialFiles
+	t.Cleanup(func() { homeCredentialFiles = saved })
+	homeCredentialFiles = []string{".client/login/token.json"}
+	sandbox := SandboxConfig{Mode: "enforce", Network: "none", MemoryMax: "2G", CPUWeight: 100, TasksMax: 512, Home: testHome()}
+	sandbox.Home.Bind[0].File = ".client/login/token.json"
+	if err := ValidateSandbox(sandbox); err != nil {
+		t.Fatalf("ValidateSandbox(listed login path) = %v, want nil", err)
+	}
+	for _, file := range []string{".client/login", ".client/login/token.json/", "./.client/login/token.json", ".credentials.json"} {
+		sandbox.Home.Bind[0].File = file
+		if err := ValidateSandbox(sandbox); err == nil || !strings.Contains(err.Error(), "nor a known login file") {
+			t.Errorf("ValidateSandbox(%q) = %v, want it refused", file, err)
 		}
 	}
 }

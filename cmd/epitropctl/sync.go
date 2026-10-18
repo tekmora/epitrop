@@ -36,6 +36,7 @@ const maxSnapshotFileBytes = 64 << 20
 var allSourceNames = []string{
 	codexlocal.SourceName,
 	litellmgateway.SourceName,
+	litellmgateway.KeyBudgetSourceName,
 	ollamalocal.SourceName,
 	publiccatalog.SourceName,
 }
@@ -57,8 +58,8 @@ func parseSyncFlags(args []string) (syncFlags, error) {
 	var f syncFlags
 	fs.StringVar(&f.sources, "sources", strings.Join(allSourceNames, ","), "comma-separated source names to run")
 	fs.StringVar(&f.out, "out", defaultSnapshotPath, "path to write the JSON snapshot")
-	fs.StringVar(&f.litellmBase, "litellm-base", "", "LiteLLM gateway base URL (required for litellm-gateway)")
-	fs.StringVar(&f.litellmToken, "litellm-token-file", "", "path to a file holding the LiteLLM bearer token (required for litellm-gateway)")
+	fs.StringVar(&f.litellmBase, "litellm-base", "", "LiteLLM gateway base URL (required for litellm-gateway and litellm-key-budget)")
+	fs.StringVar(&f.litellmToken, "litellm-token-file", "", "path to a file holding the LiteLLM bearer token (required for litellm-gateway and litellm-key-budget)")
 	fs.StringVar(&f.ollama, "ollama", defaultOllamaEndpoint, "Ollama daemon endpoint")
 	fs.StringVar(&f.openRouterURL, "openrouter-url", publiccatalog.DefaultOpenRouterURL, "OpenRouter public models API URL")
 	fs.StringVar(&f.litellmPricesURL, "litellm-prices-url", publiccatalog.DefaultLiteLLMPriceMapURL, "LiteLLM public price map URL")
@@ -232,6 +233,8 @@ func runOneSource(ctx context.Context, name string, f syncFlags) sourceOutcome {
 		return runCodexLocal(ctx, f)
 	case litellmgateway.SourceName:
 		return runLiteLLMGateway(ctx, f)
+	case litellmgateway.KeyBudgetSourceName:
+		return runLiteLLMKeyBudget(ctx, f)
 	case ollamalocal.SourceName:
 		res := ollamalocal.Fetch(ctx, f.ollama)
 		return sourceOutcome{Records: res.Records, Status: res.Status, Count: res.Count, Detail: res.Detail}
@@ -249,6 +252,8 @@ func sourceRecordCap(name string) (int, bool) {
 		return codexlocal.MaxRecords, true
 	case litellmgateway.SourceName:
 		return litellmgateway.MaxRecords, true
+	case litellmgateway.KeyBudgetSourceName:
+		return litellmgateway.KeyBudgetMaxRecords, true
 	case ollamalocal.SourceName:
 		return ollamalocal.MaxRecords, true
 	case publiccatalog.SourceName:
@@ -291,6 +296,14 @@ func runLiteLLMGateway(ctx context.Context, f syncFlags) sourceOutcome {
 		return sourceOutcome{Status: catalog.StatusSkip, Detail: "--litellm-base and --litellm-token-file are required for litellm-gateway"}
 	}
 	res := litellmgateway.Fetch(ctx, f.litellmBase, f.litellmToken)
+	return sourceOutcome{Records: res.Records, Status: res.Status, Count: res.Count, Detail: res.Detail}
+}
+
+func runLiteLLMKeyBudget(ctx context.Context, f syncFlags) sourceOutcome {
+	if f.litellmBase == "" || f.litellmToken == "" {
+		return sourceOutcome{Status: catalog.StatusSkip, Detail: "--litellm-base and --litellm-token-file are required for litellm-key-budget"}
+	}
+	res := litellmgateway.FetchKeyBudget(ctx, f.litellmBase, f.litellmToken)
 	return sourceOutcome{Records: res.Records, Status: res.Status, Count: res.Count, Detail: res.Detail}
 }
 

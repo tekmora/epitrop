@@ -188,7 +188,7 @@ func (j *Supervised) Binds() []Bind {
 		binds = append(binds, Bind{Source: filepath.Join(home.Source, file), Target: filepath.Join(dir, file), Mode: BindCopy, SHA256: home.Copy[i].SHA256})
 	}
 	for i := 0; i < len(home.Bind); i++ {
-		file := home.Bind[i].File
+		file := filepath.FromSlash(home.Bind[i].File)
 		binds = append(binds, Bind{Source: filepath.Join(home.Source, file), Target: filepath.Join(dir, file), Mode: BindRead})
 	}
 	return binds

@@ -21,6 +21,7 @@ type testSource struct {
 	ID                 string         `json:"id"`
 	URLTemplate        string         `json:"url_template"`
 	PinnedRevision     string         `json:"pinned_revision"`
+	ExtractionDate     string         `json:"extraction_date"`
 	FullDocumentSHA256 string         `json:"full_document_sha256"`
 	SPDXLicense        string         `json:"spdx_license"`
 	CopyrightHolder    string         `json:"copyright_holder"`
@@ -105,7 +106,7 @@ func provenanceValues(source testSource) []string {
 		strings.ReplaceAll(source.URLTemplate, "{revision}", source.PinnedRevision),
 		source.PinnedRevision,
 		source.FullDocumentSHA256,
-		"2026-10-09",
+		extractionDate(source),
 		source.SPDXLicense,
 		source.CopyrightHolder,
 	}
@@ -123,4 +124,13 @@ func stripCommentHeader(t *testing.T, body []byte, path string) []byte {
 func shaHex(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
+}
+
+// extractionDate is the date a source's fragment was first extracted; the
+// first sources share the date the manifest was made.
+func extractionDate(source testSource) string {
+	if source.ExtractionDate != "" {
+		return source.ExtractionDate
+	}
+	return "2026-10-09"
 }

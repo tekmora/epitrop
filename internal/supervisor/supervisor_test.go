@@ -956,6 +956,39 @@ func TestSupervisePropagatesReconcileStartError(t *testing.T) {
 	}
 }
 
+func TestSuperviseOpenEventLogErrorWrapped(t *testing.T) {
+	sup := testSupervisor(t)
+	sup.cfg.EventLog.Dir = ""
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := sup.Supervise(ctx)
+	if err == nil {
+		t.Fatal("Supervise() with empty dir = nil, want error")
+	}
+	wantPrefix := fmt.Sprintf("supervisor: open event log %s:", sup.cfg.EventLog.Dir)
+	if !strings.HasPrefix(err.Error(), wantPrefix) {
+		t.Fatalf("Supervise() error = %q, want prefix %q", err.Error(), wantPrefix)
+	}
+}
+
+func TestSuperviseRepairTailErrorWrapped(t *testing.T) {
+	sup := testSupervisor(t)
+	if err := sup.appendJobEvent(testContext(t), "job.stopped", "probe", map[string]any{"state": "stopped"}); err != nil {
+		t.Fatalf("append seed = %v, want nil", err)
+	}
+	corruptEventLog(t, sup.cfg.EventLog.Dir)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := sup.Supervise(ctx)
+	if err == nil {
+		t.Fatal("Supervise() with corrupt log = nil, want error")
+	}
+	wantPrefix := fmt.Sprintf("supervisor: repair event log tail %s:", sup.cfg.EventLog.Dir)
+	if !strings.HasPrefix(err.Error(), wantPrefix) {
+		t.Fatalf("Supervise() error = %q, want prefix %q", err.Error(), wantPrefix)
+	}
+}
+
 func TestReconcilePropagatesStartAndReplayErrors(t *testing.T) {
 	sup := testSupervisor(t, testJob("probe", longJobCommand(t)))
 	sup.shimCommand = []string{filepath.Join(t.TempDir(), "missing-shim")}
@@ -1749,7 +1782,7 @@ func errorWithoutPanic(t *testing.T, name string, call func() error) (err error)
 
 func assertSafeSignalPID(t *testing.T, pid int) {
 	t.Helper()
-	if pid <= 1 || pid == os.Getpid() || pid == syscall.Getpgrp() {
+	if unsafeSignalTarget(pid) {
 		t.Fatalf("refuse unsafe signal pid %d", pid)
 	}
 }

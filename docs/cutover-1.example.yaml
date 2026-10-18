@@ -1,0 +1,141 @@
+# Cutover 1 (#36): the fleet's background jobs declared as Epitrop jobs. docs/cutover-1.md is
+# the plan. The paths are placeholders; the operator's copy names the real scripts and lives
+# in the private configuration, never in this repository.
+#
+# No supervisor loads this file until the switch-over decision: every job here runs the live
+# script, and a second copy beside the running one would act twice. The parallel run uses the
+# shadow jobs at the end instead.
+event_log:
+  dir: /var/lib/epitrop/cutover-1/events
+  signing_key_path: /run/secrets/epitrop-eventlog-seed
+jobs:
+  # Lands queued pull requests one at a time. Runs until it ends itself; a crash restarts it.
+  - name: landing-daemon
+    command: [/opt/fleet/landing-daemon.sh]
+    log_path: /var/log/epitrop/cutover-1/landing-daemon.log
+    schedule: always
+    router_alias: cordana/auto
+    restart:
+      policy: on-failure
+      max_restarts: 5
+      backoff_seconds: 60
+    stop:
+      signal: TERM
+      grace_seconds: 30
+    sandbox:
+      mode: "off"
+      reason: lands pull requests with the operator's forge login and writes to many worktrees
+  # Rebases landing units whose run failed on drift, then queues them again.
+  - name: auto-rebase
+    command: [/opt/fleet/auto-rebase.sh]
+    log_path: /var/log/epitrop/cutover-1/auto-rebase.log
+    schedule: always
+    router_alias: cordana/auto
+    restart:
+      policy: on-failure
+      max_restarts: 5
+      backoff_seconds: 60
+    stop:
+      signal: TERM
+      grace_seconds: 30
+    sandbox:
+      mode: "off"
+      reason: rebases in the landing units' worktrees and starts a coding client per unit
+  # Files dependency-update pull requests into the landing queue.
+  - name: update-intake
+    command: [/opt/fleet/update-intake.sh]
+    log_path: /var/log/epitrop/cutover-1/update-intake.log
+    schedule: always
+    router_alias: cordana/auto
+    restart:
+      policy: on-failure
+      max_restarts: 5
+      backoff_seconds: 60
+    sandbox:
+      mode: "off"
+      reason: reads pull requests with the operator's forge login and writes the landing queue
+  # Reports queue changes, daemon lines, new issues, host safety, quota and memory levels.
+  - name: fleet-monitor
+    command: [/opt/fleet/monitor.sh]
+    log_path: /var/log/epitrop/cutover-1/fleet-monitor.log
+    schedule: always
+    router_alias: cordana/auto
+    restart:
+      policy: always
+      max_restarts: 32
+      backoff_seconds: 30
+    sandbox:
+      mode: "off"
+      reason: reads host state, the container list and the forge with the operator's login
+  # Frees scratch space when a scratch file system runs low; today the monitor starts it.
+  - name: scratch-cleanup
+    command: [/opt/fleet/scratch-cleanup.sh, /var/tmp]
+    log_path: /var/log/epitrop/cutover-1/scratch-cleanup.log
+    schedule: "*/15 * * * *"
+    router_alias: cordana/auto
+    max_runtime_seconds: 600
+    sandbox:
+      mode: "off"
+      reason: removes stale entries from every session's scratch directory
+  # Parallel run: each shadow job runs the script's dry mode (DRYRUN=1), which prints what the
+  # script would do, writes nothing and prints one beat line every pass. Its log is compared
+  # with the live script's. The heartbeat bound is a few of the script's own pass intervals.
+  - name: landing-daemon-shadow
+    command: [/usr/bin/env, DRYRUN=1, /opt/fleet/landing-daemon.sh]
+    log_path: /var/log/epitrop/cutover-1/landing-daemon-shadow.log
+    schedule: always
+    router_alias: cordana/auto
+    restart:
+      policy: on-failure
+      max_restarts: 5
+      backoff_seconds: 60
+    heartbeat:
+      max_age_seconds: 300
+    sandbox:
+      mode: "off"
+      reason: reads the landing queue as the live script does
+  - name: auto-rebase-shadow
+    command: [/usr/bin/env, DRYRUN=1, /opt/fleet/auto-rebase.sh]
+    log_path: /var/log/epitrop/cutover-1/auto-rebase-shadow.log
+    schedule: always
+    router_alias: cordana/auto
+    restart:
+      policy: on-failure
+      max_restarts: 5
+      backoff_seconds: 60
+    heartbeat:
+      max_age_seconds: 600
+    sandbox:
+      mode: "off"
+      reason: reads the landing queue and the units' worktrees as the live script does
+  # The intake waits ten minutes between passes and a pass may take thirty.
+  - name: update-intake-shadow
+    command: [/usr/bin/env, DRYRUN=1, /opt/fleet/update-intake.sh]
+    log_path: /var/log/epitrop/cutover-1/update-intake-shadow.log
+    schedule: always
+    router_alias: cordana/auto
+    restart:
+      policy: on-failure
+      max_restarts: 5
+      backoff_seconds: 60
+    heartbeat:
+      max_age_seconds: 2700
+    sandbox:
+      mode: "off"
+      reason: reads pull requests with the operator's forge login as the live script does
+  # The monitor ends itself after 720 passes of 30 seconds, so its shadow restarts always, as
+  # the live job does.
+  - name: fleet-monitor-shadow
+    command: [/usr/bin/env, DRYRUN=1, /opt/fleet/monitor.sh]
+    log_path: /var/log/epitrop/cutover-1/fleet-monitor-shadow.log
+    schedule: always
+    router_alias: cordana/auto
+    restart:
+      policy: always
+      max_restarts: 32
+      backoff_seconds: 30
+    heartbeat:
+      max_age_seconds: 300
+    sandbox:
+      mode: "off"
+      reason: reads host state, the container list and the forge with the operator's login

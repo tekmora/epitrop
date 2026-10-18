@@ -219,12 +219,34 @@ func (s *Supervisor) statusFor(job config.JobConfig, replayed eventlog.Job) JobS
 		running = err == nil && held
 	}
 	if running {
-		return JobStatus{Name: job.Name, State: StateRunning, PID: rec.PID, ShimPID: rec.ShimPID, Since: rec.StartedAt, Restarts: replayed.Restarts, Sandbox: runningSandbox(rec, replayed)}
+		status := JobStatus{Name: job.Name, State: StateRunning, PID: rec.PID, ShimPID: rec.ShimPID, Since: rec.StartedAt, Restarts: replayed.Restarts, Sandbox: runningSandbox(rec, replayed)}
+		s.checkHeartbeat(job, rec, &status)
+		return status
 	}
 	if replayed.State == string(StateStopped) {
 		return JobStatus{Name: job.Name, State: StateStopped, Restarts: replayed.Restarts, Sandbox: sandboxStatus(job.Sandbox)}
 	}
 	return JobStatus{Name: job.Name, State: StateDead, Restarts: replayed.Restarts, Sandbox: sandboxStatus(job.Sandbox)}
+}
+
+// checkHeartbeat sets LastBeat and Stale of a running job that has a heartbeat. The last
+// beat is the newer of the job's start and the last write to its log. Liveness stays the
+// held lock; the beat only tells a hung job from a working one. A record whose start cannot
+// be read counts the log alone, and a job with neither has its last beat at the zero time,
+// so it is stale.
+func (s *Supervisor) checkHeartbeat(job config.JobConfig, rec jobRecord, status *JobStatus) {
+	if job.Heartbeat.MaxAgeSeconds == 0 {
+		return
+	}
+	beat, err := time.Parse(time.RFC3339Nano, rec.StartedAt)
+	if err != nil {
+		beat = time.Time{}
+	}
+	if info, statErr := os.Stat(rec.LogPath); statErr == nil && info.ModTime().After(beat) {
+		beat = info.ModTime()
+	}
+	status.LastBeat = beat.UTC().Format(time.RFC3339Nano)
+	status.Stale = s.clk.Now().Sub(beat) > time.Duration(job.Heartbeat.MaxAgeSeconds)*time.Second
 }
 
 // runningSandbox names the sandbox a running job was started under, as its shim recorded
@@ -249,6 +271,10 @@ func readJobRecord(path string) (jobRecord, bool) {
 	return rec, true
 }
 
+// appendEvent writes one event to the event log. It is a package seam replaced in tests
+// to simulate disk errors (such as ENOSPC) during event logging.
+var appendEvent = (*eventlog.Writer).Append
+
 func (s *Supervisor) appendJobEvent(ctx context.Context, typ string, name string, payload map[string]any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -256,10 +282,12 @@ func (s *Supervisor) appendJobEvent(ctx context.Context, typ string, name string
 	}
 	writer, err := eventlog.Open(s.cfg.EventLog.Dir, s.signer, s.eventLogLimits())
 	if err != nil {
-		return err
+		return fmt.Errorf("supervisor: record %s for job %s in event log %s: %w", typ, name, s.cfg.EventLog.Dir, err)
 	}
-	_, err = writer.Append(ctx, eventlog.Event{Type: typ, TaskID: name, Payload: body})
-	return err
+	if _, err = appendEvent(writer, ctx, eventlog.Event{Type: typ, TaskID: name, Payload: body}); err != nil {
+		return fmt.Errorf("supervisor: record %s for job %s in event log %s: %w", typ, name, s.cfg.EventLog.Dir, err)
+	}
+	return nil
 }
 
 func (s *Supervisor) reconcileJob(ctx context.Context, job config.JobConfig, st eventlog.Job, matches []uint64, replayHead uint64) error {

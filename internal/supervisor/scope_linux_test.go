@@ -173,6 +173,10 @@ func pick(values []string, i int) string {
 	return values[i]
 }
 
+// starter is the program of the process that starts the job in the scope tests: the shim.
+// Right after the start the kernel may still show it as the job's program (#228).
+const starter = "/opt/epitrop/bin/epitrop"
+
 // notAChild makes the process under test one that is not a child of the test process, so
 // that a made-up process id never reaches the kernel's wait interface.
 func notAChild(t *testing.T) {
@@ -184,10 +188,11 @@ func notAChild(t *testing.T) {
 
 func (w *scopeWorld) install(t *testing.T) {
 	t.Helper()
-	oldCgroup, oldStatus, oldExe, oldSleep := procCgroupReadFile, procStatusReadFile, procExeReadlink, scopeConfirmSleep
+	oldCgroup, oldStatus, oldExe, oldSleep, oldStarter := procCgroupReadFile, procStatusReadFile, procExeReadlink, scopeConfirmSleep, startingImage
 	t.Cleanup(func() {
-		procCgroupReadFile, procStatusReadFile, procExeReadlink, scopeConfirmSleep = oldCgroup, oldStatus, oldExe, oldSleep
+		procCgroupReadFile, procStatusReadFile, procExeReadlink, scopeConfirmSleep, startingImage = oldCgroup, oldStatus, oldExe, oldSleep, oldStarter
 	})
+	startingImage = func() (string, error) { return starter, nil }
 	notAChild(t)
 	procStatusReadFile = func(string) ([]byte, error) {
 		state := pick(w.states, w.sleeps)
@@ -229,6 +234,9 @@ func TestConfirmJobScope(t *testing.T) {
 		{"runs the job outside the scope", scopeWorld{cgroups: []string{outside}, states: []string{"S (sleeping)"}, images: []string{runner, runner, "/usr/bin/env"}}, "runs as /usr/bin/env in cgroup " + outside + ", outside scope " + scope, 3},
 		{"exited outside the scope", scopeWorld{cgroups: []string{outside}, states: []string{"S (sleeping)", "Z (zombie)"}, images: []string{runner, ""}}, "exited in cgroup " + outside + " before it entered scope " + scope, 2},
 		{"already reaped", scopeWorld{cgroups: []string{outside}, states: []string{"missing"}, images: []string{""}}, "exited in cgroup " + outside, 1},
+		{"still the starting program, then systemd-run", scopeWorld{cgroups: []string{outside, outside, inside}, states: []string{"R (running)"}, images: []string{starter, runner, "/usr/bin/env"}}, "", 3},
+		{"stays the starting program outside the scope", scopeWorld{cgroups: []string{outside}, states: []string{"R (running)"}, images: []string{starter}}, "is still in cgroup " + outside, scopeConfirmPolls},
+		{"the starting program, then another outside the scope", scopeWorld{cgroups: []string{outside}, states: []string{"R (running)"}, images: []string{starter, "/usr/bin/env"}}, "runs as /usr/bin/env in cgroup " + outside, 2},
 		{"program unreadable outside the scope", scopeWorld{cgroups: []string{outside}, states: []string{"S (sleeping)"}, images: []string{""}}, "is still in cgroup " + outside, scopeConfirmPolls},
 	}
 	for i := 0; i < len(cases); i++ {

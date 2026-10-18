@@ -57,3 +57,7 @@ labels:
   - name: "dependencies"
     color: "0366d6"
     description: "Pull requests that update a dependency file"
+
+  - name: "hold"
+    color: "b60205"
+    description: "Merge train skips this pull request until the label is removed"

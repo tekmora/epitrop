@@ -187,7 +187,10 @@ type replayRun struct {
 	// until, when set, ends the replay after that seq, which a segment must end at; the
 	// record files and HEAD are not read. Compact replays the folds to the new base so.
 	until uint64
-	segs  []segment
+	// fromCursor starts the replay after seq after instead of at the base; ReplayAfter.
+	fromCursor bool
+	after      uint64
+	segs       []segment
 }
 
 // cursor is where a replay stands: the state so far, the last seq it applied or that its
@@ -240,10 +243,8 @@ func (r replayRun) runFrom(b Base, hasBase bool) (State, CheckpointUse, error) {
 	}
 	st := State{Tasks: map[string]Task{}}
 	c := cursor{state: &st}
-	if hasBase {
-		if err = r.startAtBase(b, &c); err != nil {
-			return State{}, CheckpointUse{}, err
-		}
+	if err = r.start(b, hasBase, &c); err != nil {
+		return State{}, CheckpointUse{}, err
 	}
 	cp := r.findCheckpoint(c.last)
 	if cp.seq > 0 {
@@ -276,6 +277,18 @@ func (r replayRun) applyToHead(entries []os.DirEntry, c *cursor) error {
 		return err
 	}
 	return checkHeadMatchesTail(headRecord, hasHead, c.last, c.prev)
+}
+
+// start places c where the replay begins: at the caller's cursor, at the base of a compacted
+// log, or before seq 1.
+func (r replayRun) start(b Base, hasBase bool, c *cursor) error {
+	if r.fromCursor {
+		return r.startAtCursor(b, hasBase, c)
+	}
+	if hasBase {
+		return r.startAtBase(b, c)
+	}
+	return nil
 }
 
 // startAtBase starts c from the fold's state in b.
