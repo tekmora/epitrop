@@ -1,7 +1,7 @@
 <!--
 Provenance:
-Source URL: https://raw.githubusercontent.com/ollama/ollama/eab97e9f92b9a25c2d52d2cc6c1b1c99bd9fae21/docs/api.md
-Pinned revision: eab97e9f92b9a25c2d52d2cc6c1b1c99bd9fae21
+Source URL: https://raw.githubusercontent.com/ollama/ollama/e77773acc1761844f6a395ff8fc66392d7494e83/docs/api.md
+Pinned revision: e77773acc1761844f6a395ff8fc66392d7494e83
 Full document sha256: 96db03080e385dbabf5d70e75f298d41b75983bc30975cae56f7119f848dd0f5
 Extraction date: 2026-10-09
 SPDX licence: MIT
