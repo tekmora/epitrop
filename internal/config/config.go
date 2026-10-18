@@ -29,6 +29,7 @@ const (
 	MaxReplayRecords        = 1000000
 	MaxJobRestarts          = 32
 	MaxRestartBackoff       = 3600
+	MaxRestartWindowSeconds = 604800
 	MaxStopGraceSeconds     = 300
 	MaxJobRuntimeSeconds    = 365 * 24 * 3600
 	MaxHeartbeatSeconds     = 24 * 3600
@@ -238,6 +239,7 @@ type JobRestartConfig struct {
 	Policy         string `koanf:"policy" json:"policy"`
 	MaxRestarts    int    `koanf:"max_restarts" json:"max_restarts"`
 	BackoffSeconds int    `koanf:"backoff_seconds" json:"backoff_seconds"`
+	WindowSeconds  int    `koanf:"window_seconds" json:"window_seconds"`
 }
 
 type JobStopConfig struct {

@@ -378,6 +378,8 @@ func TestCheckJobRejectsRestartAndStopBounds(t *testing.T) {
 		{name: "too many restarts", job: boundedJob("daemon", config.MaxJobRestarts+1, 0, 0), want: "restart.max_restarts"},
 		{name: "negative backoff", job: boundedJob("daemon", 0, -1, 0), want: "restart.backoff_seconds"},
 		{name: "too much backoff", job: boundedJob("daemon", 0, config.MaxRestartBackoff+1, 0), want: "restart.backoff_seconds"},
+		{name: "negative window", job: withRestartWindow(boundedJob("daemon", 0, 0, 0), -1), want: "restart.window_seconds"},
+		{name: "too much window", job: withRestartWindow(boundedJob("daemon", 0, 0, 0), config.MaxRestartWindowSeconds+1), want: "restart.window_seconds"},
 		{name: "negative grace", job: boundedJob("daemon", 0, 0, -1), want: "stop.grace_seconds"},
 		{name: "too much grace", job: boundedJob("daemon", 0, 0, config.MaxStopGraceSeconds+1), want: "stop.grace_seconds"},
 	}
@@ -393,6 +395,7 @@ func TestCheckJobRejectsRestartAndStopBounds(t *testing.T) {
 
 func TestCheckJobAcceptsRestartAndStopMaxBounds(t *testing.T) {
 	job := boundedJob("daemon", config.MaxJobRestarts, config.MaxRestartBackoff, config.MaxStopGraceSeconds)
+	job.Restart.WindowSeconds = config.MaxRestartWindowSeconds
 	if err := checkJob(job); err != nil {
 		t.Fatalf("checkJob(max bounds) = %v, want nil", err)
 	}
@@ -403,6 +406,7 @@ func TestCheckJobAcceptsRestartAndStopMaxBounds(t *testing.T) {
 	}{
 		{name: "restarts", job: boundedJob("daemon", config.MaxJobRestarts+1, 0, 0), want: "restart.max_restarts"},
 		{name: "backoff", job: boundedJob("daemon", 0, config.MaxRestartBackoff+1, 0), want: "restart.backoff_seconds"},
+		{name: "window", job: withRestartWindow(boundedJob("daemon", 0, 0, 0), config.MaxRestartWindowSeconds+1), want: "restart.window_seconds"},
 		{name: "grace", job: boundedJob("daemon", 0, 0, config.MaxStopGraceSeconds+1), want: "stop.grace_seconds"},
 	}
 	for i := 0; i < len(tests); i++ {
@@ -412,6 +416,24 @@ func TestCheckJobAcceptsRestartAndStopMaxBounds(t *testing.T) {
 				t.Fatalf("checkJob(%s Max+1) = %v, want %q", tests[i].name, err, tests[i].want)
 			}
 		})
+	}
+}
+
+func TestCheckJobRestartWindowBounds(t *testing.T) {
+	job := boundedJob("daemon", 0, 0, 0)
+	job.Restart.WindowSeconds = config.MaxRestartWindowSeconds
+	if err := checkJob(job); err != nil {
+		t.Fatalf("checkJob(604800) = %v, want nil", err)
+	}
+	job.Restart.WindowSeconds = config.MaxRestartWindowSeconds + 1
+	err := checkJob(job)
+	if err == nil || !strings.Contains(err.Error(), "restart.window_seconds must be 0..604800") {
+		t.Fatalf("checkJob(604801) = %v, want 'restart.window_seconds must be 0..604800'", err)
+	}
+	job.Restart.WindowSeconds = -1
+	err = checkJob(job)
+	if err == nil || !strings.Contains(err.Error(), "restart.window_seconds must be 0..604800") {
+		t.Fatalf("checkJob(-1) = %v, want 'restart.window_seconds must be 0..604800'", err)
 	}
 }
 
@@ -860,12 +882,107 @@ func TestRestartAndShouldRestartBoundaries(t *testing.T) {
 		{name: "failure zero", job: withRestartPolicy(job, "on-failure"), st: eventlog.Job{LastExitCode: &zero}, want: false},
 		{name: "failure lost", job: withRestartPolicy(job, "on-failure"), st: eventlog.Job{LastExitCode: &zero, LastReason: "lost"}, want: true},
 	}
+	fixedNow := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < len(tests); i++ {
 		t.Run(tests[i].name, func(t *testing.T) {
-			if got := shouldRestart(tests[i].job, tests[i].st); got != tests[i].want {
+			if got := shouldRestart(tests[i].job, tests[i].st, fixedNow); got != tests[i].want {
 				t.Fatalf("shouldRestart(%s) = %v, want %v", tests[i].name, got, tests[i].want)
 			}
 		})
+	}
+}
+
+func TestShouldRestartCountsOnlyRestartsInsideTheWindow(t *testing.T) {
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	baseJob := testJob("daemon", []string{"/bin/true"})
+	baseJob.Restart = config.JobRestartConfig{Policy: "always"}
+
+	withWindowAndCap := func(window, cap int) config.JobConfig {
+		j := baseJob
+		j.Restart.WindowSeconds = window
+		j.Restart.MaxRestarts = cap
+		return j
+	}
+
+	twoHoursAgo := now.Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	tenMinAgo := now.Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	exact3600Ago := now.Add(-3600 * time.Second).UTC().Format(time.RFC3339)
+	sec3599Ago := now.Add(-3599 * time.Second).UTC().Format(time.RFC3339)
+
+	tests := []struct {
+		name string
+		job  config.JobConfig
+		st   eventlog.Job
+		want bool
+	}{
+		{name: "positive old restarts", job: withWindowAndCap(3600, 2), st: eventlog.Job{RestartTimes: []string{twoHoursAgo, twoHoursAgo}}, want: true},
+		{name: "negative recent restarts", job: withWindowAndCap(3600, 2), st: eventlog.Job{RestartTimes: []string{tenMinAgo, tenMinAgo}}, want: false},
+		{name: "boundary exact window allowed", job: withWindowAndCap(3600, 1), st: eventlog.Job{RestartTimes: []string{exact3600Ago}}, want: true},
+		{name: "boundary inside window refused", job: withWindowAndCap(3600, 1), st: eventlog.Job{RestartTimes: []string{sec3599Ago}}, want: false},
+		{name: "window zero lifetime cap kept", job: withWindowAndCap(0, 2), st: eventlog.Job{Restarts: 2, RestartTimes: []string{twoHoursAgo, twoHoursAgo}}, want: false},
+		{name: "unparseable time counts towards window cap", job: withWindowAndCap(3600, 1), st: eventlog.Job{RestartTimes: []string{"unparseable-time"}}, want: false},
+	}
+	for i := 0; i < len(tests); i++ {
+		t.Run(tests[i].name, func(t *testing.T) {
+			if got := shouldRestart(tests[i].job, tests[i].st, now); got != tests[i].want {
+				t.Fatalf("shouldRestart(%s) = %v, want %v", tests[i].name, got, tests[i].want)
+			}
+		})
+	}
+}
+
+func TestReduceJobRestartedKeepsTheNewestTimes(t *testing.T) {
+	st := eventlog.State{Jobs: map[string]eventlog.Job{}}
+	baseTime := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	var ninthTime string
+	var earlySlice []string
+	var err error
+
+	for i := 1; i <= 40; i++ {
+		recTime := baseTime.Add(time.Duration(i) * time.Minute).UTC().Format(time.RFC3339)
+		if i == 9 {
+			ninthTime = recTime
+		}
+		rec := eventlog.Record{Seq: uint64(i), Type: "job.restarted", TaskID: "daemon", Time: recTime}
+		st, err = JobReducer(st, rec)
+		if err != nil {
+			t.Fatalf("JobReducer(seq=%d) = %v, want nil", i, err)
+		}
+		if i == 20 {
+			earlySlice = st.Jobs["daemon"].RestartTimes
+		}
+	}
+
+	job := st.Jobs["daemon"]
+	if job.Restarts != 40 || len(job.RestartTimes) != 32 {
+		t.Fatalf("job.Restarts = %d, len(RestartTimes) = %d, want 40 and 32", job.Restarts, len(job.RestartTimes))
+	}
+	if job.RestartTimes[0] != ninthTime {
+		t.Fatalf("job.RestartTimes[0] = %q, want %q", job.RestartTimes[0], ninthTime)
+	}
+	if len(earlySlice) != 20 || earlySlice[19] != baseTime.Add(20*time.Minute).UTC().Format(time.RFC3339) {
+		t.Fatalf("earlySlice modified: len = %d, want 20", len(earlySlice))
+	}
+	assertRestartTimesBranch(t, eventlog.Job{Name: "daemon", RestartTimes: earlySlice})
+}
+
+// assertRestartTimesBranch reduces two records from one earlier State; the
+// second must not overwrite the time the first one appended.
+func assertRestartTimesBranch(t *testing.T, base eventlog.Job) {
+	t.Helper()
+	at := func(seq uint64, ts string) eventlog.State {
+		st := eventlog.State{Jobs: map[string]eventlog.Job{"daemon": base}}
+		next, err := JobReducer(st, eventlog.Record{Seq: seq, Type: "job.restarted", TaskID: "daemon", Time: ts})
+		if err != nil {
+			t.Fatalf("JobReducer(seq=%d) = %v, want nil", seq, err)
+		}
+		return next
+	}
+	first := at(41, "2026-10-18T12:00:00Z")
+	at(42, "2026-10-18T13:00:00Z")
+	times := first.Jobs["daemon"].RestartTimes
+	if got := times[len(times)-1]; got != "2026-10-18T12:00:00Z" {
+		t.Fatalf("first branch newest time = %q after a second branch, want 2026-10-18T12:00:00Z", got)
 	}
 }
 
@@ -1562,6 +1679,11 @@ func boundedJob(name string, restarts int, backoff int, grace int) config.JobCon
 	job.Restart.MaxRestarts = restarts
 	job.Restart.BackoffSeconds = backoff
 	job.Stop.GraceSeconds = grace
+	return job
+}
+
+func withRestartWindow(job config.JobConfig, window int) config.JobConfig {
+	job.Restart.WindowSeconds = window
 	return job
 }
 

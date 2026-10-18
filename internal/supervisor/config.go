@@ -63,6 +63,7 @@ func checkJobBounds(job config.JobConfig) error {
 	}{
 		{"restart.max_restarts", job.Restart.MaxRestarts, config.MaxJobRestarts},
 		{"restart.backoff_seconds", job.Restart.BackoffSeconds, config.MaxRestartBackoff},
+		{"restart.window_seconds", job.Restart.WindowSeconds, config.MaxRestartWindowSeconds},
 		{"stop.grace_seconds", job.Stop.GraceSeconds, config.MaxStopGraceSeconds},
 		{"max_runtime_seconds", job.MaxRuntimeSeconds, config.MaxJobRuntimeSeconds},
 		{"heartbeat.max_age_seconds", job.Heartbeat.MaxAgeSeconds, config.MaxHeartbeatSeconds},

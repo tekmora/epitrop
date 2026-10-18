@@ -122,6 +122,12 @@ func TestLoadNegativeValidation(t *testing.T) {
 		{"bad job restart policy", `{"jobs": [
   {"name": "bad-job", "command": ["/bin/true"], "log_path": "/tmp/bad.log", "schedule": "always", "restart": {"policy": "sometimes"}}
 ]}`, []string{"/jobs/0/restart/policy", "valid"}},
+		{"negative job restart window", `{"jobs": [
+  {"name": "bad-job", "command": ["/bin/true"], "log_path": "/tmp/bad.log", "restart": {"window_seconds": -1}, "sandbox": {"mode": "off", "reason": "test"}}
+]}`, []string{"/jobs/0/restart/window_seconds", "minimum"}},
+		{"job restart window above max", `{"jobs": [
+  {"name": "bad-job", "command": ["/bin/true"], "log_path": "/tmp/bad.log", "restart": {"window_seconds": 604801}, "sandbox": {"mode": "off", "reason": "test"}}
+]}`, []string{"/jobs/0/restart/window_seconds", "maximum"}},
 		{"bad job stop signal", `{"jobs": [
   {"name": "bad-job", "command": ["/bin/true"], "log_path": "/tmp/bad.log", "schedule": "always", "stop": {"signal": "KILL"}}
 ]}`, []string{"/jobs/0/stop/signal", "valid"}},

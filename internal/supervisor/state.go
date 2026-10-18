@@ -155,9 +155,29 @@ func reduceJobRefused(st eventlog.State, rec eventlog.Record) (eventlog.State, e
 	return st, nil
 }
 
+// restartTimesKept bounds the restart times a job keeps: the cap never exceeds
+// config.MaxJobRestarts, so an older time never decides a restart.
+const restartTimesKept = config.MaxJobRestarts
+
+// appendRestartTime returns a new slice with t after the newest kept times;
+// the slice of an earlier State is never written.
+func appendRestartTime(times []string, t string) []string {
+	n := len(times)
+	start := 0
+	if n >= restartTimesKept {
+		start = n - restartTimesKept + 1
+	}
+	kept := times[start:]
+	out := make([]string, len(kept)+1)
+	copy(out, kept)
+	out[len(kept)] = t
+	return out
+}
+
 func reduceJobRestarted(st eventlog.State, rec eventlog.Record) (eventlog.State, error) {
 	job := st.Jobs[rec.TaskID]
 	job.Name, job.Restarts, job.LastEvent = rec.TaskID, job.Restarts+1, rec.Type
+	job.RestartTimes = appendRestartTime(job.RestartTimes, rec.Time)
 	st.Jobs[rec.TaskID] = job
 	return st, nil
 }
@@ -319,7 +339,7 @@ func (s *Supervisor) reconcileAlwaysJob(ctx context.Context, job config.JobConfi
 	if st.LastEvent == "" {
 		return s.Start(ctx, job.Name)
 	}
-	if shouldRestart(job, st) {
+	if shouldRestart(job, st, s.clk.Now()) {
 		return s.restartJob(ctx, job)
 	}
 	return nil
@@ -349,8 +369,26 @@ func (s *Supervisor) restartJob(ctx context.Context, job config.JobConfig) error
 	return s.Start(ctx, job.Name)
 }
 
-func shouldRestart(job config.JobConfig, st eventlog.Job) bool {
-	if st.Restarts >= job.Restart.MaxRestarts {
+// restartsInWindow counts the restarts the cap bounds: every restart without a
+// window, otherwise those newer than now minus the window. A time that does not
+// parse counts, so an unreadable record never frees budget.
+func restartsInWindow(job config.JobConfig, st eventlog.Job, now time.Time) int {
+	if job.Restart.WindowSeconds <= 0 {
+		return st.Restarts
+	}
+	cutoff := now.Add(-time.Duration(job.Restart.WindowSeconds) * time.Second)
+	count := 0
+	for _, raw := range st.RestartTimes {
+		t, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil || t.After(cutoff) {
+			count++
+		}
+	}
+	return count
+}
+
+func shouldRestart(job config.JobConfig, st eventlog.Job, now time.Time) bool {
+	if restartsInWindow(job, st, now) >= job.Restart.MaxRestarts {
 		return false
 	}
 	if job.Restart.Policy == "always" && st.State != string(StateStopped) {

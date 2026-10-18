@@ -1,0 +1,3 @@
+type: added
+title: 'A job can set restart.window_seconds, so restart.max_restarts bounds the restarts in that window instead of every restart of its life'
+issue: "285"
