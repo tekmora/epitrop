@@ -81,11 +81,20 @@ func detachedSlotCommand(f slotRunFlags, req slot.RunRequest, limits slot.Limits
 		"-p", "MemoryHigh=" + limits.High,
 		"-p", "RuntimeMaxSec=" + strconv.Itoa(int((slotRunTimeout+time.Minute)/time.Second)),
 		"--setenv=PATH=" + os.Getenv("PATH"),
+	}
+	// A name without a value makes systemd-run take the value from its own environment, so
+	// the job's env_allow values reach the runner without standing in the command line.
+	for i := 0; i < len(limits.EnvAllow); i++ {
+		if _, set := os.LookupEnv(limits.EnvAllow[i]); set {
+			argv = append(argv, "--setenv="+limits.EnvAllow[i])
+		}
+	}
+	argv = append(argv,
 		"--",
 		self, "slot", "run",
 		"--config", *f.config, "--repo", req.Repo, "--base", req.Base, "--brief", *f.brief,
 		"--workspace", req.Dir, "--out", req.Out,
-	}
+	)
 	if *f.resume != "" {
 		argv = append(argv, "--resume", *f.resume)
 	}
