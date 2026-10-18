@@ -90,35 +90,49 @@ func (s *Service) timedPass(ctx context.Context) error {
 	return s.RunPass(passCtx)
 }
 
-// RunPass makes one pass over every route. The rate-limit throttle belongs to one pass:
-// a later pass asks GitHub again.
+// passTally counts what one pass did, for its summary line and its error.
+type passTally struct {
+	polled, failedPolls, newItems, filed, deferred int
+	failed                                         []string
+}
+
+// RunPass makes one pass over every route and ends it with one summary line, so a pass
+// that finds nothing new still leaves a line in the job log (#271). The rate-limit
+// throttle belongs to one pass: a later pass asks GitHub again.
 func (s *Service) RunPass(ctx context.Context) error {
 	s.client.ResetThrottle()
-	var failedSources []string
-	actionsFiled := 0
+	var tally passTally
 	maxActions := s.cfg.ReleaseWatch.MaxActionsPerRun
 	if maxActions <= 0 {
 		maxActions = config.DefaultMaxActionsPerRun
 	}
 
+	throttled := false
 	for r := 0; r < len(s.cfg.ReleaseWatch.Routes); r++ {
-		route := s.cfg.ReleaseWatch.Routes[r]
-		err := s.processRoute(ctx, route, &actionsFiled, maxActions, &failedSources)
+		err := s.processRoute(ctx, s.cfg.ReleaseWatch.Routes[r], &tally, maxActions)
 		if err != nil && errors.Is(err, ErrThrottled) {
-			if len(failedSources) > 0 {
-				return fmt.Errorf("release-watch pass failed: %s", strings.Join(failedSources, ", "))
-			}
-			return nil
+			throttled = true
+			break
 		}
 	}
+	s.logPassSummary(tally, throttled)
 
-	if len(failedSources) > 0 {
-		return fmt.Errorf("release-watch pass failed: %s", strings.Join(failedSources, ", "))
+	if len(tally.failed) > 0 {
+		return fmt.Errorf("release-watch pass failed: %s", strings.Join(tally.failed, ", "))
 	}
 	return nil
 }
 
-func (s *Service) processRoute(ctx context.Context, route config.ReleaseWatchRoute, actionsFiled *int, maxActions int, failedSources *[]string) error {
+func (s *Service) logPassSummary(tally passTally, throttled bool) {
+	end := ""
+	if throttled {
+		end = "; stopped early by the rate-limit throttle"
+	}
+	s.client.Logf("release-watch: pass done: sources %d polled, %d failed; releases %d new, %d filed, %d deferred%s\n",
+		tally.polled, tally.failedPolls, tally.newItems, tally.filed, tally.deferred, end)
+}
+
+func (s *Service) processRoute(ctx context.Context, route config.ReleaseWatchRoute, tally *passTally, maxActions int) error {
 	for i := 0; i < len(route.Sources); i++ {
 		src := route.Sources[i]
 		sourceID := sourceIdentifier(src)
@@ -128,10 +142,13 @@ func (s *Service) processRoute(ctx context.Context, route config.ReleaseWatchRou
 				return ErrThrottled
 			}
 			s.client.Logf("release-watch: source %s failed: %v\n", sourceID, err)
-			*failedSources = append(*failedSources, sourceID)
+			tally.polled++
+			tally.failedPolls++
+			tally.failed = append(tally.failed, sourceID)
 			continue
 		}
-		if err = s.processSourceItems(ctx, route.Sinks, items, actionsFiled, maxActions, failedSources); err != nil {
+		tally.polled++
+		if err = s.processSourceItems(ctx, route.Sinks, items, tally, maxActions); err != nil {
 			if errors.Is(err, ErrThrottled) {
 				return ErrThrottled
 			}
@@ -140,8 +157,9 @@ func (s *Service) processRoute(ctx context.Context, route config.ReleaseWatchRou
 	return nil
 }
 
-func (s *Service) processSourceItems(ctx context.Context, sinks []config.ReleaseWatchSink, items []ReleaseItem, actionsFiled *int, maxActions int, failedSources *[]string) error {
+func (s *Service) processSourceItems(ctx context.Context, sinks []config.ReleaseWatchSink, items []ReleaseItem, tally *passTally, maxActions int) error {
 	unseen := s.filterAndOrderUnseen(items)
+	tally.newItems += len(unseen)
 	perCap := s.cfg.ReleaseWatch.PerSourceCap
 	if perCap <= 0 {
 		perCap = config.DefaultPerSourceCap
@@ -150,13 +168,15 @@ func (s *Service) processSourceItems(ctx context.Context, sinks []config.Release
 		for i := perCap; i < len(unseen); i++ {
 			s.client.Logf("release-watch: deferred %s (cap)\n", unseen[i].ID)
 		}
+		tally.deferred += len(unseen) - perCap
 		unseen = unseen[:perCap]
 	}
 
 	for i := 0; i < len(unseen); i++ {
 		item := unseen[i]
-		if *actionsFiled >= maxActions {
+		if tally.filed >= maxActions {
 			s.client.Logf("release-watch: deferred %s (cap)\n", item.ID)
+			tally.deferred++
 			continue
 		}
 		filed, err := s.deliverItem(ctx, sinks, item)
@@ -165,11 +185,11 @@ func (s *Service) processSourceItems(ctx context.Context, sinks []config.Release
 				return ErrThrottled
 			}
 			s.client.Logf("release-watch: delivery %s failed: %v\n", item.ID, err)
-			*failedSources = append(*failedSources, fmt.Sprintf("delivery:%s", item.ID))
+			tally.failed = append(tally.failed, fmt.Sprintf("delivery:%s", item.ID))
 			continue
 		}
 		if filed {
-			*actionsFiled++
+			tally.filed++
 		}
 	}
 	return nil

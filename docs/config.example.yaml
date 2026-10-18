@@ -140,6 +140,9 @@ event_log:
 # ExecStart= itself. A fine-grained token needs only Issues read and write on the sink
 # repositories; it reads public upstream releases without any permission on them.
 # SyslogIdentifier= keeps the unit's lines findable with `journalctl --user -t` (#263).
+# Every pass ends with one line in the job log, also when it finds nothing new:
+#   release-watch: pass done: sources 10 polled, 0 failed; releases 0 new, 0 filed, 0 deferred
+# with "; stopped early by the rate-limit throttle" appended when the floor cut it short.
 release_watch:
   state_dir: /var/tmp/epitrop/release-watch
   rate_limit_floor: 100
