@@ -1,7 +1,7 @@
 # ADR-0008: Allow sandbox paths only inside declared roots
 
-- **Status**: Proposed
-- **Date**: 2026-10-15
+- **Status**: Accepted
+- **Date**: 2026-10-15, accepted 2026-10-18
 - **Authors**: Epitrop maintainers
 
 ## Context
