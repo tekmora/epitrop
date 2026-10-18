@@ -80,11 +80,20 @@ func DefaultSessionsDir() (string, error) {
 // directory, a directory with no session files, or a newest session that
 // never logged rate_limits are all reported as StatusSkip with a reason,
 // never as a guessed record.
+//
+// The record also carries the window's recent burn and the sessions active in
+// it, measured from the rate_limits samples of the last burnWindow (burn.go);
+// what cannot be measured is named in Record.Absent, never zero-filled.
 func Fetch(ctx context.Context, sessionsDir string) Result {
-	newest, found, err := newestSessionFile(ctx, sessionsDir)
+	return fetchAt(ctx, sessionsDir, time.Now().UTC())
+}
+
+func fetchAt(ctx context.Context, sessionsDir string, now time.Time) Result {
+	scan, err := scanSessions(ctx, sessionsDir, now.Add(-burnWindow))
 	if err != nil {
 		return Result{Status: catalog.StatusFail, Detail: err.Error()}
 	}
+	newest, found := scan.best, scan.best != ""
 	if !found {
 		return Result{Status: catalog.StatusSkip, Detail: fmt.Sprintf("no *.jsonl session files under %s", sessionsDir)}
 	}
@@ -100,24 +109,29 @@ func Fetch(ctx context.Context, sessionsDir string) Result {
 		return Result{Status: catalog.StatusSkip, Detail: fmt.Sprintf("newest session %s rate_limits carries no primary window", newest)}
 	}
 
-	rec, recErr := toRecord(*rl, time.Now().UTC())
+	rec, recErr := toRecord(*rl, now)
 	if recErr != nil {
 		return Result{Status: catalog.StatusFail, Detail: recErr.Error()}
+	}
+	if detail := addBurn(ctx, &rec, scan, *rl, now); detail != "" {
+		return Result{Records: []catalog.Record{rec}, Status: catalog.StatusDegraded, Count: 1, Detail: detail}
 	}
 	return Result{Records: []catalog.Record{rec}, Status: catalog.StatusOK, Count: 1}
 }
 
-// newestSessionFile walks sessionsDir and returns the *.jsonl path with the
-// latest modification time. A missing directory is reported as found=false,
-// err=nil: that is a skip, not a failure.
 // sessionScan accumulates the newest matching session file seen across a
-// filepath.WalkDir, keeping newestSessionFile's own complexity to setting
-// this up and interpreting the final result.
+// filepath.WalkDir, keeping scanSessions' own complexity to setting this up
+// and interpreting the final result.
 type sessionScan struct {
 	root     string
 	best     string
 	bestTime time.Time
 	scanned  int
+	// recentFrom, recent and recentOverflow collect the session files written
+	// since recentFrom, the only ones that can hold a sample of the burn window.
+	recentFrom     time.Time
+	recent         []string
+	recentOverflow bool
 }
 
 // consider evaluates one WalkDir entry, updating s.best when p is a newer
@@ -152,21 +166,36 @@ func (s *sessionScan) consider(ctx context.Context, p string, d fs.DirEntry, wal
 		s.bestTime = info.ModTime()
 		s.best = p
 	}
+	s.noteRecent(p, info.ModTime())
 	return nil
 }
 
-func newestSessionFile(ctx context.Context, root string) (path string, found bool, err error) {
-	scan := &sessionScan{root: root}
+func (s *sessionScan) noteRecent(p string, modTime time.Time) {
+	if modTime.Before(s.recentFrom) {
+		return
+	}
+	if len(s.recent) >= maxRecentSessions {
+		s.recentOverflow = true
+		return
+	}
+	s.recent = append(s.recent, p)
+}
+
+// scanSessions walks root once: the newest session file, and every file
+// written since recentFrom. A missing directory yields an empty scan, not an
+// error: that is a skip, not a failure.
+func scanSessions(ctx context.Context, root string, recentFrom time.Time) (*sessionScan, error) {
+	scan := &sessionScan{root: root, recentFrom: recentFrom}
 	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, walkErr error) error {
 		return scan.consider(ctx, p, d, walkErr)
 	})
 	if walkErr != nil {
 		if errors.Is(walkErr, fs.ErrNotExist) {
-			return "", false, nil
+			return &sessionScan{root: root}, nil
 		}
-		return "", false, fmt.Errorf("codex-local: walk %s: %w", root, walkErr)
+		return nil, fmt.Errorf("codex-local: walk %s: %w", root, walkErr)
 	}
-	return scan.best, scan.best != "", nil
+	return scan, nil
 }
 
 // sessionLine is the JSONL envelope; only the fields Fetch needs are typed.
@@ -174,7 +203,8 @@ func newestSessionFile(ctx context.Context, root string) (path string, found boo
 // against openai/codex generated rate-limit model sources at
 // 0ada5d8806cdad498230d5b1b2924091e04c8feb on 2026-10-09.
 type sessionLine struct {
-	Payload struct {
+	Timestamp string `json:"timestamp"`
+	Payload   struct {
 		RateLimits *rateLimits `json:"rate_limits"`
 	} `json:"payload"`
 }
@@ -208,7 +238,7 @@ func latestRateLimits(ctx context.Context, path string) (result *rateLimits, err
 }
 
 func openRegularSessionFile(path string) (*os.File, error) {
-	// #nosec G304 -- path is always the output of newestSessionFile's own
+	// #nosec G304 -- path is always the output of scanSessions' own
 	// WalkDir scan under the caller-supplied sessions root, not untrusted input.
 	f, err := os.Open(path)
 	if err != nil {
@@ -264,6 +294,15 @@ func scanLatestRateLimits(ctx context.Context, path string, scanner *bufio.Scann
 // exactly that); returning nil for it, not a zero value, lets the caller
 // keep an earlier line's usable value instead of reporting "no data".
 func parseRateLimitsLine(raw []byte) (*rateLimits, error) {
+	line, err := decodeRateLimitsLine(raw)
+	if line == nil || err != nil {
+		return nil, err
+	}
+	return line.Payload.RateLimits, nil
+}
+
+// decodeRateLimitsLine is parseRateLimitsLine keeping the line's timestamp.
+func decodeRateLimitsLine(raw []byte) (*sessionLine, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -280,7 +319,7 @@ func parseRateLimitsLine(raw []byte) (*rateLimits, error) {
 	if err := validateRateLimits(line.Payload.RateLimits); err != nil {
 		return nil, err
 	}
-	return line.Payload.RateLimits, nil
+	return &line, nil
 }
 
 func validateRateLimits(rl *rateLimits) error {

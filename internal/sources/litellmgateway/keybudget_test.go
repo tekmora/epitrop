@@ -86,7 +86,7 @@ func TestFetchKeyBudgetNamesWhatTheKeyLacks(t *testing.T) {
 		if rec.ModelID != "litellm-key" || rec.UsageWindow.UsedPercent != nil || rec.Limits != nil {
 			t.Fatalf("max_budget %s: record = %+v, want no used share and no limits", budget, rec)
 		}
-		for _, field := range []string{"usage_window.used_percent", "usage_window.window_minutes", "usage_window.resets_at", "limits"} {
+		for _, field := range []string{"usage_window.used_percent", "usage_window.window_minutes", "usage_window.resets_at", "usage_window.burn_percent_per_hour", "usage_window.active_agents", "limits"} {
 			if rec.Absent[field] == "" {
 				t.Errorf("max_budget %s: Absent[%s] is empty, want a reason", budget, field)
 			}
