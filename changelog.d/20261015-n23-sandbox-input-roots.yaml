@@ -1,3 +1,0 @@
-type: changed
-title: 'Allow a sandboxed job''s workspace and inputs only inside the directories sandbox_input_roots declares, and refuse login locations below HOME unless a root names exactly one'
-breaking: true

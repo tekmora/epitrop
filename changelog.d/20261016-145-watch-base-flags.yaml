@@ -1,4 +1,0 @@
-type: added
-title: '`epitropctl watch` accepts `--github-base`, `--huggingface-base`, and `--ntfy-base` flags to point API requests at local stand-ins'
-issue: "145"
-breaking: false

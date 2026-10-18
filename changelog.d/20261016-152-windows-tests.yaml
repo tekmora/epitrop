@@ -1,4 +1,0 @@
-type: fixed
-title: 'The signed event log and the epitropctl commands that write it work on Windows, and Windows test suites run every package'
-issue: "152"
-breaking: false

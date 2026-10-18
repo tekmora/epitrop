@@ -1,3 +1,0 @@
-type: added
-title: '`docs/config.example.yaml`: running the release watch''s supervisor as a systemd user unit that loads its token with `LoadCredentialEncrypted=`, with the token''s minimal rights'
-issue: "23"

@@ -1,4 +1,0 @@
-type: fixed
-title: '`epitropctl watch` refuses a release watch seen-set file whose version is not 1, instead of reading it and rewriting it as version 1'
-issue: "148"
-breaking: false

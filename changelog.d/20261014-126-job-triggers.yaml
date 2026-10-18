@@ -1,4 +1,0 @@
-type: added
-title: "Interval and event job triggers in supervisor, refusing unexecutable schedules or restart policies on triggered jobs at config load"
-issue: "126"
-breaking: true

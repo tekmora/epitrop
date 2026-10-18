@@ -1,3 +1,0 @@
-type: added
-title: 'Start a slot run as a systemd user service of its own with epitropctl slot run --detach, carrying the template''s memory_max and memory_high, so the run outlives the session that started it'
-breaking: false

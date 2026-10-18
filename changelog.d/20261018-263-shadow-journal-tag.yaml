@@ -1,3 +1,0 @@
-type: changed
-title: '`docs/cutover-1.md`: the shadow supervisor''s host unit tags its journal lines with its own name, so its exit reason can be found by `journalctl -t`'
-issue: "263"

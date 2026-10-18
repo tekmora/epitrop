@@ -1,4 +1,0 @@
-type: added
-title: 'Take up interrupted slot runs with epitropctl slot resume, adopting the running or ended job without a second start and recording the result as an uninterrupted run'
-issue: "127"
-breaking: false
