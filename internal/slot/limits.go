@@ -8,12 +8,16 @@ import (
 	"github.com/tekmora/epitrop/internal/config"
 )
 
-// Limits are the memory limits a slot's template sets for its job, in systemd's size form.
+// Limits are the memory limits a slot's template sets for its job, in systemd's size form,
+// and the environment names the job takes from its runner.
 type Limits struct {
 	// Max is the job's sandbox.memory_max: the hard limit.
 	Max string
 	// High is the job's sandbox.memory_high: the soft limit.
 	High string
+	// EnvAllow is the job's sandbox.env_allow: the names a detached runner's service must
+	// carry from the caller, or the job never sees their values.
+	EnvAllow []string
 }
 
 // TemplateLimits reads the memory limits that a slot's template writes out for its job. A
@@ -60,5 +64,31 @@ func templateLimits(doc map[string]any) (Limits, error) {
 		}
 		*values[i].into = value
 	}
+	allow, err := templateEnvAllow(sandbox["env_allow"])
+	if err != nil {
+		return Limits{}, err
+	}
+	limits.EnvAllow = allow
 	return limits, nil
+}
+
+// templateEnvAllow reads sandbox.env_allow as written; the loader checks the names when the
+// runner loads the template.
+func templateEnvAllow(value any) ([]string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	list, isList := value.([]any)
+	if !isList || len(list) > config.MaxSandboxEnvAllow {
+		return nil, fmt.Errorf("its job's sandbox.env_allow is no list of at most %d names", config.MaxSandboxEnvAllow)
+	}
+	names := make([]string, 0, len(list))
+	for i := 0; i < len(list); i++ {
+		name, isString := list[i].(string)
+		if !isString {
+			return nil, fmt.Errorf("its job's sandbox.env_allow/%d is no name", i)
+		}
+		names = append(names, name)
+	}
+	return names, nil
 }

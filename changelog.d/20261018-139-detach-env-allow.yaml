@@ -1,0 +1,3 @@
+type: fixed
+title: '`epitropctl slot run --detach` hands the service the caller''s values of the job''s `sandbox.env_allow` names, so a detached job sees the same environment as an attached one'
+issue: "139"
