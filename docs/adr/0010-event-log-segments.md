@@ -1,7 +1,7 @@
 # ADR-0010: Move closed ranges of the event log into segment files
 
-- **Status**: Proposed
-- **Date**: 2026-10-17
+- **Status**: Accepted
+- **Date**: 2026-10-17, accepted 2026-10-18
 - **Authors**: Epitrop maintainers
 
 ## Context
@@ -25,7 +25,7 @@ Issue #58 asks for three steps: segment rotation, compaction, and Git commits at
 - `events/` keeps at most 256 × 4 loose records after each rotation plus the records since, and one file per 256 records otherwise.
 - The log format gains a folder. A v0.1.0 binary does not read segments: a log rotated by this version must not be replayed by v0.1.0. A log written by v0.1.0 replays unchanged, and replays to the same state after rotation (`TestV010LogReplaysTheSameAfterRotation`).
 - A temporary file left in `segments/` by a crash during a rotation stays until removed by hand; it is ignored by replay.
-- Committing the log to Git at checkpoints is recorded in [ADR-0011](0011-event-log-git-commits.md). Compaction (dropping records a checkpoint covers) remains open in #58 and will get its own record.
+- Committing the log to Git at checkpoints is recorded in [ADR-0011](0011-event-log-git-commits.md). Compaction (dropping records a checkpoint covers) is recorded in [ADR-0012](0012-event-log-compaction.md).
 
 ## Alternatives considered
 

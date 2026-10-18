@@ -1,7 +1,7 @@
 # ADR-0011: Commit the event log to Git at checkpoints, onto a ref of its own
 
-- **Status**: Proposed
-- **Date**: 2026-10-17
+- **Status**: Accepted
+- **Date**: 2026-10-17, accepted 2026-10-18
 - **Authors**: Epitrop maintainers
 
 ## Context
