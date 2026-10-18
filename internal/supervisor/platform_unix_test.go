@@ -488,24 +488,86 @@ func checkKilledJobState(t *testing.T, cmd *exec.Cmd) {
 	}
 }
 
-func TestLockCloseErrorPaths(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "bad-close.lock")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+// A job's lock is opened close-on-exec: the job a shim starts does not inherit it, so the
+// lock ends with the shim even while the job lives on.
+func TestJobLockIsNotInheritedByAStartedProcess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job.lock")
+	lock, err := holdLock(path)
 	if err != nil {
-		t.Fatalf("OpenFile(%s) = %v, want nil", path, err)
+		t.Fatalf("holdLock(%s) = %v, want nil", path, err)
 	}
-	if err = file.Close(); err != nil {
-		t.Fatalf("Close(preclose) = %v, want nil", err)
+	cmd := startSleep(t, true)
+	if fd := descriptorNaming(t, strconv.Itoa(cmd.Process.Pid), path); fd >= 0 {
+		t.Fatalf("started process %d holds the job lock as descriptor %d, want it not inherited", cmd.Process.Pid, fd)
 	}
-	lock := &heldLock{file: file}
-	if err = lock.Close(); err == nil || !strings.Contains(err.Error(), "unlock") {
-		t.Fatalf("heldLock.Close(preclosed) = %v, want unlock error", err)
+	if err = lock.Close(); err != nil {
+		t.Fatalf("Close(lock) = %v, want nil", err)
 	}
-	cause := errors.New("cause")
-	err = closeHeldLock(file, cause)
-	if err == nil || !strings.Contains(err.Error(), "cause") || !strings.Contains(err.Error(), "close lock") {
-		t.Fatalf("closeHeldLock(preclosed) = %v, want joined close error", err)
+	if held, err := lockHeld(path); err != nil || held {
+		t.Fatalf("lockHeld() after Close = %v, %v, want false nil", held, err)
 	}
+	// A second Close of a released lock is no error.
+	if err = lock.Close(); err != nil {
+		t.Fatalf("Close(released lock) = %v, want nil", err)
+	}
+}
+
+func TestLockCloseReportsAFailedUnlock(t *testing.T) {
+	if err := unlockFailingLock(t).Close(); err == nil || !strings.Contains(err.Error(), "unlock") {
+		t.Fatalf("heldLock.Close(unlock fails) = %v, want unlock error", err)
+	}
+}
+
+// unlockFailingLock holds a lock whose descriptor is then replaced by an O_PATH one on the
+// same number, which flock(2) refuses with EBADF, so its Close fails to unlock. The number
+// stays open, so the lock's file closes it later without touching another file.
+func unlockFailingLock(t *testing.T) *heldLock {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "unlock-fails.lock")
+	lock, err := holdLock(path)
+	if err != nil {
+		t.Fatalf("holdLock(%s) = %v, want nil", path, err)
+	}
+	fd := descriptorNaming(t, "self", path)
+	if fd < 0 {
+		t.Fatalf("no descriptor of this process names %s", path)
+	}
+	pathFD, err := unix.Open(path, unix.O_PATH|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("Open(%s, O_PATH) = %v, want nil", path, err)
+	}
+	defer func() {
+		if err := unix.Close(pathFD); err != nil {
+			t.Errorf("Close(O_PATH) = %v, want nil", err)
+		}
+	}()
+	if err = unix.Dup3(pathFD, fd, unix.O_CLOEXEC); err != nil {
+		t.Fatalf("Dup3(O_PATH, %d) = %v, want nil", fd, err)
+	}
+	return lock
+}
+
+// descriptorNaming returns the descriptor of process pid ("self" for this one) that names
+// path, or -1 when it has none.
+func descriptorNaming(t *testing.T, pid, path string) int {
+	t.Helper()
+	dir := filepath.Join("/proc", pid, "fd")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%s) = %v, want nil", dir, err)
+	}
+	for i := 0; i < len(entries); i++ {
+		target, linkErr := os.Readlink(filepath.Join(dir, entries[i].Name()))
+		if linkErr != nil || target != path {
+			continue
+		}
+		fd, convErr := strconv.Atoi(entries[i].Name())
+		if convErr != nil {
+			t.Fatalf("descriptor name %q: %v", entries[i].Name(), convErr)
+		}
+		return fd
+	}
+	return -1
 }
 
 func withRecordingSignaller(t *testing.T) *[]recordedSignal {

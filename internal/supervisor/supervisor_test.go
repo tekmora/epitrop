@@ -746,8 +746,8 @@ func TestShimEventAppendAndCleanupErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("waitAndRecordExit(failing writer) = nil, want append error")
 	}
-	preclosed := preclosedFile(t)
-	stderr := captureStderr(t, func() { closeLockForShim(&heldLock{file: preclosed}) })
+	broken := unlockFailingLock(t)
+	stderr := captureStderr(t, func() { closeLockForShim(broken) })
 	if !strings.Contains(stderr, "close job lock") {
 		t.Fatalf("closeLockForShim stderr = %q, want close job lock", stderr)
 	}
