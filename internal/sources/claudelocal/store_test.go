@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tekmora/epitrop/catalog"
+	"github.com/tekmora/epitrop/internal/atomicfile"
 )
 
 // calibrationLines: 10 units before a rejection in the window that reset at
@@ -140,7 +141,7 @@ func TestStoreKeepsTheNewestObservation(t *testing.T) {
 
 func TestStoreWriteIsAtomic(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "default.json")
-	if err := replaceFile(path, []byte("old store\n"), writeAndSync); err != nil {
+	if err := replaceFile(path, []byte("old store\n"), atomicfile.Sync); err != nil {
 		t.Fatal(err)
 	}
 	assertInterruptedWriteFails(t, path)
@@ -149,10 +150,7 @@ func TestStoreWriteIsAtomic(t *testing.T) {
 
 func assertInterruptedWriteFails(t *testing.T, path string) {
 	t.Helper()
-	interrupted := func(f *os.File, data []byte) error {
-		if _, err := f.Write(data[:len(data)/2]); err != nil {
-			return err
-		}
+	interrupted := func(f *os.File) error {
 		return errors.New("simulated interruption")
 	}
 	if err := replaceFile(path, []byte(strings.Repeat("new store ", 50)), interrupted); err == nil {
@@ -161,8 +159,12 @@ func assertInterruptedWriteFails(t *testing.T, path string) {
 	if data, err := os.ReadFile(path); err != nil || string(data) != "old store\n" {
 		t.Fatalf("the store must keep its old contents, got %q (%v)", data, err)
 	}
-	if _, err := os.Stat(path + pendingSuffix); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("no staged file may remain after a failed write: %v", err)
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "default.json" {
+		t.Fatalf("want only default.json, got %v", entries)
 	}
 }
 
@@ -172,14 +174,21 @@ func assertLeftoverStagedFileReplaced(t *testing.T, path string) {
 	if err := os.WriteFile(path+pendingSuffix, []byte("{partial"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := replaceFile(path, []byte("new store\n"), writeAndSync); err != nil {
+	if err := replaceFile(path, []byte("new store\n"), atomicfile.Sync); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != "new store\n" {
 		t.Fatalf("got %q (%v)", data, err)
 	}
 	if _, err := os.Stat(path + pendingSuffix); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the staged file must be renamed away: %v", err)
+		t.Fatalf("the staged file must be removed: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "default.json" {
+		t.Fatalf("want only default.json, got %v", entries)
 	}
 }
 
