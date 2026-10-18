@@ -102,11 +102,16 @@ func completeTemplate(doc map[string]any, ws Workspace, out string) error {
 }
 
 // CheckRunJob refuses a job that a slot may not run: one without a sandbox, because a run
-// is not trusted, and one without a deadline of its own, because nothing else ends a run
-// that never ends.
+// is not trusted; one that reaches the open internet, because a harness that follows an
+// instruction planted in its input could send the workspace anywhere (ADR-0006), so a run
+// reaches its declared gateway (network proxy) or nothing; and one without a deadline of
+// its own, because nothing else ends a run that never ends.
 func CheckRunJob(job config.JobConfig) error {
 	if job.Sandbox.Mode != "enforce" {
 		return fmt.Errorf("its job has sandbox.mode %q, a slot's job runs sandboxed", job.Sandbox.Mode)
+	}
+	if job.Sandbox.Network != "none" && job.Sandbox.Network != "proxy" {
+		return fmt.Errorf("its job has sandbox.network %q, a slot's job reaches its gateway or nothing (proxy or none)", job.Sandbox.Network)
 	}
 	if job.MaxRuntimeSeconds < 1 || job.MaxRuntimeSeconds > MaxRunSeconds {
 		return fmt.Errorf("its job has max_runtime_seconds %d, a slot's job has a deadline of 1..%d", job.MaxRuntimeSeconds, MaxRunSeconds)

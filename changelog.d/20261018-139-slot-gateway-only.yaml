@@ -1,0 +1,3 @@
+type: changed
+title: 'A slot run refuses a job with sandbox.network egress: it reaches its declared gateway (proxy) or nothing, also when a run is resumed'
+issue: "139"
