@@ -1,7 +1,7 @@
 # ADR-0009: Give a slot's coding client a home of its own with its login bound read-only
 
-- **Status**: Proposed
-- **Date**: 2026-10-15
+- **Status**: Accepted
+- **Date**: 2026-10-15, accepted 2026-10-18
 - **Authors**: Epitrop maintainers
 
 ## Context

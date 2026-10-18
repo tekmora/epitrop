@@ -1,7 +1,7 @@
 # ADR-0007: Start a sandboxed job with its arguments unchanged
 
-- **Status**: Proposed
-- **Date**: 2026-10-11
+- **Status**: Accepted
+- **Date**: 2026-10-11, accepted 2026-10-18
 - **Authors**: Epitrop maintainers
 
 ## Context

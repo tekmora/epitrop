@@ -1,7 +1,7 @@
 # ADR-0012: Compact the event log onto a signed base once Git holds its segments
 
-- **Status**: Proposed
-- **Date**: 2026-10-17
+- **Status**: Accepted
+- **Date**: 2026-10-17, accepted 2026-10-18
 - **Authors**: Epitrop maintainers
 
 ## Context
