@@ -45,6 +45,8 @@ overrides:
     required_approving_reviewers: 1
     review_mode: single_maintainer
     dismiss_stale_reviews: true
+    # Declared at its live value; the forge default is the stricter one.
+    require_extra_approval_for_unattributed_changes: true
 # Documentation drift (praetorctl docs references): a change to a surface must carry a change to
 # one of its documents, or a Docs-Waiver with a reason.
 docs_surfaces:
