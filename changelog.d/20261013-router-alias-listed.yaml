@@ -1,3 +1,0 @@
-type: changed
-title: 'Loading a configuration refuses a job or watch whose `router_alias` is not listed in `router.aliases`'
-breaking: true

@@ -1,4 +1,0 @@
-type: added
-title: 'Sync: the claude-local source reads Claude Code session logs and writes the five_hour and seven_day usage windows; used_percent and the burn rate are derived from a ceiling observed at a rejected request and stay absent with a reason until one is seen, and epitropctl claude-limits lists the limit types the logs name; a snapshot may now hold 25,000 records, which a reader from an earlier release refuses'
-issue: "276"
-breaking: true

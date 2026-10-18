@@ -1,3 +1,0 @@
-type: added
-title: "units frontier, assign and release: list the graph nodes a slot may take, claim one and open its unit in one record, and give it back with a reason"
-breaking: false

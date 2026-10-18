@@ -1,4 +1,0 @@
-type: fixed
-title: 'A run-record, task-graph or effect-resolution write that loses a race to another writer is now refused instead of reported as written'
-issue: "108"
-breaking: false

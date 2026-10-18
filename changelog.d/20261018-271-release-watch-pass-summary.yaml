@@ -1,3 +1,0 @@
-type: added
-title: 'Release watch: every pass ends with one summary line (sources polled and failed; releases new, filed and deferred; whether the rate-limit throttle stopped it), so a pass without new releases still shows in the job log'
-issue: "271"

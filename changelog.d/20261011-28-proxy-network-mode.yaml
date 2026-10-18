@@ -1,3 +1,0 @@
-type: added
-title: 'A sandboxed job can reach a list of declared destinations and nothing else: `sandbox.network: proxy` with `sandbox.destinations`'
-issue: "25"

@@ -1,3 +1,0 @@
-type: fixed
-title: 'A sandboxed job gets its arguments as its config wrote them: `systemd-run` no longer replaces `${NAME}` and `$$` in them, and the value of an allowed variable no longer lands on the argv'
-issue: "25"

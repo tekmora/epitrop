@@ -1,4 +1,0 @@
-type: added
-title: 'A sandboxed job can declare paths inside its workspace read-only, and cannot rename them away'
-issue: "128"
-breaking: false
