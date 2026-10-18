@@ -40,6 +40,21 @@ refused instead of told its write succeeded. Removing a node with any incident
 dependency edge is refused; callers remove edges first so history stays
 explicit.
 
+Task scoring (`internal/score`, #10) orders the frontier: ready units whose
+dependencies have all landed. Every term comes from event-log records; the
+reference time is the time of the newest record read, never the clock.
+`ElapsedSeconds` is the reference time minus the time of the record that last
+moved the node into ready, in whole seconds rounded down, and zero when that is
+negative (clock skew between writers) or unknown. `Progress` counts the nodes,
+neither landed nor dropped, that depend on the node directly or transitively.
+`Cost` counts the records that moved the node into claimed, implementing, review
+or a fix round: work already spent on it and handed back. `Confident` is false
+for a node that already existed in the state the first folded record was applied
+to (a checkpoint or compaction base), whose earlier history is unknown. The
+order is Progress descending, Cost ascending, ElapsedSeconds descending,
+confident nodes first, then node ID ascending; the ID makes the order total, so
+the same log gives the same order.
+
 The task-graph node vocabulary follows Praetor #883 as amended on 2026-10-09
 and the claim-code source `feat/issue-claims` at `42f2a486b`
 (`internal/forge/claim_marker.go`). Kinds are `epic`, `unit`, `decision`,
