@@ -11,7 +11,7 @@ const SnapshotSchemaVersion = 1
 
 // MaxSnapshotRecords bounds how many records one snapshot may hold (HISS-02:
 // every loop over Snapshot.Records carries this as its scalar upper bound).
-const MaxSnapshotRecords = 20000
+const MaxSnapshotRecords = 25000
 
 // SourceRun reports one sync source's outcome: whether it ran, how many
 // records it produced, and why not when it did not. Sources fail

@@ -45,7 +45,7 @@ func TestSelectSources_Boundary(t *testing.T) {
 	if _, err := selectSources("codex-local,codex-local"); err == nil {
 		t.Fatal("selectSources() = nil error, want failure for duplicate source")
 	}
-	if _, err := selectSources("codex-local,litellm-gateway,ollama-local,public-catalog,codex-local"); err == nil {
+	if _, err := selectSources("codex-local,claude-local,litellm-gateway,litellm-key-budget,ollama-local,public-catalog,codex-local"); err == nil {
 		t.Fatal("selectSources() = nil error, want failure beyond source bound")
 	}
 }
@@ -167,10 +167,13 @@ func TestRunSync_Positive(t *testing.T) {
 	defer litellmPrices.Close()
 
 	sessionsDir, tokenFile := setupSyncFixtures(t)
+	claudeDir, claudeStateDir := setupClaudeSyncFixtures(t)
 
 	out := filepath.Join(t.TempDir(), "out.json")
 	args := []string{
 		"--sessions-dir=" + sessionsDir,
+		"--claude-projects-dir=" + claudeDir,
+		"--claude-state-dir=" + claudeStateDir,
 		"--ollama=" + ollama.URL,
 		"--litellm-base=" + gateway.URL,
 		"--litellm-token-file=" + tokenFile,
@@ -199,6 +202,22 @@ func setupSyncFixtures(t *testing.T) (string, string) {
 	return sessionsDir, tokenFile
 }
 
+func setupClaudeSyncFixtures(t *testing.T) (string, string) {
+	t.Helper()
+	claudeDir := t.TempDir()
+	logPath := filepath.Join(claudeDir, "proj", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatalf("setup claude fixture: %v", err)
+	}
+	line := fmt.Sprintf(`{"type":"assistant","timestamp":%q,"message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1000,"output_tokens":100}}}`,
+		time.Now().UTC().Format(time.RFC3339Nano))
+	if err := os.WriteFile(logPath, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatalf("setup claude fixture: %v", err)
+	}
+	claudeStateDir := t.TempDir()
+	return claudeDir, claudeStateDir
+}
+
 func checkSyncSnapshot(t *testing.T, out string) {
 	t.Helper()
 	data, err := os.ReadFile(out)
@@ -212,12 +231,12 @@ func checkSyncSnapshot(t *testing.T, out string) {
 	if err != nil {
 		t.Fatalf("ParseSnapshot() = %v", err)
 	}
-	// codex-local(1) + litellm-gateway(1) + litellm-key-budget(1) + ollama-local(1) + public-catalog(2)
-	if len(snap.Records) != 6 {
-		t.Fatalf("got %d records, want 6: %+v", len(snap.Records), snap.Records)
+	// codex-local(1) + claude-local(2) + litellm-gateway(1) + litellm-key-budget(1) + ollama-local(1) + public-catalog(2)
+	if len(snap.Records) != 8 {
+		t.Fatalf("got %d records, want 8: %+v", len(snap.Records), snap.Records)
 	}
-	if len(snap.SourceRuns) != 5 {
-		t.Fatalf("got %d source runs, want 5", len(snap.SourceRuns))
+	if len(snap.SourceRuns) != 6 {
+		t.Fatalf("got %d source runs, want 6", len(snap.SourceRuns))
 	}
 	for _, run := range snap.SourceRuns {
 		if run.Status != catalog.StatusOK {
@@ -540,4 +559,57 @@ func TestRunCodexLocalDefaultSessionsDir(t *testing.T) {
 			t.Fatalf("outcome.Detail = %q, want error about resolve home directory", outcome.Detail)
 		}
 	})
+}
+
+func TestRunClaudeLocalDefaultDirs(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tempHome, "state"))
+	outcome := runClaudeLocal(context.Background(), syncFlags{claudeDir: ""})
+	if outcome.Status != catalog.StatusSkip {
+		t.Fatalf("outcome.Status = %v, want StatusSkip", outcome.Status)
+	}
+	wantPath := filepath.Join(tempHome, ".claude", "projects")
+	if !strings.Contains(outcome.Detail, wantPath) {
+		t.Fatalf("outcome.Detail = %q, want path under %s", outcome.Detail, wantPath)
+	}
+}
+
+func TestRunSync_ClaudeLocal(t *testing.T) {
+	projDir := t.TempDir()
+	stateDir := t.TempDir()
+	logPath := filepath.Join(projDir, "p", "s.jsonl")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"type":"assistant","timestamp":"2026-10-18T08:00:00Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1000000,"output_tokens":0}}}`
+	if err := os.WriteFile(logPath, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "out.json")
+	err := runSync([]string{
+		"--sources=claude-local",
+		"--claude-projects-dir=" + projDir,
+		"--claude-state-dir=" + stateDir,
+		"--out=" + out,
+	})
+	if err != nil {
+		t.Fatalf("runSync() = %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	snap, err := catalog.ParseSnapshot(data)
+	if err != nil {
+		t.Fatalf("ParseSnapshot() = %v", err)
+	}
+	if len(snap.SourceRuns) != 1 || snap.SourceRuns[0].Status != catalog.StatusOK {
+		t.Fatalf("SourceRuns = %+v, want ok", snap.SourceRuns)
+	}
+	if len(snap.Records) < 2 {
+		t.Fatalf("len(Records) = %d, want at least five_hour and seven_day", len(snap.Records))
+	}
 }
