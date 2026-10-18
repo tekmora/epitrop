@@ -1,6 +1,9 @@
 # Captured upstream answers: the tests split them on blank lines (\n\n), so a checkout keeps LF.
 internal/sources/**/testdata/upstream/** text eol=lf
 
+# Planted claude-local snapshot: a claudelocal test compares Fetch output to these bytes.
+catalog/testdata/claude-local.snapshot.json text eol=lf
+
 # v0.1.0 state as that release wrote it: signed canonical JSON, so the bytes stay as written.
 testdata/v0.1.0/** -text
 
