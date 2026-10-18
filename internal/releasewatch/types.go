@@ -11,8 +11,14 @@ const (
 	DefaultNtfyBase           = "https://ntfy.sh"
 	MaxSeenRecords            = 10000
 	MaxNotesRunes             = 2000
-	MaxSearchIssuePages       = 5
-	SeenFileName              = "release-watch-seen.json"
+	// SearchIssuesPerPage is the page size of the marker search. An issue body may hold
+	// 65536 characters, which is up to about 400 KiB of JSON once escaped, so a page of
+	// 10 stays under maxIssuePageBytes; a page of 100 did not fit the 1 MiB source cap.
+	SearchIssuesPerPage = 10
+	// MaxSearchIssuePages bounds the marker search to the newest 500 issues
+	// (MaxSearchIssuePages * SearchIssuesPerPage).
+	MaxSearchIssuePages = 50
+	SeenFileName        = "release-watch-seen.json"
 )
 
 var (

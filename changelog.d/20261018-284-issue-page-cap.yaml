@@ -1,0 +1,3 @@
+type: fixed
+title: 'The release watch reads the marker search 10 issues to a page under a 4 MiB page cap, so a sink with long issue bodies no longer fails every pass'
+issue: "284"
