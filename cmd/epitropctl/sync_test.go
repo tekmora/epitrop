@@ -16,8 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
+
 	"github.com/tekmora/epitrop/catalog"
 )
+
+var fixtureNow = time.Date(2026, 9, 20, 15, 0, 0, 0, time.UTC)
 
 func TestSelectSources_Positive(t *testing.T) {
 	got, err := selectSources("codex-local, ollama-local")
@@ -405,15 +409,15 @@ func TestRunSync_KeyBudget(t *testing.T) {
 	}))
 	defer gateway.Close()
 	_, tokenFile := setupSyncFixtures(t)
-	if got := runOneSource(context.Background(), "litellm-key-budget", syncFlags{}); got.Status != catalog.StatusSkip || !strings.Contains(got.Detail, "required for litellm-key-budget") {
+	if got := runOneSource(context.Background(), "litellm-key-budget", syncFlags{}, fixtureNow); got.Status != catalog.StatusSkip || !strings.Contains(got.Detail, "required for litellm-key-budget") {
 		t.Fatalf("runOneSource(no flags) = %+v, want a skip naming the flags", got)
 	}
 	f := syncFlags{litellmBase: gateway.URL, litellmToken: tokenFile}
-	if got := runOneSource(context.Background(), "litellm-key-budget", f); got.Status != catalog.StatusOK || len(got.Records) != 1 || *got.Records[0].UsageWindow.UsedPercent != 25 {
+	if got := runOneSource(context.Background(), "litellm-key-budget", f, fixtureNow); got.Status != catalog.StatusOK || len(got.Records) != 1 || *got.Records[0].UsageWindow.UsedPercent != 25 {
 		t.Fatalf("runOneSource(active key) = %+v, want one record at 25%%", got)
 	}
 	status = "expired"
-	if got := runOneSource(context.Background(), "litellm-key-budget", f); got.Status != catalog.StatusFail || len(got.Records) != 0 || !strings.Contains(got.Detail, "not active") {
+	if got := runOneSource(context.Background(), "litellm-key-budget", f, fixtureNow); got.Status != catalog.StatusFail || len(got.Records) != 0 || !strings.Contains(got.Detail, "not active") {
 		t.Fatalf("runOneSource(expired key) = %+v, want a failure and no record", got)
 	}
 }
@@ -539,7 +543,7 @@ func TestRunCodexLocalDefaultSessionsDir(t *testing.T) {
 		tempHome := t.TempDir()
 		t.Setenv("HOME", tempHome)
 		t.Setenv("USERPROFILE", tempHome)
-		outcome := runCodexLocal(context.Background(), syncFlags{sessionsDir: ""})
+		outcome := runCodexLocal(context.Background(), syncFlags{sessionsDir: ""}, fixtureNow)
 		if outcome.Status != catalog.StatusSkip {
 			t.Fatalf("outcome.Status = %v, want StatusSkip", outcome.Status)
 		}
@@ -551,7 +555,7 @@ func TestRunCodexLocalDefaultSessionsDir(t *testing.T) {
 	t.Run("fails when home cannot be resolved", func(t *testing.T) {
 		t.Setenv("HOME", "")
 		t.Setenv("USERPROFILE", "")
-		outcome := runCodexLocal(context.Background(), syncFlags{sessionsDir: ""})
+		outcome := runCodexLocal(context.Background(), syncFlags{sessionsDir: ""}, fixtureNow)
 		if outcome.Status != catalog.StatusFail {
 			t.Fatalf("outcome.Status = %v, want StatusFail", outcome.Status)
 		}
@@ -566,7 +570,7 @@ func TestRunClaudeLocalDefaultDirs(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 	t.Setenv("XDG_STATE_HOME", filepath.Join(tempHome, "state"))
-	outcome := runClaudeLocal(context.Background(), syncFlags{claudeDir: ""})
+	outcome := runClaudeLocal(context.Background(), syncFlags{claudeDir: ""}, fixtureNow)
 	if outcome.Status != catalog.StatusSkip {
 		t.Fatalf("outcome.Status = %v, want StatusSkip", outcome.Status)
 	}
@@ -611,5 +615,41 @@ func TestRunSync_ClaudeLocal(t *testing.T) {
 	}
 	if len(snap.Records) < 2 {
 		t.Fatalf("len(Records) = %d, want at least five_hour and seven_day", len(snap.Records))
+	}
+}
+
+func TestSyncStampsOneInjectedTime(t *testing.T) {
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			_, _ = w.Write([]byte(`{"models":[{"name":"local-model","details":{"context_length":4096}}]}`)) //nolint:errcheck // test httptest server response; a write failure here would fail the test's own HTTP round trip, not silently corrupt anything
+		case "/api/ps":
+			_, _ = w.Write([]byte(`{"models":[]}`)) //nolint:errcheck // test httptest server response; a write failure here would fail the test's own HTTP round trip, not silently corrupt anything
+		}
+	}))
+	defer ollama.Close()
+
+	fixed := time.Date(2026, 4, 1, 10, 20, 30, 0, time.UTC)
+	clk := clockwork.NewFakeClockAt(fixed)
+
+	flags := syncFlags{
+		ollama: ollama.URL,
+	}
+	selected := []string{"ollama-local"}
+
+	snap, err := collectSourceRuns(context.Background(), selected, flags, clk)
+	if err != nil {
+		t.Fatalf("collectSourceRuns() = %v", err)
+	}
+	if !snap.GeneratedAt.Equal(fixed) {
+		t.Fatalf("GeneratedAt = %v, want %v", snap.GeneratedAt, fixed)
+	}
+	if len(snap.Records) == 0 {
+		t.Fatal("expected at least one record in snapshot")
+	}
+	for _, rec := range snap.Records {
+		if !rec.Provenance.FetchedAt.Equal(fixed) {
+			t.Fatalf("Record %q FetchedAt = %v, want %v", rec.ModelID, rec.Provenance.FetchedAt, fixed)
+		}
 	}
 }

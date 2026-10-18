@@ -56,7 +56,7 @@ type Result struct {
 // baseURL+"/v1/models". Any failure -- unreadable token file, network
 // error, non-200 response, malformed body -- is reported as StatusFail with
 // a detail string that never contains the token.
-func Fetch(ctx context.Context, baseURL, tokenFile string) Result {
+func Fetch(ctx context.Context, baseURL, tokenFile string, now time.Time) Result {
 	token, err := ReadToken(tokenFile)
 	if err != nil {
 		return Result{Status: catalog.StatusFail, Detail: err.Error()}
@@ -73,7 +73,7 @@ func Fetch(ctx context.Context, baseURL, tokenFile string) Result {
 		return Result{Status: catalog.StatusFail, Detail: fmt.Sprintf("empty response: %s/v1/models returned no models", baseURL)}
 	}
 
-	fetchedAt := time.Now().UTC()
+	fetchedAt := now.UTC()
 	records := make([]catalog.Record, 0, len(models))
 	for _, m := range models {
 		records = append(records, toRecord(m, fetchedAt))

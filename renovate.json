@@ -144,6 +144,7 @@
         "github.com/golusoris/golusoris",
         "github.com/golusoris/golusoris/**"
       ],
+      "groupName": "golusoris",
       "minimumReleaseAge": null
     },
     {

@@ -42,7 +42,7 @@ func TestKeyBudgetUpstreamContractPinned(t *testing.T) {
 
 func TestFetchKeyBudgetReadsTheFixture(t *testing.T) {
 	server, seen := serveKeyInfo(t, string(mustReadFixture(t, "testdata/fixtures/key-info-response.json")))
-	res := FetchKeyBudget(context.Background(), server.URL, writeTokenFile(t, "tok"))
+	res := FetchKeyBudget(context.Background(), server.URL, writeTokenFile(t, "tok"), fixtureNow)
 	if res.Status != catalog.StatusOK || res.Count != 1 || len(res.Records) != 1 {
 		t.Fatalf("FetchKeyBudget() = %+v, want one record", res)
 	}
@@ -78,7 +78,7 @@ func checkFixtureKeyLimits(t *testing.T, rec catalog.Record) {
 func TestFetchKeyBudgetNamesWhatTheKeyLacks(t *testing.T) {
 	for _, budget := range []string{"null", "0"} {
 		server, _ := serveKeyInfo(t, `{"info":{"spend":3,"max_budget":`+budget+`,"status":"active"}}`)
-		res := FetchKeyBudget(context.Background(), server.URL, writeTokenFile(t, "tok"))
+		res := FetchKeyBudget(context.Background(), server.URL, writeTokenFile(t, "tok"), fixtureNow)
 		if res.Status != catalog.StatusOK || len(res.Records) != 1 {
 			t.Fatalf("max_budget %s: FetchKeyBudget() = %+v, want one record", budget, res)
 		}
@@ -106,7 +106,7 @@ func TestFetchKeyBudgetRefusesAKeyItCannotUse(t *testing.T) {
 	}
 	for _, tc := range cases {
 		server, _ := serveKeyInfo(t, tc.body)
-		res := FetchKeyBudget(context.Background(), server.URL, writeTokenFile(t, "tok"))
+		res := FetchKeyBudget(context.Background(), server.URL, writeTokenFile(t, "tok"), fixtureNow)
 		if res.Status != catalog.StatusFail || len(res.Records) != 0 || !strings.Contains(res.Detail, tc.want) {
 			t.Errorf("%s: FetchKeyBudget() = %+v, want fail with %q", tc.name, res, tc.want)
 		}
@@ -120,12 +120,12 @@ func TestFetchKeyBudgetNeverLeaksTheToken(t *testing.T) {
 	}))
 	t.Cleanup(forbidden.Close)
 	for _, base := range []string{forbidden.URL, "http://127.0.0.1:1"} {
-		res := FetchKeyBudget(context.Background(), base, writeTokenFile(t, secret))
+		res := FetchKeyBudget(context.Background(), base, writeTokenFile(t, secret), fixtureNow)
 		if res.Status != catalog.StatusFail || strings.Contains(res.Detail, secret) {
 			t.Fatalf("FetchKeyBudget(%s) = %+v, want fail without the token", base, res)
 		}
 	}
-	if res := FetchKeyBudget(context.Background(), forbidden.URL, writeTokenFile(t, " \n")); res.Status != catalog.StatusFail {
+	if res := FetchKeyBudget(context.Background(), forbidden.URL, writeTokenFile(t, " \n"), fixtureNow); res.Status != catalog.StatusFail {
 		t.Fatalf("FetchKeyBudget(empty token) = %+v, want fail", res)
 	}
 }
@@ -173,5 +173,20 @@ func TestFetchKeyInfoResponseCap(t *testing.T) {
 	}
 	if _, err := fetchKeyInfo(context.Background(), serve(capBytes+1), "tok"); !errors.Is(err, client.ErrBodyTooLarge) {
 		t.Fatalf("fetchKeyInfo(one byte over) = %v, want client.ErrBodyTooLarge", err)
+	}
+}
+
+func TestFetchKeyBudget_StampsInjectedNow(t *testing.T) {
+	fixed := time.Date(2026, 4, 1, 10, 20, 30, 0, time.UTC)
+	server, _ := serveKeyInfo(t, string(mustReadFixture(t, "testdata/fixtures/key-info-response.json")))
+	res := FetchKeyBudget(context.Background(), server.URL, writeTokenFile(t, "tok"), fixed)
+	if res.Status != catalog.StatusOK {
+		t.Fatalf("Status = %v, want ok", res.Status)
+	}
+	if len(res.Records) != 1 {
+		t.Fatalf("Records len = %d, want 1", len(res.Records))
+	}
+	if !res.Records[0].Provenance.FetchedAt.Equal(fixed) {
+		t.Fatalf("FetchedAt = %v, want %v", res.Records[0].Provenance.FetchedAt, fixed)
 	}
 }

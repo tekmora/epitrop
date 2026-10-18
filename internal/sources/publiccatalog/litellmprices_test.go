@@ -69,7 +69,7 @@ func TestLiteLLMPriceMapRevisionMatchesManifest(t *testing.T) {
 
 func TestFetchLiteLLMPrices_UpstreamFixtureContract(t *testing.T) {
 	body := mustReadFixture(t, "testdata/fixtures/litellm-price-map.json")
-	res, err := fetchLiteLLMPricesFromBytes(body)
+	res, err := fetchLiteLLMPricesFromBytes(body, fixtureNow)
 	records := res.Records
 	if err != nil {
 		t.Fatalf("fetchLiteLLMPricesFromBytes(valid fixture) = %v", err)
@@ -79,7 +79,7 @@ func TestFetchLiteLLMPrices_UpstreamFixtureContract(t *testing.T) {
 	}
 
 	mutated := strings.Replace(string(body), `"max_input_tokens":8192`, `"max_input_tokens":"8192"`, 1)
-	if _, err := fetchLiteLLMPricesFromBytes([]byte(mutated)); err == nil {
+	if _, err := fetchLiteLLMPricesFromBytes([]byte(mutated), fixtureNow); err == nil {
 		t.Fatal("fetchLiteLLMPricesFromBytes(mutated retyped max_input_tokens) = nil error, want refusal")
 	}
 }
@@ -90,7 +90,7 @@ func TestFetchLiteLLMPrices_Positive(t *testing.T) {
 	}))
 	defer server.Close()
 
-	res, err := fetchLiteLLMPricesWithReport(context.Background(), server.URL)
+	res, err := fetchLiteLLMPricesWithReport(context.Background(), server.URL, fixtureNow)
 	if err != nil {
 		t.Fatalf("fetchLiteLLMPricesWithReport() = %v", err)
 	}
@@ -118,7 +118,7 @@ func TestFetchLiteLLMPrices_Positive(t *testing.T) {
 
 func TestFetchLiteLLMPrices_Negative(t *testing.T) {
 	t.Run("unreachable", func(t *testing.T) {
-		if _, err := fetchLiteLLMPricesWithReport(context.Background(), "http://127.0.0.1:1"); err == nil {
+		if _, err := fetchLiteLLMPricesWithReport(context.Background(), "http://127.0.0.1:1", fixtureNow); err == nil {
 			t.Fatal("fetchLiteLLMPricesWithReport() = nil error, want failure for an unreachable host")
 		}
 	})
@@ -128,7 +128,7 @@ func TestFetchLiteLLMPrices_Negative(t *testing.T) {
 			_, _ = w.Write([]byte("[]")) //nolint:errcheck // an array, not the expected object; a write failure here would fail the test's own HTTP round trip, not silently corrupt anything
 		}))
 		defer server.Close()
-		if _, err := fetchLiteLLMPricesWithReport(context.Background(), server.URL); err == nil {
+		if _, err := fetchLiteLLMPricesWithReport(context.Background(), server.URL, fixtureNow); err == nil {
 			t.Fatal("fetchLiteLLMPricesWithReport() = nil error, want failure for a body that is not an object")
 		}
 	})
@@ -147,7 +147,7 @@ func TestFetchLiteLLMPrices_AllMalformedRefused(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := fetchLiteLLMPricesWithReport(context.Background(), server.URL); err == nil {
+	if _, err := fetchLiteLLMPricesWithReport(context.Background(), server.URL, fixtureNow); err == nil {
 		t.Fatal("fetchLiteLLMPricesWithReport() = nil error, want refusal when every model entry is malformed")
 	}
 }
@@ -161,7 +161,7 @@ func TestFetchLiteLLMPrices_Boundary(t *testing.T) {
 	}))
 	defer server.Close()
 
-	res, err := fetchLiteLLMPricesWithReport(context.Background(), server.URL)
+	res, err := fetchLiteLLMPricesWithReport(context.Background(), server.URL, fixtureNow)
 	if err != nil {
 		t.Fatalf("fetchLiteLLMPricesWithReport() = %v", err)
 	}
@@ -188,7 +188,7 @@ func TestFetchLiteLLMPrices_ResponseCap(t *testing.T) {
 	t.Run("exactly at cap", func(t *testing.T) {
 		server := serve(maxResponseBytes)
 		defer server.Close()
-		res, err := fetchLiteLLMPricesWithReport(context.Background(), server.URL)
+		res, err := fetchLiteLLMPricesWithReport(context.Background(), server.URL, fixtureNow)
 		if err != nil {
 			t.Fatalf("fetchLiteLLMPricesWithReport() = %v, want success at cap", err)
 		}
@@ -204,7 +204,7 @@ func TestFetchLiteLLMPrices_ResponseCap(t *testing.T) {
 	t.Run("one byte over cap", func(t *testing.T) {
 		server := serve(maxResponseBytes + 1)
 		defer server.Close()
-		_, err := fetchLiteLLMPricesWithReport(context.Background(), server.URL)
+		_, err := fetchLiteLLMPricesWithReport(context.Background(), server.URL, fixtureNow)
 		if !errors.Is(err, client.ErrBodyTooLarge) {
 			t.Fatalf("fetchLiteLLMPricesWithReport() err = %v, want ErrBodyTooLarge", err)
 		}
@@ -226,7 +226,7 @@ func buildLiteLLMPriceMapJSON(count int) []byte {
 
 func TestFetchLiteLLMPrices_RecordCap(t *testing.T) {
 	t.Run("4999 pass", func(t *testing.T) {
-		res, err := fetchLiteLLMPricesFromBytes(buildLiteLLMPriceMapJSON(MaxLiteLLMPriceRecords))
+		res, err := fetchLiteLLMPricesFromBytes(buildLiteLLMPriceMapJSON(MaxLiteLLMPriceRecords), fixtureNow)
 		if err != nil {
 			t.Fatalf("fetchLiteLLMPricesFromBytes() = %v, want nil error", err)
 		}
@@ -236,7 +236,7 @@ func TestFetchLiteLLMPrices_RecordCap(t *testing.T) {
 	})
 
 	t.Run("5000 fail", func(t *testing.T) {
-		_, err := fetchLiteLLMPricesFromBytes(buildLiteLLMPriceMapJSON(MaxLiteLLMPriceRecords + 1))
+		_, err := fetchLiteLLMPricesFromBytes(buildLiteLLMPriceMapJSON(MaxLiteLLMPriceRecords+1), fixtureNow)
 		if err == nil || !strings.Contains(err.Error(), "lists more than") {
 			t.Fatalf("fetchLiteLLMPricesFromBytes() err = %v, want 'lists more than'", err)
 		}

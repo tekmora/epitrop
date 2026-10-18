@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golusoris/golusoris/core/clock"
+	"github.com/jonboulle/clockwork"
+
 	"github.com/tekmora/epitrop/catalog"
 	"github.com/tekmora/epitrop/internal/atomicfile"
 	"github.com/tekmora/epitrop/internal/sources/claudelocal"
@@ -100,7 +103,7 @@ func runSync(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
 	defer cancel()
 
-	snap, err := collectSourceRuns(ctx, selected, f)
+	snap, err := collectSourceRuns(ctx, selected, f, clockwork.NewRealClock())
 	if err != nil {
 		return err
 	}
@@ -175,11 +178,12 @@ func (o sourceOutcome) SourceRun(name string) catalog.SourceRun {
 	return catalog.SourceRun{Source: name, Status: o.Status, Count: o.Count, Detail: o.Detail}
 }
 
-func collectSourceRuns(ctx context.Context, selected []string, f syncFlags) (catalog.Snapshot, error) {
-	snap := catalog.Snapshot{SchemaVersion: catalog.SnapshotSchemaVersion, GeneratedAt: time.Now().UTC()}
+func collectSourceRuns(ctx context.Context, selected []string, f syncFlags, clk clock.Clock) (catalog.Snapshot, error) {
+	now := clk.Now().UTC()
+	snap := catalog.Snapshot{SchemaVersion: catalog.SnapshotSchemaVersion, GeneratedAt: now}
 	allFailed := true
 	for _, name := range selected {
-		run := rejectInvalidRecords(runOneSource(ctx, name, f))
+		run := rejectInvalidRecords(runOneSource(ctx, name, f, now))
 		snap.SourceRuns = append(snap.SourceRuns, run.SourceRun(name))
 		snap.Records = append(snap.Records, run.Records...)
 		fmt.Println(formatSourceLine(name, run))
@@ -237,21 +241,21 @@ func appendDetail(existing, note string) string {
 // runOneSource dispatches to the named source's Fetch and normalizes its
 // result. Flag values a source needs but was not given (e.g. litellm-base
 // for litellm-gateway) are reported as a skip, not a crash.
-func runOneSource(ctx context.Context, name string, f syncFlags) sourceOutcome {
+func runOneSource(ctx context.Context, name string, f syncFlags, now time.Time) sourceOutcome {
 	switch name {
 	case codexlocal.SourceName:
-		return runCodexLocal(ctx, f)
+		return runCodexLocal(ctx, f, now)
 	case claudelocal.SourceName:
-		return runClaudeLocal(ctx, f)
+		return runClaudeLocal(ctx, f, now)
 	case litellmgateway.SourceName:
-		return runLiteLLMGateway(ctx, f)
+		return runLiteLLMGateway(ctx, f, now)
 	case litellmgateway.KeyBudgetSourceName:
-		return runLiteLLMKeyBudget(ctx, f)
+		return runLiteLLMKeyBudget(ctx, f, now)
 	case ollamalocal.SourceName:
-		res := ollamalocal.Fetch(ctx, f.ollama)
+		res := ollamalocal.Fetch(ctx, f.ollama, now)
 		return sourceOutcome{Records: res.Records, Status: res.Status, Count: res.Count, Detail: res.Detail}
 	case publiccatalog.SourceName:
-		res := publiccatalog.Fetch(ctx, f.openRouterURL, f.litellmPricesURL)
+		res := publiccatalog.Fetch(ctx, f.openRouterURL, f.litellmPricesURL, now)
 		return sourceOutcome{Records: res.Records, Status: res.Status, Count: res.Count, Detail: res.Detail}
 	default:
 		return sourceOutcome{Status: catalog.StatusSkip, Detail: "unknown source"}
@@ -292,7 +296,7 @@ func selectedRecordCap(names []string) (int, error) {
 	return total, nil
 }
 
-func runCodexLocal(ctx context.Context, f syncFlags) sourceOutcome {
+func runCodexLocal(ctx context.Context, f syncFlags, now time.Time) sourceOutcome {
 	dir := f.sessionsDir
 	if dir == "" {
 		resolved, err := codexlocal.DefaultSessionsDir()
@@ -301,11 +305,11 @@ func runCodexLocal(ctx context.Context, f syncFlags) sourceOutcome {
 		}
 		dir = resolved
 	}
-	res := codexlocal.Fetch(ctx, dir)
+	res := codexlocal.Fetch(ctx, dir, now)
 	return sourceOutcome{Records: res.Records, Status: res.Status, Count: res.Count, Detail: res.Detail}
 }
 
-func runClaudeLocal(ctx context.Context, f syncFlags) sourceOutcome {
+func runClaudeLocal(ctx context.Context, f syncFlags, now time.Time) sourceOutcome {
 	dir := f.claudeDir
 	if dir == "" {
 		resolved, err := claudelocal.DefaultProjectsDir()
@@ -323,23 +327,23 @@ func runClaudeLocal(ctx context.Context, f syncFlags) sourceOutcome {
 		stateDir = resolved
 	}
 	opts := claudelocal.Options{StateDir: stateDir, Account: f.claudeAccount, MaxCeilingAge: f.claudeMaxAge}
-	res := claudelocal.Fetch(ctx, dir, time.Now().UTC(), opts)
+	res := claudelocal.Fetch(ctx, dir, now, opts)
 	return sourceOutcome{Records: res.Records, Status: res.Status, Count: res.Count, Detail: res.Detail}
 }
 
-func runLiteLLMGateway(ctx context.Context, f syncFlags) sourceOutcome {
+func runLiteLLMGateway(ctx context.Context, f syncFlags, now time.Time) sourceOutcome {
 	if f.litellmBase == "" || f.litellmToken == "" {
 		return sourceOutcome{Status: catalog.StatusSkip, Detail: "--litellm-base and --litellm-token-file are required for litellm-gateway"}
 	}
-	res := litellmgateway.Fetch(ctx, f.litellmBase, f.litellmToken)
+	res := litellmgateway.Fetch(ctx, f.litellmBase, f.litellmToken, now)
 	return sourceOutcome{Records: res.Records, Status: res.Status, Count: res.Count, Detail: res.Detail}
 }
 
-func runLiteLLMKeyBudget(ctx context.Context, f syncFlags) sourceOutcome {
+func runLiteLLMKeyBudget(ctx context.Context, f syncFlags, now time.Time) sourceOutcome {
 	if f.litellmBase == "" || f.litellmToken == "" {
 		return sourceOutcome{Status: catalog.StatusSkip, Detail: "--litellm-base and --litellm-token-file are required for litellm-key-budget"}
 	}
-	res := litellmgateway.FetchKeyBudget(ctx, f.litellmBase, f.litellmToken)
+	res := litellmgateway.FetchKeyBudget(ctx, f.litellmBase, f.litellmToken, now)
 	return sourceOutcome{Records: res.Records, Status: res.Status, Count: res.Count, Detail: res.Detail}
 }
 

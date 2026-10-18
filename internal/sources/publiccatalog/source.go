@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/tekmora/epitrop/catalog"
 )
@@ -30,12 +31,12 @@ type Result struct {
 // StatusDegraded with that sub-fetch's records and a Detail line naming the
 // other's failure, because "OpenRouter is down" should never hide LiteLLM's
 // price map (or vice versa).
-func Fetch(ctx context.Context, openRouterURL, liteLLMPriceMapURL string) Result {
+func Fetch(ctx context.Context, openRouterURL, liteLLMPriceMapURL string, now time.Time) Result {
 	var records []catalog.Record
 	var notes []string
 	degraded := false
 
-	orResult, orErr := fetchOpenRouterWithReport(ctx, openRouterURL)
+	orResult, orErr := fetchOpenRouterWithReport(ctx, openRouterURL, now)
 	if orErr != nil {
 		notes = append(notes, "openrouter: fail: "+orErr.Error())
 		degraded = true
@@ -47,7 +48,7 @@ func Fetch(ctx context.Context, openRouterURL, liteLLMPriceMapURL string) Result
 		records = append(records, orResult.Records...)
 	}
 
-	llmResult, llmErr := fetchLiteLLMPricesWithReport(ctx, liteLLMPriceMapURL)
+	llmResult, llmErr := fetchLiteLLMPricesWithReport(ctx, liteLLMPriceMapURL, now)
 	if llmErr != nil {
 		notes = append(notes, "litellm-prices: fail: "+llmErr.Error())
 		degraded = true

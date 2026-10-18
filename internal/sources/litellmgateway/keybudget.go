@@ -63,7 +63,7 @@ type keyInfo struct {
 // budget window at baseURL+"/key/info" into one record. A key that is not
 // active, a response without info or spend, or any transport failure is
 // StatusFail with a detail that never contains the token.
-func FetchKeyBudget(ctx context.Context, baseURL, tokenFile string) Result {
+func FetchKeyBudget(ctx context.Context, baseURL, tokenFile string, now time.Time) Result {
 	token, err := ReadToken(tokenFile)
 	if err != nil {
 		return Result{Status: catalog.StatusFail, Detail: err.Error()}
@@ -75,7 +75,7 @@ func FetchKeyBudget(ctx context.Context, baseURL, tokenFile string) Result {
 	if err != nil {
 		return Result{Status: catalog.StatusFail, Detail: err.Error()}
 	}
-	rec := keyRecord(info, time.Now().UTC())
+	rec := keyRecord(info, now.UTC())
 	return Result{Records: []catalog.Record{rec}, Status: catalog.StatusOK, Count: 1}
 }
 

@@ -89,18 +89,18 @@ type openRouterResult struct {
 	FirstReject string
 }
 
-func fetchOpenRouterWithReport(ctx context.Context, url string) (openRouterResult, error) {
+func fetchOpenRouterWithReport(ctx context.Context, url string, now time.Time) (openRouterResult, error) {
 	body, err := httpfetch.Get(ctx, url, requestTimeout, maxResponseBytes)
 	if err != nil {
 		return openRouterResult{}, fmt.Errorf("openrouter: %w", err)
 	}
-	return fetchOpenRouterFromBytes(body)
+	return fetchOpenRouterFromBytes(body, now)
 }
 
 // fetchOpenRouterFromBytes parses an OpenRouter models response. One
 // malformed entry rejects only itself; a response in which every entry is
 // rejected is refused, since that is an upstream schema change.
-func fetchOpenRouterFromBytes(body []byte) (openRouterResult, error) {
+func fetchOpenRouterFromBytes(body []byte, now time.Time) (openRouterResult, error) {
 	var parsed openRouterResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return openRouterResult{}, fmt.Errorf("openrouter: decode response: %w", err)
@@ -112,7 +112,7 @@ func fetchOpenRouterFromBytes(body []byte) (openRouterResult, error) {
 		return openRouterResult{}, fmt.Errorf("openrouter: empty response data list")
 	}
 
-	fetchedAt := time.Now().UTC()
+	fetchedAt := now.UTC()
 	res := openRouterResult{Records: make([]catalog.Record, 0, len(parsed.Data))}
 	for _, e := range parsed.Data {
 		if e.ID == "" {

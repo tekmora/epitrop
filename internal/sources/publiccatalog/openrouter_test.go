@@ -33,7 +33,7 @@ func TestOpenRouter_UpstreamContractDocumentPinned(t *testing.T) {
 
 func TestFetchOpenRouter_UpstreamFixtureContract(t *testing.T) {
 	body := mustReadFixture(t, "testdata/fixtures/openrouter-models-response.json")
-	res, err := fetchOpenRouterFromBytes(body)
+	res, err := fetchOpenRouterFromBytes(body, fixtureNow)
 	records := res.Records
 	if err != nil {
 		t.Fatalf("fetchOpenRouterFromBytes(valid fixture) = %v", err)
@@ -43,7 +43,7 @@ func TestFetchOpenRouter_UpstreamFixtureContract(t *testing.T) {
 	}
 
 	mutated := strings.Replace(string(body), `"id":"vendor-a/model-1",`, "", 1)
-	if _, err := fetchOpenRouterFromBytes([]byte(mutated)); err == nil {
+	if _, err := fetchOpenRouterFromBytes([]byte(mutated), fixtureNow); err == nil {
 		t.Fatal("fetchOpenRouterFromBytes(mutated missing id) = nil error, want refusal")
 	}
 }
@@ -54,7 +54,7 @@ func TestFetchOpenRouter_Positive(t *testing.T) {
 	}))
 	defer server.Close()
 
-	res, err := fetchOpenRouterWithReport(context.Background(), server.URL)
+	res, err := fetchOpenRouterWithReport(context.Background(), server.URL, fixtureNow)
 	if err != nil {
 		t.Fatalf("fetchOpenRouterWithReport() = %v", err)
 	}
@@ -91,7 +91,7 @@ func mustReadFixture(t *testing.T, path string) []byte {
 
 func TestFetchOpenRouter_Negative(t *testing.T) {
 	t.Run("unreachable", func(t *testing.T) {
-		if _, err := fetchOpenRouterWithReport(context.Background(), "http://127.0.0.1:1"); err == nil {
+		if _, err := fetchOpenRouterWithReport(context.Background(), "http://127.0.0.1:1", fixtureNow); err == nil {
 			t.Fatal("fetchOpenRouterWithReport() = nil error, want failure for an unreachable host")
 		}
 	})
@@ -101,7 +101,7 @@ func TestFetchOpenRouter_Negative(t *testing.T) {
 			_, _ = w.Write([]byte("{not json")) //nolint:errcheck // test httptest server response; a write failure here would fail the test's own HTTP round trip, not silently corrupt anything
 		}))
 		defer server.Close()
-		if _, err := fetchOpenRouterWithReport(context.Background(), server.URL); err == nil {
+		if _, err := fetchOpenRouterWithReport(context.Background(), server.URL, fixtureNow); err == nil {
 			t.Fatal("fetchOpenRouterWithReport() = nil error, want failure for a malformed body")
 		}
 	})
@@ -115,7 +115,7 @@ func TestFetchOpenRouter_Boundary(t *testing.T) {
 	}))
 	defer server.Close()
 
-	res, err := fetchOpenRouterWithReport(context.Background(), server.URL)
+	res, err := fetchOpenRouterWithReport(context.Background(), server.URL, fixtureNow)
 	if err != nil {
 		t.Fatalf("fetchOpenRouterWithReport() = %v", err)
 	}
@@ -140,7 +140,7 @@ func TestFetchOpenRouter_VariablePriceIsAbsent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	res, err := fetchOpenRouterWithReport(context.Background(), server.URL)
+	res, err := fetchOpenRouterWithReport(context.Background(), server.URL, fixtureNow)
 	if err != nil {
 		t.Fatalf("fetchOpenRouterWithReport() = %v", err)
 	}
@@ -207,7 +207,7 @@ func TestFetchOpenRouter_OversizedModalitiesRejectOnlyThatEntry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	res, err := fetchOpenRouterWithReport(context.Background(), server.URL)
+	res, err := fetchOpenRouterWithReport(context.Background(), server.URL, fixtureNow)
 	if err != nil {
 		t.Fatalf("fetchOpenRouterWithReport() = %v, want the oversized entry rejected and the rest kept", err)
 	}
@@ -233,7 +233,7 @@ func TestFetchOpenRouter_ResponseCap(t *testing.T) {
 	t.Run("exactly at cap", func(t *testing.T) {
 		server := serve(maxResponseBytes)
 		defer server.Close()
-		res, err := fetchOpenRouterWithReport(context.Background(), server.URL)
+		res, err := fetchOpenRouterWithReport(context.Background(), server.URL, fixtureNow)
 		if err != nil {
 			t.Fatalf("fetchOpenRouterWithReport() = %v, want success at cap", err)
 		}
@@ -246,7 +246,7 @@ func TestFetchOpenRouter_ResponseCap(t *testing.T) {
 	t.Run("one byte over cap", func(t *testing.T) {
 		server := serve(maxResponseBytes + 1)
 		defer server.Close()
-		_, err := fetchOpenRouterWithReport(context.Background(), server.URL)
+		_, err := fetchOpenRouterWithReport(context.Background(), server.URL, fixtureNow)
 		if !errors.Is(err, client.ErrBodyTooLarge) {
 			t.Fatalf("fetchOpenRouterWithReport() err = %v, want ErrBodyTooLarge", err)
 		}
@@ -268,7 +268,7 @@ func buildOpenRouterDataJSON(count int) []byte {
 
 func TestFetchOpenRouter_RecordCap(t *testing.T) {
 	t.Run("4999 pass", func(t *testing.T) {
-		res, err := fetchOpenRouterFromBytes(buildOpenRouterDataJSON(MaxOpenRouterRecords))
+		res, err := fetchOpenRouterFromBytes(buildOpenRouterDataJSON(MaxOpenRouterRecords), fixtureNow)
 		if err != nil {
 			t.Fatalf("fetchOpenRouterFromBytes() = %v, want nil error", err)
 		}
@@ -278,7 +278,7 @@ func TestFetchOpenRouter_RecordCap(t *testing.T) {
 	})
 
 	t.Run("5000 fail", func(t *testing.T) {
-		_, err := fetchOpenRouterFromBytes(buildOpenRouterDataJSON(MaxOpenRouterRecords + 1))
+		_, err := fetchOpenRouterFromBytes(buildOpenRouterDataJSON(MaxOpenRouterRecords+1), fixtureNow)
 		if err == nil || !strings.Contains(err.Error(), "lists more than") {
 			t.Fatalf("fetchOpenRouterFromBytes() err = %v, want 'lists more than'", err)
 		}

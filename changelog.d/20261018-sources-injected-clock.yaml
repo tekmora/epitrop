@@ -1,0 +1,2 @@
+type: changed
+title: '`epitropctl sync` reads the clock once and stamps that time on the snapshot and on every record of every source; each source''s `Fetch` takes the time as a parameter'
