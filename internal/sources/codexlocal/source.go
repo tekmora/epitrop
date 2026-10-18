@@ -84,11 +84,8 @@ func DefaultSessionsDir() (string, error) {
 // The record also carries the window's recent burn and the sessions active in
 // it, measured from the rate_limits samples of the last burnWindow (burn.go);
 // what cannot be measured is named in Record.Absent, never zero-filled.
-func Fetch(ctx context.Context, sessionsDir string) Result {
-	return fetchAt(ctx, sessionsDir, time.Now().UTC())
-}
-
-func fetchAt(ctx context.Context, sessionsDir string, now time.Time) Result {
+func Fetch(ctx context.Context, sessionsDir string, now time.Time) Result {
+	now = now.UTC()
 	scan, err := scanSessions(ctx, sessionsDir, now.Add(-burnWindow))
 	if err != nil {
 		return Result{Status: catalog.StatusFail, Detail: err.Error()}

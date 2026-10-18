@@ -15,6 +15,8 @@ import (
 	"github.com/tekmora/epitrop/catalog"
 )
 
+var fixtureNow = time.Date(2026, 9, 20, 15, 0, 0, 0, time.UTC)
+
 func writeSession(t *testing.T, dir, name, body string, modTime time.Time) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
@@ -50,16 +52,16 @@ func TestUpstreamContractDocumentPinned(t *testing.T) {
 func TestFetch_UpstreamFixtureContract(t *testing.T) {
 	body := string(mustReadFixture(t, "testdata/fixtures/rate-limits.jsonl"))
 	dir := t.TempDir()
-	writeSession(t, dir, "valid.jsonl", body, time.Now())
-	res := Fetch(context.Background(), dir)
+	writeSession(t, dir, "valid.jsonl", body, fixtureNow)
+	res := Fetch(context.Background(), dir, fixtureNow)
 	if res.Status != catalog.StatusOK {
 		t.Fatalf("Status = %v, detail = %q, want ok", res.Status, res.Detail)
 	}
 
 	mutated := strings.Replace(body, `"used_percent":42.0`, `"used_percent":"42.0"`, 1)
 	dir = t.TempDir()
-	writeSession(t, dir, "mutated.jsonl", mutated, time.Now())
-	res = Fetch(context.Background(), dir)
+	writeSession(t, dir, "mutated.jsonl", mutated, fixtureNow)
+	res = Fetch(context.Background(), dir, fixtureNow)
 	if res.Status != catalog.StatusFail {
 		t.Fatalf("Status = %v, detail = %q, want fail for retyped used_percent", res.Status, res.Detail)
 	}
@@ -67,12 +69,12 @@ func TestFetch_UpstreamFixtureContract(t *testing.T) {
 
 func TestFetch_Positive(t *testing.T) {
 	dir := t.TempDir()
-	writeSession(t, dir, "old.jsonl", validLine, time.Now().Add(-time.Hour))
+	writeSession(t, dir, "old.jsonl", validLine, fixtureNow.Add(-time.Hour))
 	// Newest file carries a later rate_limits reading than the older one.
 	newer := strings.Replace(validLine, `"used_percent":92.0`, `"used_percent":45.5`, 1)
-	writeSession(t, dir, "new.jsonl", validLine+"\n"+newer, time.Now())
+	writeSession(t, dir, "new.jsonl", validLine+"\n"+newer, fixtureNow)
 
-	res := Fetch(context.Background(), dir)
+	res := Fetch(context.Background(), dir, fixtureNow)
 	if res.Status != catalog.StatusOK {
 		t.Fatalf("Status = %v, detail = %q, want ok", res.Status, res.Detail)
 	}
@@ -109,7 +111,7 @@ func mustReadFixture(t *testing.T, path string) []byte {
 
 func TestFetch_Negative(t *testing.T) {
 	t.Run("missing directory", func(t *testing.T) {
-		res := Fetch(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"))
+		res := Fetch(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"), fixtureNow)
 		if res.Status != catalog.StatusSkip {
 			t.Fatalf("Status = %v, want skip for a missing sessions directory", res.Status)
 		}
@@ -117,8 +119,8 @@ func TestFetch_Negative(t *testing.T) {
 
 	t.Run("no jsonl files", func(t *testing.T) {
 		dir := t.TempDir()
-		writeSession(t, dir, "notes.txt", "irrelevant", time.Now())
-		res := Fetch(context.Background(), dir)
+		writeSession(t, dir, "notes.txt", "irrelevant", fixtureNow)
+		res := Fetch(context.Background(), dir, fixtureNow)
 		if res.Status != catalog.StatusSkip {
 			t.Fatalf("Status = %v, want skip when no *.jsonl files exist", res.Status)
 		}
@@ -126,8 +128,8 @@ func TestFetch_Negative(t *testing.T) {
 
 	t.Run("malformed newest session is not silently guessed", func(t *testing.T) {
 		dir := t.TempDir()
-		writeSession(t, dir, "broken.jsonl", "not json at all\n{\"payload\":", time.Now())
-		res := Fetch(context.Background(), dir)
+		writeSession(t, dir, "broken.jsonl", "not json at all\n{\"payload\":", fixtureNow)
+		res := Fetch(context.Background(), dir, fixtureNow)
 		// Malformed lines are skipped individually; a file with none parseable
 		// yields a skip (no rate_limits found), never a fabricated record.
 		if res.Status != catalog.StatusSkip {
@@ -137,10 +139,10 @@ func TestFetch_Negative(t *testing.T) {
 
 	t.Run("canceled context", func(t *testing.T) {
 		dir := t.TempDir()
-		writeSession(t, dir, "new.jsonl", validLine, time.Now())
+		writeSession(t, dir, "new.jsonl", validLine, fixtureNow)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		res := Fetch(ctx, dir)
+		res := Fetch(ctx, dir, fixtureNow)
 		if res.Status != catalog.StatusFail {
 			t.Fatalf("Status = %v, want fail for an already-canceled context", res.Status)
 		}
@@ -153,9 +155,9 @@ func TestFetch_Negative(t *testing.T) {
 func TestFetch_Boundary(t *testing.T) {
 	dir := t.TempDir()
 	line := `{"timestamp":"2026-09-13T12:56:47.753Z","ordinal":1,"type":"event_msg","payload":{"rate_limits":{"limit_id":"codex","primary":null,"secondary":null,"plan_type":"pro"}}}`
-	writeSession(t, dir, "new.jsonl", line, time.Now())
+	writeSession(t, dir, "new.jsonl", line, fixtureNow)
 
-	res := Fetch(context.Background(), dir)
+	res := Fetch(context.Background(), dir, fixtureNow)
 	if res.Status != catalog.StatusSkip {
 		t.Fatalf("Status = %v, detail=%q, want skip when rate_limits.primary is null", res.Status, res.Detail)
 	}
@@ -170,9 +172,9 @@ func TestFetch_Boundary(t *testing.T) {
 func TestFetch_SessionEndsWithNullPrimary(t *testing.T) {
 	dir := t.TempDir()
 	nullPrimaryLine := `{"timestamp":"2026-09-13T13:13:28.673Z","ordinal":2,"type":"event_msg","payload":{"rate_limits":{"limit_id":"codex","primary":null,"secondary":null,"plan_type":"pro"}}}`
-	writeSession(t, dir, "new.jsonl", validLine+"\n"+nullPrimaryLine, time.Now())
+	writeSession(t, dir, "new.jsonl", validLine+"\n"+nullPrimaryLine, fixtureNow)
 
-	res := Fetch(context.Background(), dir)
+	res := Fetch(context.Background(), dir, fixtureNow)
 	if res.Status != catalog.StatusOK {
 		t.Fatalf("Status = %v, detail = %q, want ok using the earlier non-null reading", res.Status, res.Detail)
 	}
@@ -184,9 +186,9 @@ func TestFetch_SessionEndsWithNullPrimary(t *testing.T) {
 func TestFetch_EmptyLimitIDFails(t *testing.T) {
 	dir := t.TempDir()
 	line := `{"timestamp":"2026-09-13T12:56:47.753Z","ordinal":1,"type":"event_msg","payload":{"rate_limits":{"limit_id":"","primary":{"used_percent":10.0,"window_minutes":10080,"resets_at":1789858494},"plan_type":"pro"}}}`
-	writeSession(t, dir, "new.jsonl", line, time.Now())
+	writeSession(t, dir, "new.jsonl", line, fixtureNow)
 
-	res := Fetch(context.Background(), dir)
+	res := Fetch(context.Background(), dir, fixtureNow)
 	if res.Status != catalog.StatusFail {
 		t.Fatalf("Status = %v, detail = %q, want fail", res.Status, res.Detail)
 	}
@@ -424,5 +426,21 @@ func TestDataSync_DocBounds(t *testing.T) {
 				t.Fatalf("%s = %v, want %v", tc.name, tc.got, tc.want)
 			}
 		})
+	}
+}
+
+func TestFetch_StampsInjectedNow(t *testing.T) {
+	fixed := time.Date(2026, 4, 1, 10, 20, 30, 0, time.UTC)
+	dir := t.TempDir()
+	writeSession(t, dir, "new.jsonl", validLine, fixed)
+	res := Fetch(context.Background(), dir, fixed)
+	if res.Status != catalog.StatusOK {
+		t.Fatalf("Status = %v, detail = %q, want ok", res.Status, res.Detail)
+	}
+	if len(res.Records) != 1 {
+		t.Fatalf("Records len = %d, want 1", len(res.Records))
+	}
+	if !res.Records[0].Provenance.FetchedAt.Equal(fixed) {
+		t.Fatalf("FetchedAt = %v, want %v", res.Records[0].Provenance.FetchedAt, fixed)
 	}
 }

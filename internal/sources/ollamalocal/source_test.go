@@ -34,6 +34,8 @@ func newServer(t *testing.T, tags, ps string, psStatus int) *httptest.Server {
 	}))
 }
 
+var fixtureNow = time.Date(2026, 9, 20, 15, 0, 0, 0, time.UTC)
+
 const sampleTags = `{"models":[{"name":"hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M","model":"hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M","modified_at":"2026-08-22T20:09:26Z","size":17395587762,"details":{"parameter_size":"27.3B","quantization_level":"Q4_K_M","context_length":262144},"capabilities":["tools","thinking"]},{"name":"gpt-oss:20b","details":{"parameter_size":"20.9B","quantization_level":"MXFP4","context_length":32768},"capabilities":["completion"]}]}`
 
 const samplePS = `{"models":[{"name":"gpt-oss:20b","size":13000056503,"expires_at":"2026-09-18T19:44:37Z","size_vram":13000056503,"context_length":32768}]}`
@@ -60,7 +62,7 @@ func TestFetch_UpstreamFixtureContract(t *testing.T) {
 	server := newServer(t, tags, ps, http.StatusOK)
 	defer server.Close()
 
-	res := Fetch(context.Background(), server.URL)
+	res := Fetch(context.Background(), server.URL, fixtureNow)
 	if res.Status != catalog.StatusOK {
 		t.Fatalf("Status = %v, detail = %q, want ok", res.Status, res.Detail)
 	}
@@ -68,7 +70,7 @@ func TestFetch_UpstreamFixtureContract(t *testing.T) {
 	mutatedTags := strings.Replace(tags, `"name":"vendor-a/model-1",`, "", 1)
 	mutatedServer := newServer(t, mutatedTags, ps, http.StatusOK)
 	defer mutatedServer.Close()
-	res = Fetch(context.Background(), mutatedServer.URL)
+	res = Fetch(context.Background(), mutatedServer.URL, fixtureNow)
 	if res.Status != catalog.StatusFail {
 		t.Fatalf("Status = %v, detail = %q, want fail for missing model name", res.Status, res.Detail)
 	}
@@ -78,7 +80,7 @@ func TestFetch_Positive(t *testing.T) {
 	server := newServer(t, sampleTags, samplePS, http.StatusOK)
 	defer server.Close()
 
-	res := Fetch(context.Background(), server.URL)
+	res := Fetch(context.Background(), server.URL, fixtureNow)
 	if res.Status != catalog.StatusOK {
 		t.Fatalf("Status = %v, detail = %q, want ok", res.Status, res.Detail)
 	}
@@ -131,7 +133,7 @@ func TestFetch_Negative(t *testing.T) {
 
 func testFetchNegativeTagsUnreachable(t *testing.T) {
 	t.Helper()
-	res := Fetch(context.Background(), "http://127.0.0.1:1")
+	res := Fetch(context.Background(), "http://127.0.0.1:1", fixtureNow)
 	if res.Status != catalog.StatusFail {
 		t.Fatalf("Status = %v, want fail when /api/tags is unreachable", res.Status)
 	}
@@ -141,7 +143,7 @@ func testFetchNegativeMalformedTagsBody(t *testing.T) {
 	t.Helper()
 	server := newServer(t, "{not json", samplePS, http.StatusOK)
 	defer server.Close()
-	res := Fetch(context.Background(), server.URL)
+	res := Fetch(context.Background(), server.URL, fixtureNow)
 	if res.Status != catalog.StatusFail {
 		t.Fatalf("Status = %v, want fail for a malformed /api/tags body", res.Status)
 	}
@@ -151,7 +153,7 @@ func testFetchNegativePSFailureDegrades(t *testing.T) {
 	t.Helper()
 	server := newServer(t, sampleTags, "", http.StatusInternalServerError)
 	defer server.Close()
-	res := Fetch(context.Background(), server.URL)
+	res := Fetch(context.Background(), server.URL, fixtureNow)
 	if res.Status != catalog.StatusDegraded {
 		t.Fatalf("Status = %v, detail = %q, want degraded with a note when only /api/ps fails", res.Status, res.Detail)
 	}
@@ -174,7 +176,7 @@ func testFetchNegativePSFailureDegrades(t *testing.T) {
 func TestFetch_Boundary(t *testing.T) {
 	server := newServer(t, `{"models":[]}`, samplePS, http.StatusOK)
 	defer server.Close()
-	res := Fetch(context.Background(), server.URL)
+	res := Fetch(context.Background(), server.URL, fixtureNow)
 	if res.Status != catalog.StatusSkip {
 		t.Fatalf("Status = %v, want skip for zero installed models", res.Status)
 	}
@@ -289,7 +291,7 @@ func TestFetch_PSMaxModelsDegrades(t *testing.T) {
 	}))
 	defer server.Close()
 
-	res := Fetch(context.Background(), server.URL)
+	res := Fetch(context.Background(), server.URL, fixtureNow)
 	if res.Status != catalog.StatusDegraded {
 		t.Fatalf("Status = %v, want StatusDegraded", res.Status)
 	}
@@ -298,6 +300,25 @@ func TestFetch_PSMaxModelsDegrades(t *testing.T) {
 	}
 	if !strings.Contains(res.Detail, "/api/ps lists more than") {
 		t.Fatalf("Detail = %q, want mention of '/api/ps lists more than'", res.Detail)
+	}
+}
+
+func TestFetch_StampsInjectedNow(t *testing.T) {
+	server := newServer(t, sampleTags, samplePS, http.StatusOK)
+	defer server.Close()
+
+	fixed := time.Date(2026, 10, 18, 12, 34, 56, 0, time.UTC)
+	res := Fetch(context.Background(), server.URL, fixed)
+	if res.Status != catalog.StatusOK {
+		t.Fatalf("Status = %v, detail = %q, want ok", res.Status, res.Detail)
+	}
+	if len(res.Records) == 0 {
+		t.Fatal("Records is empty, want at least one record")
+	}
+	for _, rec := range res.Records {
+		if rec.Provenance.FetchedAt != fixed {
+			t.Fatalf("FetchedAt = %v, want %v", rec.Provenance.FetchedAt, fixed)
+		}
 	}
 }
 

@@ -10,11 +10,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/golusoris/golusoris/httpx/client"
 
 	"github.com/tekmora/epitrop/catalog"
 )
+
+var fixtureNow = time.Date(2026, 9, 20, 15, 0, 0, 0, time.UTC)
 
 func writeTokenFile(t *testing.T, contents string) string {
 	t.Helper()
@@ -39,7 +42,7 @@ func TestFetch_Positive(t *testing.T) {
 	defer server.Close()
 
 	tokenPath := writeTokenFile(t, "shhh-secret-token\n")
-	res := Fetch(context.Background(), server.URL, tokenPath)
+	res := Fetch(context.Background(), server.URL, tokenPath, fixtureNow)
 
 	if res.Status != catalog.StatusOK {
 		t.Fatalf("Status = %v, detail = %q, want ok", res.Status, res.Detail)
@@ -60,7 +63,7 @@ func TestFetch_Positive(t *testing.T) {
 	}
 
 	t.Run("trailing slash handled", func(t *testing.T) {
-		resSlash := Fetch(context.Background(), server.URL+"/", tokenPath)
+		resSlash := Fetch(context.Background(), server.URL+"/", tokenPath, fixtureNow)
 		if resSlash.Status != catalog.StatusOK {
 			t.Fatalf("Status = %v, detail = %q, want ok with trailing slash", resSlash.Status, resSlash.Detail)
 		}
@@ -92,7 +95,7 @@ func TestFetch_UpstreamFixtureContract(t *testing.T) {
 	}))
 	defer server.Close()
 
-	res := Fetch(context.Background(), server.URL, tokenPath)
+	res := Fetch(context.Background(), server.URL, tokenPath, fixtureNow)
 	if res.Status != catalog.StatusOK {
 		t.Fatalf("Status = %v, detail = %q, want ok", res.Status, res.Detail)
 	}
@@ -102,7 +105,7 @@ func TestFetch_UpstreamFixtureContract(t *testing.T) {
 		_, _ = w.Write([]byte(mutated)) //nolint:errcheck // test server response
 	}))
 	defer mutatedServer.Close()
-	res = Fetch(context.Background(), mutatedServer.URL, tokenPath)
+	res = Fetch(context.Background(), mutatedServer.URL, tokenPath, fixtureNow)
 	if res.Status != catalog.StatusFail {
 		t.Fatalf("Status = %v, detail = %q, want fail for missing model id", res.Status, res.Detail)
 	}
@@ -115,7 +118,7 @@ func TestFetch_NeverLeaksToken(t *testing.T) {
 
 	t.Run("http error", func(t *testing.T) {
 		tokenPath := writeTokenFile(t, secret)
-		res := Fetch(context.Background(), "http://127.0.0.1:1", tokenPath)
+		res := Fetch(context.Background(), "http://127.0.0.1:1", tokenPath, fixtureNow)
 		if strings.Contains(res.Detail, secret) {
 			t.Fatalf("Detail leaked the token: %q", res.Detail)
 		}
@@ -127,7 +130,7 @@ func TestFetch_NeverLeaksToken(t *testing.T) {
 		}))
 		defer server.Close()
 		tokenPath := writeTokenFile(t, secret)
-		res := Fetch(context.Background(), server.URL, tokenPath)
+		res := Fetch(context.Background(), server.URL, tokenPath, fixtureNow)
 		if res.Status != catalog.StatusFail {
 			t.Fatalf("Status = %v, want fail for HTTP 403", res.Status)
 		}
@@ -138,7 +141,7 @@ func TestFetch_NeverLeaksToken(t *testing.T) {
 
 	t.Run("missing token file", func(t *testing.T) {
 		missingPath := filepath.Join(t.TempDir(), "missing-token-file")
-		res := Fetch(context.Background(), "http://example.invalid", missingPath)
+		res := Fetch(context.Background(), "http://example.invalid", missingPath, fixtureNow)
 		if res.Status != catalog.StatusFail {
 			t.Fatalf("Status = %v, want fail for a missing token file", res.Status)
 		}
@@ -159,7 +162,7 @@ func mustReadFixture(t *testing.T, path string) []byte {
 
 func TestFetch_Negative(t *testing.T) {
 	t.Run("missing token file", func(t *testing.T) {
-		res := Fetch(context.Background(), "http://example.invalid", filepath.Join(t.TempDir(), "missing"))
+		res := Fetch(context.Background(), "http://example.invalid", filepath.Join(t.TempDir(), "missing"), fixtureNow)
 		if res.Status != catalog.StatusFail {
 			t.Fatalf("Status = %v, want fail for a missing token file", res.Status)
 		}
@@ -167,7 +170,7 @@ func TestFetch_Negative(t *testing.T) {
 
 	t.Run("empty token file", func(t *testing.T) {
 		tokenPath := writeTokenFile(t, "   \n")
-		res := Fetch(context.Background(), "http://example.invalid", tokenPath)
+		res := Fetch(context.Background(), "http://example.invalid", tokenPath, fixtureNow)
 		if res.Status != catalog.StatusFail {
 			t.Fatalf("Status = %v, want fail for an empty token file", res.Status)
 		}
@@ -179,7 +182,7 @@ func TestFetch_Negative(t *testing.T) {
 		}))
 		defer server.Close()
 		tokenPath := writeTokenFile(t, "tok")
-		res := Fetch(context.Background(), server.URL, tokenPath)
+		res := Fetch(context.Background(), server.URL, tokenPath, fixtureNow)
 		if res.Status != catalog.StatusFail {
 			t.Fatalf("Status = %v, want fail for a malformed body", res.Status)
 		}
@@ -195,7 +198,7 @@ func TestFetch_Boundary(t *testing.T) {
 			oversized[i] = 'a'
 		}
 		tokenPath := writeTokenFile(t, string(oversized))
-		res := Fetch(context.Background(), "http://example.invalid", tokenPath)
+		res := Fetch(context.Background(), "http://example.invalid", tokenPath, fixtureNow)
 		if res.Status != catalog.StatusFail {
 			t.Fatalf("Status = %v, want fail for an oversized token file", res.Status)
 		}
@@ -207,7 +210,7 @@ func TestFetch_Boundary(t *testing.T) {
 		}))
 		defer server.Close()
 		tokenPath := writeTokenFile(t, "tok")
-		res := Fetch(context.Background(), server.URL, tokenPath)
+		res := Fetch(context.Background(), server.URL, tokenPath, fixtureNow)
 		if res.Status != catalog.StatusFail {
 			t.Fatalf("Status = %v, want fail for zero models", res.Status)
 		}
@@ -245,4 +248,25 @@ func TestListModels_ResponseCap(t *testing.T) {
 			t.Fatalf("listModels() = %v, want an error wrapping client.ErrBodyTooLarge", err)
 		}
 	})
+}
+
+func TestFetch_StampsInjectedNow(t *testing.T) {
+	fixed := time.Date(2026, 4, 1, 10, 20, 30, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"m1","object":"model"}]}`)) //nolint:errcheck // test httptest server response; a write failure here would fail the test's own HTTP round trip, not silently corrupt anything
+	}))
+	defer server.Close()
+
+	tokenPath := writeTokenFile(t, "tok")
+	res := Fetch(context.Background(), server.URL, tokenPath, fixed)
+	if res.Status != catalog.StatusOK {
+		t.Fatalf("Status = %v, want ok", res.Status)
+	}
+	if len(res.Records) != 1 {
+		t.Fatalf("Records len = %d, want 1", len(res.Records))
+	}
+	if !res.Records[0].Provenance.FetchedAt.Equal(fixed) {
+		t.Fatalf("FetchedAt = %v, want %v", res.Records[0].Provenance.FetchedAt, fixed)
+	}
 }

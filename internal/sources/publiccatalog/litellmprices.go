@@ -49,18 +49,18 @@ type liteLLMPriceResult struct {
 	Malformed int
 }
 
-func fetchLiteLLMPricesWithReport(ctx context.Context, url string) (liteLLMPriceResult, error) {
+func fetchLiteLLMPricesWithReport(ctx context.Context, url string, now time.Time) (liteLLMPriceResult, error) {
 	body, err := httpfetch.Get(ctx, url, requestTimeout, maxResponseBytes)
 	if err != nil {
 		return liteLLMPriceResult{}, fmt.Errorf("litellm-prices: %w", err)
 	}
-	return fetchLiteLLMPricesFromBytes(body)
+	return fetchLiteLLMPricesFromBytes(body, now)
 }
 
 // fetchLiteLLMPricesFromBytes parses a price map. One malformed entry is
 // counted and skipped; a map in which every model entry is malformed is
 // refused, since that is an upstream schema change, not one bad entry.
-func fetchLiteLLMPricesFromBytes(body []byte) (liteLLMPriceResult, error) {
+func fetchLiteLLMPricesFromBytes(body []byte, now time.Time) (liteLLMPriceResult, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return liteLLMPriceResult{}, fmt.Errorf("litellm-prices: decode response: %w", err)
@@ -72,7 +72,7 @@ func fetchLiteLLMPricesFromBytes(body []byte) (liteLLMPriceResult, error) {
 		return liteLLMPriceResult{}, fmt.Errorf("litellm-prices: empty response price map")
 	}
 
-	fetchedAt := time.Now().UTC()
+	fetchedAt := now.UTC()
 	records := make([]catalog.Record, 0, len(raw))
 	malformed := 0
 	seenModels := 0

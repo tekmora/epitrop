@@ -11,6 +11,8 @@ import (
 	"github.com/tekmora/epitrop/catalog"
 )
 
+var fixtureNow = time.Date(2026, 9, 20, 15, 0, 0, 0, time.UTC)
+
 func TestFetch_Positive(t *testing.T) {
 	or := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(sampleOpenRouter)) //nolint:errcheck // test httptest server response; a write failure here would fail the test's own HTTP round trip, not silently corrupt anything
@@ -21,7 +23,7 @@ func TestFetch_Positive(t *testing.T) {
 	}))
 	defer llm.Close()
 
-	res := Fetch(context.Background(), or.URL, llm.URL)
+	res := Fetch(context.Background(), or.URL, llm.URL, fixtureNow)
 	if res.Status != catalog.StatusOK {
 		t.Fatalf("Status = %v, detail = %q, want ok", res.Status, res.Detail)
 	}
@@ -41,7 +43,7 @@ func TestFetch_Negative(t *testing.T) {
 	}))
 	defer llm.Close()
 
-	res := Fetch(context.Background(), "http://127.0.0.1:1", llm.URL)
+	res := Fetch(context.Background(), "http://127.0.0.1:1", llm.URL, fixtureNow)
 	if res.Status != catalog.StatusDegraded {
 		t.Fatalf("Status = %v, detail = %q, want degraded (litellm-prices alone succeeded)", res.Status, res.Detail)
 	}
@@ -56,7 +58,7 @@ func TestFetch_Negative(t *testing.T) {
 // TestFetch_Boundary covers both sub-sources failing: Fetch must report
 // StatusFail rather than a false StatusOK with zero records.
 func TestFetch_Boundary(t *testing.T) {
-	res := Fetch(context.Background(), "http://127.0.0.1:1", "http://127.0.0.1:1")
+	res := Fetch(context.Background(), "http://127.0.0.1:1", "http://127.0.0.1:1", fixtureNow)
 	if res.Status != catalog.StatusFail {
 		t.Fatalf("Status = %v, want fail when both sub-sources fail", res.Status)
 	}
@@ -75,7 +77,7 @@ func TestFetch_ReportsMalformedLiteLLMEntries(t *testing.T) {
 	}))
 	defer llm.Close()
 
-	res := Fetch(context.Background(), or.URL, llm.URL)
+	res := Fetch(context.Background(), or.URL, llm.URL, fixtureNow)
 	if res.Status != catalog.StatusDegraded {
 		t.Fatalf("Status = %v, detail = %q, want degraded", res.Status, res.Detail)
 	}
@@ -95,7 +97,7 @@ func TestFetch_EmptyPublicCatalogResponsesFail(t *testing.T) {
 		}))
 		defer llm.Close()
 
-		res := Fetch(context.Background(), or.URL, llm.URL)
+		res := Fetch(context.Background(), or.URL, llm.URL, fixtureNow)
 		if res.Status != catalog.StatusDegraded {
 			t.Fatalf("Status = %v, detail = %q, want degraded", res.Status, res.Detail)
 		}
@@ -114,7 +116,7 @@ func TestFetch_EmptyPublicCatalogResponsesFail(t *testing.T) {
 		}))
 		defer llm.Close()
 
-		res := Fetch(context.Background(), or.URL, llm.URL)
+		res := Fetch(context.Background(), or.URL, llm.URL, fixtureNow)
 		if res.Status != catalog.StatusDegraded {
 			t.Fatalf("Status = %v, detail = %q, want degraded", res.Status, res.Detail)
 		}
@@ -172,7 +174,7 @@ func TestFetch_ReportsRejectedOpenRouterRecords(t *testing.T) {
 	}))
 	defer llm.Close()
 
-	res := Fetch(context.Background(), orNoID.URL, llm.URL)
+	res := Fetch(context.Background(), orNoID.URL, llm.URL, fixtureNow)
 	if res.Status != catalog.StatusDegraded {
 		t.Fatalf("Status = %v, want degraded", res.Status)
 	}
@@ -193,7 +195,7 @@ func TestFetch_ReportsRejectedOpenRouterRecords(t *testing.T) {
 	}))
 	defer orWithErr.Close()
 
-	res2 := Fetch(context.Background(), orWithErr.URL, llm.URL)
+	res2 := Fetch(context.Background(), orWithErr.URL, llm.URL, fixtureNow)
 	if res2.Status != catalog.StatusDegraded {
 		t.Fatalf("Status = %v, want degraded", res2.Status)
 	}
@@ -203,5 +205,30 @@ func TestFetch_ReportsRejectedOpenRouterRecords(t *testing.T) {
 	wantDetail2 := "openrouter: ok (1, rejected=1, first: openrouter: bad/model input_modalities: lists more than 16 entries)"
 	if !strings.Contains(res2.Detail, wantDetail2) {
 		t.Fatalf("Detail = %q, want to contain %q", res2.Detail, wantDetail2)
+	}
+}
+
+func TestFetch_StampsInjectedNow(t *testing.T) {
+	or := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(sampleOpenRouter)) //nolint:errcheck // test httptest server response; a write failure here would fail the test's own HTTP round trip, not silently corrupt anything
+	}))
+	defer or.Close()
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(sampleLiteLLMPrices)) //nolint:errcheck // test httptest server response; a write failure here would fail the test's own HTTP round trip, not silently corrupt anything
+	}))
+	defer llm.Close()
+
+	fixed := time.Date(2026, 10, 18, 12, 34, 56, 0, time.UTC)
+	res := Fetch(context.Background(), or.URL, llm.URL, fixed)
+	if res.Status != catalog.StatusOK {
+		t.Fatalf("Status = %v, detail = %q, want ok", res.Status, res.Detail)
+	}
+	if len(res.Records) == 0 {
+		t.Fatal("Records is empty, want at least one record")
+	}
+	for _, rec := range res.Records {
+		if rec.Provenance.FetchedAt != fixed {
+			t.Fatalf("FetchedAt = %v, want %v", rec.Provenance.FetchedAt, fixed)
+		}
 	}
 }

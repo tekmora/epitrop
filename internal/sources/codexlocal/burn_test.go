@@ -23,9 +23,9 @@ func burnFetch(t *testing.T, now time.Time, files map[string][]string) (Result, 
 	for name, lines := range files {
 		writeSession(t, dir, name, strings.Join(lines, "\n")+"\n", now)
 	}
-	res := fetchAt(context.Background(), dir, now)
+	res := Fetch(context.Background(), dir, now)
 	if len(res.Records) != 1 {
-		t.Fatalf("fetchAt() = %+v, want one record", res)
+		t.Fatalf("Fetch() = %+v, want one record", res)
 	}
 	return res, res.Records[0]
 }
@@ -143,7 +143,7 @@ func TestFetchBurnAndAgents_BoundaryNoRecentSession(t *testing.T) {
 	old := now.Add(-time.Hour)
 	dir := t.TempDir()
 	writeSession(t, dir, "old.jsonl", burnLine(old, "codex", 5)+"\n", old)
-	rec := fetchAt(context.Background(), dir, now).Records[0]
+	rec := Fetch(context.Background(), dir, now).Records[0]
 	assertAgents(t, rec, 0, "no session in the window")
 	assertBurnAbsent(t, rec, "no session in the window")
 }

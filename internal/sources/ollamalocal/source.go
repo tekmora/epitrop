@@ -84,7 +84,7 @@ type psResponse struct {
 // fail the whole source: installed-model data still stands on its own, so
 // Fetch downgrades that one failure into a note rather than discarding
 // everything /api/tags already measured.
-func Fetch(ctx context.Context, endpoint string) Result {
+func Fetch(ctx context.Context, endpoint string, now time.Time) Result {
 	tags, err := getTags(ctx, endpoint)
 	if err != nil {
 		return Result{Status: catalog.StatusFail, Detail: err.Error()}
@@ -96,7 +96,7 @@ func Fetch(ctx context.Context, endpoint string) Result {
 	loaded, psErr := loadedModelNames(ctx, endpoint)
 	loadedKnown := psErr == nil
 
-	fetchedAt := time.Now().UTC()
+	fetchedAt := now.UTC()
 	records := make([]catalog.Record, 0, len(tags.Models))
 	for _, m := range tags.Models {
 		records = append(records, toRecord(m, loaded[m.Name], loadedKnown, fetchedAt))
