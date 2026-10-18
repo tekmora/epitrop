@@ -1,0 +1,2 @@
+type: changed
+title: 'The supervisor takes its job lock through gofrs/flock, the same library as the event log lock; a job started while the lock is held gets no descriptor of the lock file, and closing a released lock twice is no error'
