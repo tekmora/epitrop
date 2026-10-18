@@ -2,9 +2,9 @@
   "changes": "provenance header added by Epitrop; extracted the sample_spec entry",
   "copyright_holder": "Berri AI",
   "extraction_date": "2026-10-09",
-  "full_document_sha256": "9b88d7873307df1a207d21189a4ffcebd4259363e1bdb53c72f519ad786ab670",
-  "pinned_revision": "7ff5010674348be45b96e9c7e0c8da3b657f08af",
+  "full_document_sha256": "70f6dbc07538f070f866549eec17075265142ff863a659e7f2836781aad092a7",
+  "pinned_revision": "ad83e3d3c8376e5561b07a329a063bb5ac03dc9c",
   "source_pin_description": "",
-  "source_url": "https://raw.githubusercontent.com/BerriAI/litellm/7ff5010674348be45b96e9c7e0c8da3b657f08af/model_prices_and_context_window.json",
+  "source_url": "https://raw.githubusercontent.com/BerriAI/litellm/ad83e3d3c8376e5561b07a329a063bb5ac03dc9c/model_prices_and_context_window.json",
   "spdx_license": "MIT"
 }
