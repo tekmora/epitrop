@@ -365,6 +365,7 @@ func TestServeHTTPStopsWithASilentConnection(t *testing.T) {
 			t.Errorf("Close(conn) = %v", err)
 		}
 	})
+	waitAccepted(t, base)
 	start := time.Now()
 	cancel()
 	select {
@@ -381,6 +382,28 @@ func TestServeHTTPStopsWithASilentConnection(t *testing.T) {
 	}
 	if _, err := conn.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 		t.Fatalf("Read(silent conn) after stop = %v, want io.EOF: the server must close it", err)
+	}
+}
+
+// waitAccepted returns once the server has accepted every connection dialed before
+// the call. A connection still in the listen queue when the listener closes is reset by
+// the kernel, not closed by the server (seen on darwin as "connection reset by peer").
+// The queue is first in, first out, and the server records a connection as new in its
+// accept loop before it serves it, so an answer on a fresh connection means the earlier
+// ones were accepted and recorded.
+func waitAccepted(t *testing.T, base string) {
+	t.Helper()
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	req, err := http.NewRequestWithContext(testContext(t), http.MethodGet, base+"/readyz", nil)
+	if err != nil {
+		t.Fatalf("NewRequest = %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /readyz on a fresh connection = %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("Close = %v", err)
 	}
 }
 
