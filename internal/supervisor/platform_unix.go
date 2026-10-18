@@ -12,12 +12,18 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gofrs/flock"
 	"golang.org/x/sys/unix"
 )
 
+// heldLock is a job's lock: flock(2) through gofrs/flock, on a file opened close-on-exec, so
+// the job the shim starts does not inherit it and the lock ends with the shim.
 type heldLock struct {
-	file *os.File
+	lock *flock.Flock
 }
+
+// errLockBusy marks a lock another process holds.
+var errLockBusy = errors.New("lock is held")
 
 var (
 	processSignaller    = unix.Kill
@@ -35,16 +41,15 @@ func holdLock(path string) (*heldLock, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("supervisor: mkdir lock dir: %w", err)
 	}
-	// #nosec G304 -- lock path is derived from configured state dir plus checked job name.
-	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC, 0o600)
+	lock := flock.New(path, flock.SetFlag(os.O_CREATE|os.O_RDWR), flock.SetPermissions(0o600))
+	locked, err := lock.TryLock()
 	if err != nil {
 		return nil, fmt.Errorf("supervisor: open lock %s: %w", path, err)
 	}
-	file := os.NewFile(uintptr(fd), path)
-	if err = unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		return nil, closeHeldLock(file, fmt.Errorf("supervisor: flock %s: %w", path, err))
+	if !locked {
+		return nil, fmt.Errorf("supervisor: flock %s: %w", path, errLockBusy)
 	}
-	return &heldLock{file: file}, nil
+	return &heldLock{lock: lock}, nil
 }
 
 func lockHeld(path string) (bool, error) {
@@ -52,7 +57,7 @@ func lockHeld(path string) (bool, error) {
 	if err == nil {
 		return false, lock.Close()
 	}
-	if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
+	if errors.Is(err, errLockBusy) {
 		return true, nil
 	}
 	return false, err
@@ -311,18 +316,8 @@ func signalFromName(name string) (unix.Signal, error) {
 }
 
 func (l *heldLock) Close() error {
-	if err := unix.Flock(int(l.file.Fd()), unix.LOCK_UN); err != nil {
-		return closeHeldLock(l.file, fmt.Errorf("supervisor: unlock %s: %w", l.file.Name(), err))
-	}
-	if err := l.file.Close(); err != nil {
-		return fmt.Errorf("supervisor: close lock %s: %w", l.file.Name(), err)
+	if err := l.lock.Unlock(); err != nil {
+		return fmt.Errorf("supervisor: unlock %s: %w", l.lock.Path(), err)
 	}
 	return nil
-}
-
-func closeHeldLock(file *os.File, cause error) error {
-	if err := file.Close(); err != nil {
-		return errors.Join(cause, fmt.Errorf("supervisor: close lock %s: %w", file.Name(), err))
-	}
-	return cause
 }
