@@ -92,6 +92,54 @@ func checkDetachServiceArgv(t *testing.T, argv []string, unit string, run slotRu
 	}
 }
 
+// A detached run hands the service each name in the job's env_allow that the caller has
+// set, by name only, so the runner's job gets the same values as an attached run and no value
+// stands in the command line. A name the caller left unset, and a variable the template does
+// not allow, stay out.
+func TestSlotRunDetachForwardsTheAllowedEnvironmentByName(t *testing.T) {
+	cases := []struct {
+		name, allow string
+		want        []string
+	}{
+		{"set and unset", `"env_allow": ["EPITROP_DETACH_SET", "EPITROP_DETACH_UNSET"], `, []string{"--setenv=EPITROP_DETACH_SET"}},
+		{"none allowed", ``, nil},
+		{"set but empty", `"env_allow": ["EPITROP_DETACH_EMPTY"], `, []string{"--setenv=EPITROP_DETACH_EMPTY"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("EPITROP_DETACH_SET", "value-not-in-argv")
+			t.Setenv("EPITROP_DETACH_EMPTY", "")
+			t.Setenv("EPITROP_DETACH_OTHER", "other-value")
+			run := newSlotRun(t, detachTemplate(tc.allow+`"memory_max": "512M", "memory_high": "384M"`))
+			started := withDetachStarter(t, nil)
+			if _, err := captureSlot(t, append([]string{"run", "--detach"}, run.args[1:]...)); err != nil {
+				t.Fatalf("slot run --detach = %v, want nil", err)
+			}
+			argv := (*started)[0]
+			if got := forwardedEnv(argv); !slices.Equal(got, tc.want) {
+				t.Fatalf("forwarded %q, want %q", got, tc.want)
+			}
+			if i := slices.IndexFunc(argv, func(arg string) bool {
+				return strings.Contains(arg, "value-not-in-argv") || strings.Contains(arg, "other-value")
+			}); i >= 0 {
+				t.Fatalf("command line holds a value: %q", argv[i])
+			}
+		})
+	}
+}
+
+// forwardedEnv is the --setenv arguments of a detached command line other than PATH.
+func forwardedEnv(argv []string) []string {
+	head := argv[:slices.Index(argv, "--")]
+	var got []string
+	for i := 0; i < len(head); i++ {
+		if strings.HasPrefix(head[i], "--setenv=") && !strings.HasPrefix(head[i], "--setenv=PATH=") {
+			got = append(got, head[i])
+		}
+	}
+	return got
+}
+
 // A template that does not name both limits itself, or names one the loader refuses, starts
 // nothing.
 func TestSlotRunDetachRefusesATemplateWithoutItsOwnLimits(t *testing.T) {
@@ -103,6 +151,8 @@ func TestSlotRunDetachRefusesATemplateWithoutItsOwnLimits(t *testing.T) {
 		{"no memory_high", `"memory_max": "512M"`, "sets no sandbox.memory_high"},
 		{"empty memory_high", `"memory_max": "512M", "memory_high": ""`, "sets no sandbox.memory_high"},
 		{"memory_max no size", `"memory_max": "lots", "memory_high": "256M"`, "sandbox.memory_max: must be positive systemd size"},
+		{"env_allow no list", `"memory_max": "512M", "memory_high": "256M", "env_allow": "GOPROXY"`, "sandbox.env_allow is no list"},
+		{"env_allow entry no name", `"memory_max": "512M", "memory_high": "256M", "env_allow": ["GOPROXY", 7]`, "sandbox.env_allow/1 is no name"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
