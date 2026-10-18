@@ -1,4 +1,0 @@
-type: fixed
-title: 'A sandboxed job with egress network no longer logs pasta''s "Couldn''t get any nameserver address" line'
-issue: "137"
-breaking: false

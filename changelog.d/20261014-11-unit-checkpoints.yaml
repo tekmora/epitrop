@@ -1,4 +1,0 @@
-type: added
-title: 'Add signed unit checkpoints for fast replay, preemption at slot safe points, and refusal of diverged log copies'
-issue: "11"
-breaking: false

@@ -1,4 +1,0 @@
-type: added
-title: "Traces and metrics for slot runs, supervised jobs, side effects and task-graph queue depth, exported over OTLP when an endpoint is set"
-issue: "34"
-breaking: false

@@ -1,4 +1,0 @@
-type: fixed
-title: 'A release watch run without GITHUB_TOKEN now names the missing token when a sink search is refused, and logs once when rate_limit_floor is at or above the GitHub rate limit'
-issue: "138"
-breaking: false

@@ -1,3 +1,0 @@
-type: added
-title: 'Catalog: the usage window carries `burn_percent_per_hour` and `active_agents` (optional, at least zero; schema and validation refuse anything else); codex-local measures both over the last 15 minutes of session logs, and litellm-key-budget names both as absent. The schema stays at version 1, so a reader that validates against the v0.1.0 schema refuses snapshots carrying the new fields until it takes the new schema'
-issue: "274"
