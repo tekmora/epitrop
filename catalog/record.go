@@ -8,7 +8,10 @@
 // dependencies and free of os/net calls.
 package catalog
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // Kind marks whether a field's value was observed live (measured) or copied
 // from a published catalog / config (declared). Never guessed: a field this
@@ -49,6 +52,13 @@ type UsageWindow struct {
 	UsedPercent   *float64   `json:"used_percent,omitempty"`
 	WindowMinutes *int       `json:"window_minutes,omitempty"`
 	ResetsAt      *time.Time `json:"resets_at,omitempty"`
+	// BurnPercentPerHour is the recent burn of the window: how fast used_percent
+	// rose over a short sliding window before the read (not the average since
+	// the window opened), across every session on the account.
+	BurnPercentPerHour *float64 `json:"burn_percent_per_hour,omitempty"`
+	// ActiveAgents counts the sessions and subagents that drew on the window
+	// in that sliding window.
+	ActiveAgents *int `json:"active_agents,omitempty"`
 }
 
 // Record is one catalog entry: a model or a subscription usage window,
@@ -93,6 +103,22 @@ func (r Record) Validate() error {
 	}
 	if r.Provenance.FetchedAt.IsZero() {
 		return errZeroFetchedAt
+	}
+	return r.UsageWindow.validate()
+}
+
+// validate checks the fields a reader acts on without a further range check:
+// a burn rate is finite and at least zero, an agent count at least zero. A nil
+// window or field is valid; it means the source did not report it.
+func (w *UsageWindow) validate() error {
+	if w == nil {
+		return nil
+	}
+	if b := w.BurnPercentPerHour; b != nil && (math.IsNaN(*b) || math.IsInf(*b, 0) || *b < 0) {
+		return errBadBurnPercentPerHour
+	}
+	if w.ActiveAgents != nil && *w.ActiveAgents < 0 {
+		return errNegativeActiveAgents
 	}
 	return nil
 }

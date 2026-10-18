@@ -133,6 +133,8 @@ func keyRecord(info keyInfo, fetchedAt time.Time) catalog.Record {
 // every part it cannot fill in absent.
 func keyUsageWindow(info keyInfo, absent map[string]string) *catalog.UsageWindow {
 	uw := &catalog.UsageWindow{}
+	absent["usage_window.burn_percent_per_hour"] = "key info reports the spend, not its rate"
+	absent["usage_window.active_agents"] = "key info does not name the callers of the key"
 	if info.MaxBudget != nil && *info.MaxBudget > 0 {
 		used := *info.Spend / *info.MaxBudget * 100
 		uw.UsedPercent = &used

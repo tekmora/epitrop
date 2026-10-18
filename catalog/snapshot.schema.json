@@ -205,6 +205,20 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "active_agents": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "burn_percent_per_hour": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
         "resets_at": {
           "type": [
             "string",
