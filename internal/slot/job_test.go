@@ -134,6 +134,7 @@ func TestRunConfigRefusesATemplateThatIsNoSlotsTemplate(t *testing.T) {
 		{"a restart policy of its own", `{"jobs": [{` + templateJob + `, "restart": {"policy": "always"}}]}`, "sets restart"},
 		{"a workspace of its own", `{"jobs": [{` + templateJob + `, "sandbox": {"workspace": "/var/tmp"}}]}`, "sets sandbox.workspace"},
 		{"no sandbox", `{"jobs": [{` + templateJob + `, "sandbox": {"mode": "off", "reason": "trusted"}}]}`, "runs sandboxed"},
+		{"the open internet", `{"jobs": [{` + templateJob + `, "sandbox": {"network": "egress"}}]}`, "reaches its gateway or nothing"},
 		{"no deadline", `{"jobs": [{"name": "slot-1", "command": ["/usr/bin/true"]}]}`, "has a deadline of 1.."},
 		{"a deadline above the bound", `{"jobs": [{"name": "slot-1", "command": ["/usr/bin/true"], "max_runtime_seconds": 86401}]}`, "has a deadline of 1.."},
 		{"a key the configuration does not know", `{"jobs": [{` + templateJob + `, "harness": "x"}]}`, "gives no valid configuration"},
@@ -158,6 +159,46 @@ func TestRunConfigRefusesATemplateThatIsNoSlotsTemplate(t *testing.T) {
 	template := writeTemplate(t, `{"jobs": [{"name": "slot-1", "command": ["/usr/bin/true"], "max_runtime_seconds": 86400}]}`)
 	if cfg, _, err := RunConfig(slotCtx(t), template, ws, out); err != nil || cfg.Jobs[0].MaxRuntimeSeconds != MaxRunSeconds {
 		t.Fatalf("RunConfig(deadline at the bound) = %v, want nil", err)
+	}
+}
+
+// A job that reaches only its declared gateway is allowed, and its run keeps that gateway
+// as its only destination.
+func TestRunConfigKeepsTheDeclaredGatewayAsTheOnlyDestination(t *testing.T) {
+	ws, out := runDirs(t)
+	template := writeTemplate(t, `{"jobs": [{`+templateJob+`, "sandbox": {"network": "proxy", "destinations": ["127.0.0.1:4000"]}}]}`)
+	cfg, _, err := RunConfig(slotCtx(t), template, ws, out)
+	if err != nil {
+		t.Fatalf("RunConfig(network proxy) = %v, want nil", err)
+	}
+	if got := cfg.Jobs[0].Sandbox; got.Network != "proxy" || len(got.Destinations) != 1 || got.Destinations[0] != "127.0.0.1:4000" {
+		t.Fatalf("RunConfig(network proxy) sandbox = %+v, want network proxy to 127.0.0.1:4000 only", got)
+	}
+}
+
+// A slot resumes a run from its saved configuration through the same check, so a saved
+// configuration that reaches the open internet is refused there too.
+func TestCheckRunJobLetsAJobReachItsGatewayOrNothing(t *testing.T) {
+	cases := []struct {
+		network string
+		want    string
+	}{
+		{"none", ""},
+		{"proxy", ""},
+		{"egress", "reaches its gateway or nothing"},
+		{"", "reaches its gateway or nothing"},
+	}
+	for i := 0; i < len(cases); i++ {
+		job := config.JobConfig{Name: "slot-1", MaxRuntimeSeconds: 600}
+		job.Sandbox.Mode = "enforce"
+		job.Sandbox.Network = cases[i].network
+		err := CheckRunJob(job)
+		if cases[i].want == "" && err != nil {
+			t.Errorf("CheckRunJob(network %q) = %v, want nil", cases[i].network, err)
+		}
+		if cases[i].want != "" && (err == nil || !strings.Contains(err.Error(), cases[i].want)) {
+			t.Errorf("CheckRunJob(network %q) = %v, want an error holding %q", cases[i].network, err, cases[i].want)
+		}
 	}
 }
 
