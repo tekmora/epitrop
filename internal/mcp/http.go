@@ -2,18 +2,21 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
-	"sort"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/golusoris/golusoris/k8s/health"
 	"github.com/golusoris/golusoris/observability/statuspage"
-	"github.com/golusoris/golusoris/realtime/sse"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/tekmora/epitrop/internal/broker"
 	"github.com/tekmora/epitrop/internal/eventlog"
 )
 
@@ -24,29 +27,25 @@ const (
 	PathEvents = "/events"
 )
 
-// Event names on the event stream.
-const (
-	EventUnit = "unit"
-	EventJob  = "job"
-)
-
 // ReplayCheck is the readiness check that passes once the event log has replayed.
 const ReplayCheck = "event-log-replay"
+
+const (
+	// writeTimeout bounds each event write, so a stalled client is dropped.
+	writeTimeout = 10 * time.Second
+	// maxStreamEvents bounds one stream (HISS-02).
+	maxStreamEvents = 1 << 31
+)
 
 var errNotReplayed = errors.New("the event log has not replayed yet")
 
 // HTTP serves the tools over streamable HTTP, the health probes, and an event stream of
-// the units and jobs whose state changed. Watch drives readiness and the stream.
+// the signed event log. Watch drives readiness and polls the event tail.
 type HTTP struct {
 	src    Sources
 	log    *slog.Logger
-	hub    *sse.Hub
 	mux    *http.ServeMux
 	replay atomic.Pointer[error]
-
-	// Owned by Watch: the last summaries published, nil until the first replay.
-	units map[string]UnitSummary
-	jobs  map[string]Job
 }
 
 // NewHTTP returns the handler set over src. Readiness fails until Watch has replayed the
@@ -55,11 +54,11 @@ func NewHTTP(version string, src Sources, log *slog.Logger) *HTTP {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	h := &HTTP{src: src, log: log, hub: sse.NewHub(log), mux: http.NewServeMux()}
+	h := &HTTP{src: src, log: log, mux: http.NewServeMux()}
 	h.replay.Store(&errNotReplayed)
 	srv := NewServer(version, src)
 	h.mux.Handle(PathMCP, sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server { return srv }, nil))
-	h.mux.Handle(PathEvents, h.hub.Handler())
+	h.mux.HandleFunc(PathEvents, h.events)
 	reg := statuspage.NewRegistry(nil)
 	reg.Register(statuspage.Check{Name: ReplayCheck, Tags: []string{health.TagReadiness}, Fn: h.replayed})
 	health.MountMux(h.mux, reg)
@@ -77,10 +76,8 @@ func (h *HTTP) replayed(context.Context) error {
 }
 
 // Watch replays the event log every interval until ctx ends. Readiness follows the last
-// replay: it passes once one succeeds and fails again while replays fail. The first
-// replay sets the state the stream starts from; each later one publishes an event for
-// every unit and job whose summary changed. A client that misses an event reads the
-// state back with the tools.
+// replay: it passes once one succeeds and fails again while replays fail. Each pass polls
+// the event tail to publish new records.
 func (h *HTTP) Watch(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -93,51 +90,129 @@ func (h *HTTP) Watch(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// Poll replays once and publishes what changed since the last replay.
+// Poll replays once for readiness and polls the event tail, which publishes the records
+// appended since its last poll.
 func (h *HTTP) Poll(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
 	defer cancel()
-	st, err := h.src.Units.Replay(ctx)
+	_, err := h.src.Units.Replay(ctx)
 	if err != nil {
 		err = fmt.Errorf("replay: %w", err)
 		h.replay.Store(&err)
 		h.log.WarnContext(ctx, "epitrop-server: event log replay failed", slog.String("error", err.Error()))
 		return
 	}
-	var ok error
-	h.replay.Store(&ok)
-	h.units = publishChanged(ctx, h.hub, EventUnit, h.units, unitSummaries(st))
-	statuses, err := h.src.Jobs.Status(ctx, "")
-	if err != nil {
-		h.log.DebugContext(ctx, "epitrop-server: job status unavailable", slog.String("error", err.Error()))
-		return
-	}
-	h.jobs = publishChanged(ctx, h.hub, EventJob, h.jobs, jobsOf(statuses))
-}
-
-// publishChanged publishes every entry of next that differs from prev, in key order, and
-// returns next. With prev nil it only returns next: the first state is the baseline.
-func publishChanged[T comparable](ctx context.Context, hub *sse.Hub, event string, prev, next map[string]T) map[string]T {
-	if prev == nil {
-		return next
-	}
-	keys := make([]string, 0, len(next))
-	for k, v := range next {
-		if old, seen := prev[k]; !seen || old != v {
-			keys = append(keys, k)
+	// The tail polls before readiness passes, so a client that saw /readyz pass finds the
+	// tail started and misses no record appended after it.
+	if h.src.Events != nil {
+		if err := h.src.Events.Poll(ctx); err != nil {
+			h.log.WarnContext(ctx, "epitrop-server: event tail poll failed", slog.String("error", err.Error()))
 		}
 	}
-	sort.Strings(keys)
-	for i := 0; i < len(keys); i++ {
-		hub.Publish(ctx, sse.Event{Event: event, Data: next[keys[i]]})
-	}
-	return next
+	var ok error
+	h.replay.Store(&ok)
 }
 
-func unitSummaries(st eventlog.State) map[string]UnitSummary {
-	out := make(map[string]UnitSummary, len(st.Units))
-	for id, u := range st.Units {
-		out[id] = summarize(u)
+// events streams one server-sent event per record: id is the record's seq, event its
+// type, data the record. A Last-Event-ID header resumes after that seq. Refusals come
+// before the first body byte with a status a browser EventSource does not retry.
+func (h *HTTP) events(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
-	return out
+	if h.src.Events == nil {
+		http.Error(w, "events unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	after, err := parseLastEventID(r)
+	if err != nil {
+		http.Error(w, "bad Last-Event-ID", http.StatusBadRequest)
+		return
+	}
+	resumed, cancel, err := h.src.Events.Resume(r.Context(), after)
+	if err != nil {
+		h.mapResumeError(r.Context(), w, err)
+		return
+	}
+	defer cancel()
+	h.streamEvents(r.Context(), w, resumed)
+}
+
+// parseLastEventID reads the Last-Event-ID header: nil when absent or empty, else a
+// decimal seq without sign or spaces.
+func parseLastEventID(r *http.Request) (*uint64, error) {
+	raw := r.Header.Get("Last-Event-ID")
+	if raw == "" {
+		return nil, nil
+	}
+	val, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: parse Last-Event-ID: %w", err)
+	}
+	return &val, nil
+}
+
+// mapResumeError answers a refused resume: 503 before the tail started, 400 for a
+// cursor past it, 410 for a cursor a compaction passed, and 500 for the rest.
+func (h *HTTP) mapResumeError(ctx context.Context, w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, broker.ErrNotStarted):
+		http.Error(w, "events not started", http.StatusServiceUnavailable)
+	case errors.Is(err, broker.ErrCursorAhead):
+		http.Error(w, "cursor ahead", http.StatusBadRequest)
+	case errors.Is(err, eventlog.ErrCursorCompacted):
+		http.Error(w, "cursor compacted", http.StatusGone)
+	default:
+		h.log.ErrorContext(ctx, "epitrop-server: resume events failed", slog.String("error", err.Error()))
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
+}
+
+// streamEvents writes the records of resumed until ctx ends or a write fails. It returns
+// after maxStreamEvents events; the client resumes with Last-Event-ID.
+func (h *HTTP) streamEvents(ctx context.Context, w http.ResponseWriter, resumed *broker.Resumed) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	rc := http.NewResponseController(w)
+	if err := rc.Flush(); err != nil {
+		return
+	}
+	for range maxStreamEvents {
+		rec, err := resumed.Next(ctx)
+		if err != nil {
+			return
+		}
+		if err := writeEvent(ctx, w, rc, rec, h.log); err != nil {
+			return
+		}
+	}
+}
+
+// writeEvent writes rec as one event under a write deadline, so a stalled client fails
+// the write and frees its queue.
+func writeEvent(ctx context.Context, w http.ResponseWriter, rc *http.ResponseController, rec eventlog.Record, log *slog.Logger) error {
+	if strings.ContainsAny(rec.Type, "\r\n") {
+		log.ErrorContext(ctx, "epitrop-server: invalid event type containing CR/LF", slog.String("type", rec.Type))
+		return errors.New("mcp: invalid event type containing CR/LF")
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		log.ErrorContext(ctx, "epitrop-server: marshal event record", slog.String("error", err.Error()))
+		return fmt.Errorf("mcp: marshal event: %w", err)
+	}
+	if err := rc.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return fmt.Errorf("mcp: set write deadline: %w", err)
+	}
+	msg := fmt.Sprintf("id: %d\nevent: %s\ndata: %s\n\n", rec.Seq, rec.Type, data)
+	if _, err := io.WriteString(w, msg); err != nil {
+		return fmt.Errorf("mcp: write event: %w", err)
+	}
+	if err := rc.Flush(); err != nil {
+		return fmt.Errorf("mcp: flush event: %w", err)
+	}
+	return nil
 }

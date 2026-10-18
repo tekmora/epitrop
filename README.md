@@ -90,7 +90,7 @@ epitrop-server --config=file
 With `server.transport: http` in the config, the server serves the same tools over streamable HTTP on `server.listen` (default `127.0.0.1:8899`) and prints the address it serves. The server has no authentication, so the config refuses a listen address whose host is not loopback, and the server refuses a request whose `Host` header names another host. Beside the tools at `/mcp` it serves:
 
 - `/livez`, `/readyz` and `/startupz`. `/readyz` answers 503 until the event log has replayed, and again whenever a replay fails; the server replays every two seconds.
-- `/events`, a server-sent event stream with one `unit` event per unit and one `job` event per job whose summary changed since the last replay. The stream starts with the state at the first replay and sends no snapshot; a client that falls behind loses events and reads the state back with the tools.
+- `/events`, a server-sent event stream with one event per signed event-log record (`id` = record sequence number decimal, `event` = record type, `data` = record JSON). A client can resume the stream with a `Last-Event-ID` header; an empty header streams live events from the current tail position, an unstarted tail or missing events source answers 503, a malformed header or a cursor ahead of the tail answers 400, and a cursor below the base of a compacted log answers 410. A stalled client is dropped after a 10-second write deadline, and a client whose queue fills holds back the tail for other subscribers until dropped.
 
 With `server.allow_mutations: true` the server also serves three tools that change state:
 

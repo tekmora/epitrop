@@ -22,6 +22,10 @@ var (
 	ErrFull = errors.New("broker: a subscriber queue is full")
 	// ErrCapacity says the queue capacity is outside 1 to MaxCapacity.
 	ErrCapacity = errors.New("broker: queue capacity out of range")
+	// ErrNotStarted says the tail has not completed its first poll yet.
+	ErrNotStarted = errors.New("broker: tail not started")
+	// ErrCursorAhead says the requested cursor is ahead of the tail position.
+	ErrCursorAhead = errors.New("broker: cursor ahead of tail")
 )
 
 // Retryable reports whether err refused a publish that may succeed when tried again later.
@@ -56,6 +60,10 @@ func New(capacity int) (*Broker, error) {
 // Subscribe adds a subscriber to topic. The returned function removes it; messages already
 // in its queue stay readable.
 func (b *Broker) Subscribe(topic string) (*Subscription, func()) {
+	return b.subscribeWith(topic, nil)
+}
+
+func (b *Broker) subscribeWith(topic string, fn func()) (*Subscription, func()) {
 	sub := &Subscription{queue: make(chan pubsub.Message, b.capacity)}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -63,6 +71,9 @@ func (b *Broker) Subscribe(topic string) (*Subscription, func()) {
 		b.subs[topic] = make(map[*Subscription]struct{})
 	}
 	b.subs[topic][sub] = struct{}{}
+	if fn != nil {
+		fn()
+	}
 	stop := b.bus.Subscribe(topic, func(msg pubsub.Message) { sub.queue <- msg })
 	var once sync.Once
 	return sub, func() {

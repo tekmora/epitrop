@@ -20,8 +20,10 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/tekmora/epitrop/internal/broker"
 	"github.com/tekmora/epitrop/internal/config"
 	"github.com/tekmora/epitrop/internal/egressproxy"
+	"github.com/tekmora/epitrop/internal/eventlog"
 	"github.com/tekmora/epitrop/internal/logsetup"
 	"github.com/tekmora/epitrop/internal/mcp"
 	"github.com/tekmora/epitrop/internal/releasewatch"
@@ -162,6 +164,8 @@ func load(args []string) (config.Config, mcp.Sources, error) {
 	return cfg, src, nil
 }
 
+const tailCapacity = 256
+
 // sources opens what the tools read, and with server.allow_mutations what they change and
 // the effect ledger that runs each call at most once.
 func sources(cfg config.Config) (mcp.Sources, error) {
@@ -173,7 +177,16 @@ func sources(cfg config.Config) (mcp.Sources, error) {
 	if err != nil {
 		return mcp.Sources{}, err
 	}
-	src := mcp.Sources{Jobs: jobs, Units: unitsSvc, Watches: releasewatch.NewWatches(cfg.ReleaseWatch)}
+	tail, err := openTail(cfg)
+	if err != nil {
+		return mcp.Sources{}, err
+	}
+	src := mcp.Sources{
+		Jobs:    jobs,
+		Units:   unitsSvc,
+		Watches: releasewatch.NewWatches(cfg.ReleaseWatch),
+		Events:  tail,
+	}
 	if !cfg.Server.AllowMutations {
 		return src, nil
 	}
@@ -183,6 +196,31 @@ func sources(cfg config.Config) (mcp.Sources, error) {
 	}
 	src.Mutate = &mcp.Mutators{Jobs: jobs, Units: unitsSvc, Effects: ledger}
 	return src, nil
+}
+
+func openTail(cfg config.Config) (*broker.Tail, error) {
+	signer, clk, err := logsetup.Signer(cfg)
+	if err != nil {
+		return nil, err
+	}
+	limits := logsetup.Limits(cfg, clk)
+	pub := signer.PublicKey()
+	b, err := broker.New(tailCapacity)
+	if err != nil {
+		return nil, fmt.Errorf("epitrop-server: %w", err)
+	}
+	tail, err := broker.NewTail(b,
+		func(ctx context.Context, after uint64) ([]eventlog.Record, error) {
+			return eventlog.ReplayAfter(ctx, cfg.EventLog.Dir, pub, limits, after)
+		},
+		func(ctx context.Context) (uint64, error) {
+			return eventlog.HeadSeq(ctx, cfg.EventLog.Dir, pub)
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("epitrop-server: %w", err)
+	}
+	return tail, nil
 }
 
 // jobService reads the jobs' state and, for the mutating tools, starts and stops them.

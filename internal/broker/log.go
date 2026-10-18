@@ -83,12 +83,21 @@ func (l *Log) resume(ctx context.Context, topic string, after uint64, replay fun
 
 // newResumed keeps the records of topic among recs, the replay after seq after.
 func newResumed(live *Subscription, topic string, after uint64, recs []eventlog.Record) *Resumed {
-	r := &Resumed{live: live, topic: topic, seen: after}
+	r := newResumedFilter(live, topic, after, recs, func(rec eventlog.Record) bool {
+		return rec.Type == topic
+	})
 	for _, rec := range recs {
-		if rec.Type == topic {
+		r.seen = rec.Seq
+	}
+	return r
+}
+
+func newResumedFilter(live *Subscription, topic string, seen uint64, recs []eventlog.Record, keep func(eventlog.Record) bool) *Resumed {
+	r := &Resumed{live: live, topic: topic, seen: seen}
+	for _, rec := range recs {
+		if keep == nil || keep(rec) {
 			r.backlog = append(r.backlog, rec)
 		}
-		r.seen = rec.Seq
 	}
 	return r
 }

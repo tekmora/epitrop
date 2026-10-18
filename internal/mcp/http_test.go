@@ -1,10 +1,11 @@
 package mcp
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,8 +13,8 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/tekmora/epitrop/internal/broker"
 	"github.com/tekmora/epitrop/internal/eventlog"
-	"github.com/tekmora/epitrop/internal/supervisor"
 	"github.com/tekmora/epitrop/internal/units"
 )
 
@@ -44,6 +45,13 @@ func probe(t *testing.T, base, path string) int {
 		t.Fatalf("Close(%s) = %v", path, err)
 	}
 	return resp.StatusCode
+}
+
+func assertHeader(t *testing.T, resp *http.Response, key, want string) {
+	t.Helper()
+	if got := resp.Header.Get(key); got != want {
+		t.Fatalf("%s = %q, want %q", key, got, want)
+	}
 }
 
 func TestReadyzFollowsTheReplay(t *testing.T) {
@@ -77,89 +85,226 @@ func TestReadyzFollowsTheReplay(t *testing.T) {
 	}
 }
 
-// eventStream subscribes to the event stream and returns a function that reads the next
-// event's name and data.
-func eventStream(t *testing.T, base string) func() (string, string) {
+func fakeTail(t *testing.T, replay broker.ReplayFunc, head broker.HeadFunc) *broker.Tail {
 	t.Helper()
-	ctx, cancel := context.WithCancel(testContext(t))
-	t.Cleanup(cancel)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+PathEvents, nil)
+	b, err := broker.New(16)
+	if err != nil {
+		t.Fatalf("broker.New = %v", err)
+	}
+	tail, err := broker.NewTail(b, replay, head)
+	if err != nil {
+		t.Fatalf("broker.NewTail = %v", err)
+	}
+	return tail
+}
+
+func TestEventsRefusesNonGet(t *testing.T) {
+	h := NewHTTP("test", Sources{}, nil)
+	srv := httptest.NewServer(h.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequestWithContext(testContext(t), http.MethodPost, srv.URL+PathEvents, nil)
 	if err != nil {
 		t.Fatalf("NewRequest = %v", err)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("GET %s = %v", PathEvents, err)
+		t.Fatalf("POST = %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /events = %d, want 405", resp.StatusCode)
+	}
+}
+
+func TestEventsNilTailReturns503(t *testing.T) {
+	h := NewHTTP("test", Sources{}, nil)
+	srv := httptest.NewServer(h.Handler())
+	t.Cleanup(srv.Close)
+
+	if got := probe(t, srv.URL, PathEvents); got != http.StatusServiceUnavailable {
+		t.Fatalf("GET /events with nil tail = %d, want 503", got)
+	}
+}
+
+func TestEventsNotStartedReturns503(t *testing.T) {
+	tail := fakeTail(t, func(context.Context, uint64) ([]eventlog.Record, error) { return nil, nil }, func(context.Context) (uint64, error) { return 0, nil })
+	h := NewHTTP("test", Sources{Events: tail}, nil)
+	srv := httptest.NewServer(h.Handler())
+	t.Cleanup(srv.Close)
+
+	if got := probe(t, srv.URL, PathEvents); got != http.StatusServiceUnavailable {
+		t.Fatalf("GET /events before first Poll = %d, want 503", got)
+	}
+}
+
+func TestEventsMalformedLastEventIDReturns400(t *testing.T) {
+	tail := fakeTail(t, func(context.Context, uint64) ([]eventlog.Record, error) { return nil, nil }, func(context.Context) (uint64, error) { return 5, nil })
+	if err := tail.Poll(testContext(t)); err != nil {
+		t.Fatalf("Poll = %v", err)
+	}
+	h := NewHTTP("test", Sources{Events: tail}, nil)
+
+	cases := []string{"abc", "-1", "1 ", "18446744073709551616"}
+	for _, tc := range cases {
+		req := httptest.NewRequestWithContext(testContext(t), http.MethodGet, PathEvents, nil)
+		req.Header.Set("Last-Event-ID", tc)
+		rec := httptest.NewRecorder()
+		h.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("Last-Event-ID %q = %d, want 400", tc, rec.Code)
+		}
+	}
+}
+
+func TestEventsCursorAheadReturns400(t *testing.T) {
+	tail := fakeTail(t, func(context.Context, uint64) ([]eventlog.Record, error) { return nil, nil }, func(context.Context) (uint64, error) { return 5, nil })
+	if err := tail.Poll(testContext(t)); err != nil {
+		t.Fatalf("Poll = %v", err)
+	}
+	h := NewHTTP("test", Sources{Events: tail}, nil)
+	srv := httptest.NewServer(h.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequestWithContext(testContext(t), http.MethodGet, srv.URL+PathEvents, nil)
+	if err != nil {
+		t.Fatalf("NewRequest = %v", err)
+	}
+	req.Header.Set("Last-Event-ID", "10")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do = %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("Last-Event-ID 10 with pos 5 = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestEventsCompactedReturns410(t *testing.T) {
+	tail := fakeTail(t, func(context.Context, uint64) ([]eventlog.Record, error) {
+		return nil, eventlog.ErrCursorCompacted
+	}, func(context.Context) (uint64, error) { return 5, nil })
+	if err := tail.Poll(testContext(t)); err != nil {
+		t.Fatalf("Poll = %v", err)
+	}
+	h := NewHTTP("test", Sources{Events: tail}, nil)
+	srv := httptest.NewServer(h.Handler())
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequestWithContext(testContext(t), http.MethodGet, srv.URL+PathEvents, nil)
+	if err != nil {
+		t.Fatalf("NewRequest = %v", err)
+	}
+	req.Header.Set("Last-Event-ID", "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do = %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	if resp.StatusCode != http.StatusGone {
+		t.Fatalf("compacted replay = %d, want 410", resp.StatusCode)
+	}
+}
+
+func TestEventsWireFormatExactBytes(t *testing.T) {
+	rec := eventlog.Record{
+		Seq:     1,
+		Prev:    "0000",
+		Time:    "2026-10-18T10:00:00Z",
+		Type:    "unit.recorded",
+		TaskID:  "u1",
+		Payload: []byte(`{"status":"implementing"}`),
+	}
+	tail := fakeTail(t, func(context.Context, uint64) ([]eventlog.Record, error) {
+		return []eventlog.Record{rec}, nil
+	}, func(context.Context) (uint64, error) { return 1, nil })
+	if err := tail.Poll(testContext(t)); err != nil {
+		t.Fatalf("Poll = %v", err)
+	}
+	h := NewHTTP("test", Sources{Events: tail}, nil)
+	srv := httptest.NewServer(h.Handler())
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(testContext(t))
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+PathEvents, nil)
+	if err != nil {
+		t.Fatalf("NewRequest = %v", err)
+	}
+	req.Header.Set("Last-Event-ID", "0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do = %v", err)
 	}
 	t.Cleanup(func() {
 		if err := resp.Body.Close(); err != nil {
-			t.Errorf("Close(%s) = %v", PathEvents, err)
+			t.Errorf("Close = %v", err)
 		}
 	})
-	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
-		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+
+	assertHeader(t, resp, "Content-Type", "text/event-stream")
+	assertHeader(t, resp, "Cache-Control", "no-cache")
+	assertHeader(t, resp, "X-Accel-Buffering", "no")
+
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("Marshal = %v", err)
 	}
-	lines := bufio.NewScanner(resp.Body)
-	return func() (string, string) {
-		t.Helper()
-		var name, data string
-		for lines.Scan() {
-			line := lines.Text()
-			switch {
-			case strings.HasPrefix(line, "event: "):
-				name = strings.TrimPrefix(line, "event: ")
-			case strings.HasPrefix(line, "data: "):
-				data = strings.TrimPrefix(line, "data: ")
-			case line == "" && name != "":
-				return name, data
-			}
-		}
-		t.Fatalf("event stream ended: %v", lines.Err())
-		return "", ""
+	want := fmt.Sprintf("id: %d\nevent: %s\ndata: %s\n\n", rec.Seq, rec.Type, data)
+	gotBytes := make([]byte, len(want))
+	if _, err := io.ReadFull(resp.Body, gotBytes); err != nil {
+		t.Fatalf("ReadFull = %v", err)
+	}
+	if string(gotBytes) != want {
+		t.Fatalf("wire bytes = %q, want %q", string(gotBytes), want)
 	}
 }
 
-func TestEventsPublishOnlyWhatChanged(t *testing.T) {
-	svc := testUnits(t)
-	jobs := &fakeJobs{statuses: []supervisor.JobStatus{{Name: "idle", State: "dead"}}}
-	h := NewHTTP("test", Sources{Jobs: jobs, Units: svc}, nil)
+func TestEventsRejectsCRLFInType(t *testing.T) {
+	rec := eventlog.Record{
+		Seq:    1,
+		Type:   "unit\r\ninjected",
+		TaskID: "u1",
+	}
+	tail := fakeTail(t, func(context.Context, uint64) ([]eventlog.Record, error) {
+		return []eventlog.Record{rec}, nil
+	}, func(context.Context) (uint64, error) { return 1, nil })
+	if err := tail.Poll(testContext(t)); err != nil {
+		t.Fatalf("Poll = %v", err)
+	}
+	h := NewHTTP("test", Sources{Events: tail}, nil)
 	srv := httptest.NewServer(h.Handler())
 	t.Cleanup(srv.Close)
-	next := eventStream(t, srv.URL)
-	ctx := testContext(t)
-	record(t, svc, "tekmora/epitrop#1", "implementing")
 
-	h.Poll(ctx) // baseline: publishes nothing
-	h.Poll(ctx) // nothing changed: publishes nothing
-	record(t, svc, "tekmora/epitrop#2", "implementing")
-	h.Poll(ctx)
-	if unit := nextOf[UnitSummary](t, next, EventUnit); unit.ID != "tekmora/epitrop#2" {
-		t.Fatalf("first event = %+v, want only the new unit #2", unit)
+	req, err := http.NewRequestWithContext(testContext(t), http.MethodGet, srv.URL+PathEvents, nil)
+	if err != nil {
+		t.Fatalf("NewRequest = %v", err)
 	}
+	req.Header.Set("Last-Event-ID", "0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("Close = %v", err)
+		}
+	})
 
-	jobs.statuses = []supervisor.JobStatus{{Name: "idle", State: "running", PID: 42}}
-	record(t, svc, "tekmora/epitrop#1", "review")
-	h.Poll(ctx)
-	if unit := nextOf[UnitSummary](t, next, EventUnit); unit.ID != "tekmora/epitrop#1" || unit.Status != "review" {
-		t.Fatalf("second event = %+v, want unit #1 in review", unit)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll = %v", err)
 	}
-	if job := nextOf[Job](t, next, EventJob); job.State != "running" || job.PID != 42 {
-		t.Fatalf("third event = %+v, want the idle job running", job)
+	if len(body) != 0 {
+		t.Fatalf("body for CR/LF event type = %q, want empty", string(body))
 	}
-}
-
-// nextOf reads the next event, which must be named want, and decodes its data.
-func nextOf[T any](t *testing.T, next func() (string, string), want string) T {
-	t.Helper()
-	var out T
-	name, data := next()
-	if name != want {
-		t.Fatalf("event %s %s, want a %s event", name, data, want)
-	}
-	if err := json.Unmarshal([]byte(data), &out); err != nil {
-		t.Fatalf("decode %s: %v", data, err)
-	}
-	return out
 }
 
 func record(t *testing.T, svc *units.Service, id, status string) {
