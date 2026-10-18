@@ -80,6 +80,10 @@ func DeliverGitHubIssue(ctx context.Context, client *Client, state *State, sink 
 	return true, nil
 }
 
+// maxIssuePageBytes bounds one page of the marker search: SearchIssuesPerPage issues of
+// at most about 400 KiB each.
+const maxIssuePageBytes = 4 * 1024 * 1024
+
 func searchExistingIssueMarker(ctx context.Context, client *Client, repo string, firstLabel string, marker string) (bool, error) {
 	for page := 1; page <= MaxSearchIssuePages; page++ {
 		issues, err := fetchIssuePage(ctx, client, repo, firstLabel, page)
@@ -91,17 +95,17 @@ func searchExistingIssueMarker(ctx context.Context, client *Client, repo string,
 				return true, nil
 			}
 		}
-		if len(issues) < 100 {
+		if len(issues) < SearchIssuesPerPage {
 			break
 		}
 	}
 	return false, nil
 }
 
-// fetchIssuePage reads one page of up to 100 issues of the repository, open and closed,
-// filtered by the label when one is given.
+// fetchIssuePage reads one page of up to SearchIssuesPerPage issues of the repository,
+// open and closed, filtered by the label when one is given.
 func fetchIssuePage(ctx context.Context, client *Client, repo string, firstLabel string, page int) ([]GitHubIssueResponse, error) {
-	url := fmt.Sprintf("%s/repos/%s/issues?state=all&per_page=100&page=%d", client.GitHubBaseURL(), repo, page)
+	url := fmt.Sprintf("%s/repos/%s/issues?state=all&per_page=%d&page=%d", client.GitHubBaseURL(), repo, SearchIssuesPerPage, page)
 	if firstLabel != "" {
 		url += "&labels=" + urlPkg.QueryEscape(firstLabel)
 	}
@@ -110,7 +114,7 @@ func fetchIssuePage(ctx context.Context, client *Client, repo string, firstLabel
 		return nil, fmt.Errorf("build search issues request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	status, _, body, err := client.DoRequest(ctx, req, 30*time.Second, maxSourceResponseBytes)
+	status, _, body, err := client.DoRequest(ctx, req, 30*time.Second, maxIssuePageBytes)
 	if err != nil {
 		return nil, fmt.Errorf("search issues in %s page %d: %w", repo, page, err)
 	}
