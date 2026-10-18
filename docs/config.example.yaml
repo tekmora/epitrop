@@ -128,6 +128,18 @@ event_log:
 # hour, below the default rate_limit_floor, so every pass would stop after one request.
 # If the floor is at or above that limit, the run logs both numbers once and keeps going,
 # with its GitHub requests throttled.
+# On a host, run the supervisor of this job as a systemd user unit that loads the token as
+# an encrypted credential, so it is never stored in clear or passed on a command line:
+#   systemd-creds encrypt --user --name=release-watch-token - ~/.config/epitrop/release-watch-token.cred
+#   [Service]
+#   LoadCredentialEncrypted=release-watch-token:%h/.config/epitrop/release-watch-token.cred
+#   SyslogIdentifier=epitrop-release-watch
+#   ExecStart=%h/.local/share/epitrop/release-watch-run.sh
+# where release-watch-run.sh reads "$CREDENTIALS_DIRECTORY/release-watch-token" into GITHUB_TOKEN
+# and execs `epitropctl jobs supervise`. Keep that step in a script: systemd expands $ in
+# ExecStart= itself. A fine-grained token needs only Issues read and write on the sink
+# repositories; it reads public upstream releases without any permission on them.
+# SyslogIdentifier= keeps the unit's lines findable with `journalctl --user -t` (#263).
 release_watch:
   state_dir: /var/tmp/epitrop/release-watch
   rate_limit_floor: 100
