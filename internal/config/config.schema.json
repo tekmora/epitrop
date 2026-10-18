@@ -153,7 +153,8 @@
             "default": {
               "policy": "never",
               "max_restarts": 0,
-              "backoff_seconds": 0
+              "backoff_seconds": 0,
+              "window_seconds": 0
             },
             "additionalProperties": false,
             "properties": {
@@ -177,6 +178,12 @@
                 "default": 0,
                 "minimum": 0,
                 "maximum": 3600
+              },
+              "window_seconds": {
+                "type": "integer",
+                "default": 0,
+                "minimum": 0,
+                "maximum": 604800
               }
             }
           },

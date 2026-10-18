@@ -95,16 +95,20 @@ type Task struct {
 }
 
 type Job struct {
-	Name         string `json:"name"`
-	State        string `json:"state"`
-	PID          int    `json:"pid,omitempty"`
-	ShimPID      int    `json:"shim_pid,omitempty"`
-	Since        string `json:"since,omitempty"`
-	Restarts     int    `json:"restarts"`
-	LastExitCode *int   `json:"last_exit_code,omitempty"`
-	LastReason   string `json:"last_reason,omitempty"`
-	LastEvent    string `json:"last_event"`
-	Sandbox      string `json:"sandbox,omitempty"`
+	Name     string `json:"name"`
+	State    string `json:"state"`
+	PID      int    `json:"pid,omitempty"`
+	ShimPID  int    `json:"shim_pid,omitempty"`
+	Since    string `json:"since,omitempty"`
+	Restarts int    `json:"restarts"`
+	// RestartTimes are record times (RFC 3339, the record's own `time`) of the newest restarts,
+	// oldest first, at most config.MaxJobRestarts kept (the cap can never exceed that, so older
+	// ones never decide).
+	RestartTimes []string `json:"restart_times,omitempty"`
+	LastExitCode *int     `json:"last_exit_code,omitempty"`
+	LastReason   string   `json:"last_reason,omitempty"`
+	LastEvent    string   `json:"last_event"`
+	Sandbox      string   `json:"sandbox,omitempty"`
 	// RefusedShimPID and RefusedAt name the last start a shim refused (job.refused). They are
 	// kept apart from ShimPID and Since, which belong to the last start that was recorded.
 	RefusedShimPID int    `json:"refused_shim_pid,omitempty"`

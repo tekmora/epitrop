@@ -29,6 +29,7 @@ jobs:
       policy: never
       max_restarts: 0
       backoff_seconds: 0
+      window_seconds: 0
     stop:
       signal: TERM
       grace_seconds: 10
@@ -115,7 +116,7 @@ event_log:
 #     - name: release-watch
 #       command: [/usr/local/bin/epitropctl, watch, run, --config=/etc/epitrop/release-watch.yaml]
 #       schedule: always
-#       restart: {policy: on-failure, max_restarts: 3, backoff_seconds: 300}
+#       restart: {policy: on-failure, max_restarts: 3, backoff_seconds: 300, window_seconds: 3600}
 #       sandbox:
 #         workspace: /var/tmp/epitrop/release-watch   # = state_dir; the seen-set is all it writes
 #         inputs: [/etc/epitrop/release-watch.yaml]
