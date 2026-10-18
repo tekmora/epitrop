@@ -43,6 +43,9 @@ epitropctl schema
 
 # print every usage window as known or unknown; a reading older than 10m is unknown
 epitropctl headroom --in=/tmp/snapshot.json --max-age=10m
+
+# count the quota limit types and statuses the Claude Code session logs name
+epitropctl claude-limits
 ```
 
 The snapshot is replaced atomically: `sync` writes a temporary file beside `--out`, flushes it and renames it over the old file (`internal/atomicfile`), so a reader or a crash never sees half a snapshot. On Windows the rename is refused while another process holds `--out` open; `sync` then fails with that error and the old snapshot stays whole.
@@ -54,6 +57,10 @@ The snapshot is replaced atomically: `sync` writes a temporary file beside `--ou
 | `--litellm-base`, `--litellm-token-file` | none | required together for `litellm-gateway` and `litellm-key-budget`; the token is read from the file and never printed |
 | `--ollama` | `http://localhost:11434` | Ollama daemon endpoint |
 | `--sessions-dir` | `~/.codex/sessions` | Codex CLI session logs |
+| `--claude-projects-dir` | `~/.claude/projects` | Claude Code session logs |
+| `--claude-state-dir` | `<user state folder>/epitrop` | folder of the Claude ceiling store |
+| `--claude-account` | `default` | account name of the ceiling store file |
+| `--claude-ceiling-max-age` | `720h` | age past which a stored ceiling counts as unknown |
 | `--openrouter-url`, `--litellm-prices-url` | the public OpenRouter API; the LiteLLM price map at a pinned commit | override only to test against a local fixture |
 
 `sync` prints one `<source> <status> count=<n> [detail]` line per source. Sources run independently: one failing never discards another's records. The status is `ok`, `skip` (the source cannot run here, such as missing flags or no session logs), `fail`, or `degraded` (records were produced but upstream data was lost, such as rejected entries or one of the two public catalogs failing). `sync` exits non-zero when every selected source fails, after printing every line. The whole command times out after 3 minutes (`syncTimeout` in `cmd/epitropctl/sync.go`).
@@ -71,6 +78,7 @@ A usage window holds `used_percent`, `window_minutes` and `resets_at`, and two f
 | Source | How | Kind | Bounds | Failure and edge cases |
 | --- | --- | --- | --- | --- |
 | `codex-local` | Reads `rate_limits.primary` from the newest `~/.codex/sessions/**/*.jsonl`, read-only. The burn rate and active agents come from every session file written in the last 15 minutes: the samples of the same window (`limit_id` and `resets_at`) with a `timestamp` in [now − 15 min, now] | measured | 20,000 files walked, 128 MiB per file, 500,000 lines, 4 MiB per line; at most 64 session files read for the burn rate; one record | no logs or no rate limits: skip; an empty `limit_id`: fail. Burn rate absent with fewer than two samples at distinct times, or when `used_percent` fell; both fields absent past 64 recent files; a recent file that cannot be read, or a sample line without a valid `timestamp`: both fields absent, status degraded |
+| `claude-local` | Reads the assistant lines of `~/.claude/projects/**/*.jsonl` written in the last 7 days, read-only; only the `usage` token counts and `quotaLimits` (`rateLimitType`, `resetsAt`) are decoded, never message content or credentials. The logs carry no usage percentage, so `used_percent` is derived: the cost-equivalent of the usage inside the window (first-party API rates in `internal/sources/claudelocal/prices.go`) divided by the ceiling, the smallest cost-equivalent a window held at a rejected request. The ceiling is kept in `<user state folder>/epitrop/claude-ceilings/<account>.json`. The burn rate uses the usage of the last 15 minutes; active agents count the sessions and subagents with a usage line in those 15 minutes | measured | 50,000 files walked, 10,000 files read, 256 MiB per file, 1,000,000 lines, 8 MiB per line; 1,000,000 usage entries and 10,000 rejections; one record for `five_hour` and `seven_day` each plus one per other window a rejection names, at most 64 | no logs: skip; a corrupt ceiling store, or rejections naming more than 64 windows: fail. Without a ceiling (no rejection seen, or its rejection older than `--claude-ceiling-max-age`, default 30 days) `used_percent` and the burn rate are absent with that reason, `resets_at` comes from the newest rejection or is absent, and active agents stay measured. A model without rates in the window makes `used_percent` absent; an unknown window type makes the whole usage window absent |
 | `litellm-gateway` | `GET <base>/v1/models` with a bearer token | measured | 15 s, 8 MiB, 5,000 models | an empty model list: fail; an entry without an id is rejected and counted; a list where no entry has an id: fail. Prices and context are absent, because `/model/info` is not readable with an agent token |
 | `litellm-key-budget` | `GET <base>/key/info` with the same bearer token and no `key` parameter, so the gateway answers for the calling key and the token never enters a URL | measured | 15 s, 1 MiB; one record, `litellm-key[/<alias>]` | a key whose `status` is not `active`, or that is `blocked`: fail; a response without `info` or `spend`: fail. The used share is `spend / max_budget × 100`; without a positive `max_budget` it is absent. The window length is absent for a calendar-month (`mo`) or sub-minute `budget_duration`, and the reset time is absent without a time zone. The burn rate and active agents are always absent: key info reports the spend, not its rate, and does not name the callers of the key |
 | `ollama-local` | `GET /api/tags` for installed models, `GET /api/ps` for loaded ones | measured | 5 s, 8 MiB, 5,000 models | no installed models: skip (a real local state); `/api/ps` unavailable: records kept, loaded state absent, status degraded |
@@ -80,7 +88,7 @@ The two public catalogs use incompatible model-id schemes (for example `openai/g
 
 Every parser is checked against a schema fragment taken from the upstream's published document at a pinned revision (`internal/sources/upstream-schemas.json`; `make schemas-check`). Renovate moves the pins together in one pull request a week (`renovate.json`, group `upstream schema pins`). That pull request needs one `make schemas-repin` commit, and it merges once each pinned commit is at least three days old. Renovate cannot hold these back by age, because git refs carry no release timestamp. A rename or retype upstream fails a parser test instead of dropping a field.
 
-Two sources are not implemented, on purpose: a Claude subscription usage source (no current local store to read) and a Gemini quota source (no readable local store). Neither is scraped from an undocumented endpoint.
+One source is not implemented, on purpose: a Gemini quota source (no readable local store). It is not scraped from an undocumented endpoint.
 
 ## Headroom: stale is unknown, never zero
 

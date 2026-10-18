@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-13T12:00:00Z",
+  "records": [
+    {
+      "model_id": "claude-code/five_hour",
+      "provider": "anthropic",
+      "access_path": "subscription_cli",
+      "usage_window": {
+        "used_percent": 35,
+        "window_minutes": 300,
+        "resets_at": "2026-10-13T16:00:00Z",
+        "burn_percent_per_hour": 40,
+        "active_agents": 2
+      },
+      "provenance": {
+        "source": "claude-local",
+        "fetched_at": "2026-10-13T12:00:00Z",
+        "kind": "measured"
+      },
+      "absent": {
+        "context_window": "not reported by Claude Code session logs",
+        "limits": "the logs report rejected requests, not rpm/tpm caps",
+        "price_in_per_m": "subscription plan, not metered pricing",
+        "price_out_per_m": "subscription plan, not metered pricing"
+      }
+    },
+    {
+      "model_id": "claude-code/seven_day",
+      "provider": "anthropic",
+      "access_path": "subscription_cli",
+      "usage_window": {
+        "window_minutes": 10080,
+        "active_agents": 2
+      },
+      "provenance": {
+        "source": "claude-local",
+        "fetched_at": "2026-10-13T12:00:00Z",
+        "kind": "measured"
+      },
+      "absent": {
+        "context_window": "not reported by Claude Code session logs",
+        "limits": "the logs report rejected requests, not rpm/tpm caps",
+        "price_in_per_m": "subscription plan, not metered pricing",
+        "price_out_per_m": "subscription plan, not metered pricing",
+        "usage_window.burn_percent_per_hour": "no rejected seven_day request with fully logged, priced usage in the last 7 days and none stored, so the ceiling is unknown",
+        "usage_window.resets_at": "no rejected seven_day request in the last 7 days names a reset time",
+        "usage_window.used_percent": "no rejected seven_day request with fully logged, priced usage in the last 7 days and none stored, so the ceiling is unknown"
+      }
+    }
+  ],
+  "source_runs": [
+    {
+      "source": "claude-local",
+      "status": "ok",
+      "count": 2
+    }
+  ]
+}

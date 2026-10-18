@@ -86,6 +86,8 @@ func dispatchCommand(cmd string, args []string) error {
 	switch cmd {
 	case "schema":
 		return runSchema(os.Stdout)
+	case "claude-limits":
+		return runClaudeLimits(args, os.Stdout)
 	case "version":
 		printVersion()
 		return nil
@@ -105,6 +107,7 @@ func printUsage() {
 	fmt.Println("  epitropctl sync [--sources=a,b] [--out=file] [--litellm-base=url] [--litellm-token-file=path] [--ollama=url]")
 	fmt.Println("  epitropctl show [--in=file]")
 	fmt.Println("  epitropctl headroom --max-age=duration [--in=file]")
+	fmt.Println("  epitropctl claude-limits [--claude-projects-dir=dir]")
 	fmt.Println("  epitropctl schema")
 	fmt.Println("  epitropctl version")
 	fmt.Println("  epitropctl jobs start|status|stop|supervise --config=file [name]")
