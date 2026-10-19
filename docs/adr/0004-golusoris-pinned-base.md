@@ -124,10 +124,13 @@ golusoris code is EUPL-1.2 from v0.9.0 on (`LICENSING.md` at v0.13.0), the same 
   - Importing `idempotency` links Postgres and Redis drivers that Epitrop never uses.
   - Two modules must move in step, and golusoris is pre-1.0, so a minor release can break the API (v0.13.0 did).
 
+## Revisit triggers
+
+- Revisit when golusoris/golusoris#1011 ships a core-level bounded reader with a regular-file guard: switch the file reads in `litellmgateway` and `cmd/epitropctl` from `httpx/client.ReadAllBounded` to that reader, and drop the regular-file guard Epitrop writes (see Gaps Epitrop writes).
+
 ## Follow-ups
 
 - [x] Inject `core/clock` into the sources and `sync`: done in #291.
 - [x] Ask golusoris to move the `idempotency` stores into subpackages, so the middleware links no database driver: asked in golusoris/golusoris#818; the stores moved into their own packages in golusoris/golusoris#939, released in v0.18.0. Epitrop imports `idempotency` nowhere yet.
 - [x] Ask golusoris for a core-level bounded reader with a regular-file guard, so `ReadAllBounded` need not come from `httpx/client` for file reads: asked in golusoris/golusoris#1011.
-- Switch the file reads in `litellmgateway` and `cmd/epitropctl` to that reader once golusoris/golusoris#1011 ships.
 - [x] Add the Renovate `packageRules` entry that groups `github.com/golusoris/golusoris` and `github.com/golusoris/golusoris/core` into one pull request: `renovate.json` group `golusoris`, done in #291.
