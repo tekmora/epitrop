@@ -61,9 +61,11 @@ jobs:
       # copy files must hash as named, bind files are bound read-only one by one. Each bind
       # names its token's expiry, which must lie 10 minutes past max_runtime_seconds and the
       # stop grace: jwt is the dotted path of a JSON Web Token in the file, expires_ms that of
-      # a number of Unix milliseconds. A home needs max_runtime_seconds. A bind file is one
-      # plain name or a measured login file (.credentials.json for Claude Code, with
-      # env: CLAUDE_CONFIG_DIR and expires_ms: claudeAiOauth.expiresAt); env may be HOME.
+      # a number of Unix milliseconds, expires_rfc3339 that of an RFC 3339 time. A home needs
+      # max_runtime_seconds. A bind file is one plain name or a measured login file
+      # (.credentials.json for Claude Code, with env: CLAUDE_CONFIG_DIR and
+      # expires_ms: claudeAiOauth.expiresAt; .gemini/antigravity-cli/antigravity-oauth-token
+      # for the Antigravity CLI, with env: HOME and expires_rfc3339: token.expiry).
       #   home:
       #     source: /var/tmp/slot-home
       #     env: CODEX_HOME

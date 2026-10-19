@@ -17,7 +17,8 @@ func homeFlagArgs(home *config.SandboxHome) []string {
 		args = append(args, "--sandbox-home-copy", home.Copy[i].File+"="+home.Copy[i].SHA256)
 	}
 	for i := 0; i < len(home.Bind); i++ {
-		args = append(args, "--sandbox-home-bind", home.Bind[i].File+"="+home.Bind[i].JWT+"="+home.Bind[i].ExpiresMS)
+		bind := home.Bind[i]
+		args = append(args, "--sandbox-home-bind", bind.File+"="+bind.JWT+"="+bind.ExpiresMS+"="+bind.ExpiresRFC3339)
 	}
 	return args
 }
@@ -46,10 +47,11 @@ func (f homeFlags) home() (*config.SandboxHome, error) {
 	for i := 0; i < len(f.binds); i++ {
 		file, expiry, ok := strings.Cut(f.binds[i], "=")
 		if !ok {
-			return nil, fmt.Errorf("job-shim: --sandbox-home-bind %q is no file=jwt=expires_ms", f.binds[i])
+			return nil, fmt.Errorf("job-shim: --sandbox-home-bind %q is no file=jwt=expires_ms=expires_rfc3339", f.binds[i])
 		}
-		jwt, expiresMS, _ := strings.Cut(expiry, "=")
-		home.Bind = append(home.Bind, config.SandboxHomeBind{File: file, JWT: jwt, ExpiresMS: expiresMS})
+		jwt, rest, _ := strings.Cut(expiry, "=")
+		expiresMS, expiresRFC3339, _ := strings.Cut(rest, "=")
+		home.Bind = append(home.Bind, config.SandboxHomeBind{File: file, JWT: jwt, ExpiresMS: expiresMS, ExpiresRFC3339: expiresRFC3339})
 	}
 	return home, nil
 }

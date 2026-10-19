@@ -1,0 +1,2 @@
+type: added
+title: 'A slot home can bind the Antigravity CLI login, `.gemini/antigravity-cli/antigravity-oauth-token`; a bind names its expiry with the new `expires_rfc3339`, the dotted path of an RFC 3339 time, and a missing or unparsable expiry is refused before the start'

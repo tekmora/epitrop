@@ -32,7 +32,8 @@ var (
 //   - .credentials.json: Claude Code 2.1.302 below CLAUDE_CONFIG_DIR; the token's expiry
 //     is claudeAiOauth.expiresAt, in Unix milliseconds.
 //   - .gemini/antigravity-cli/antigravity-oauth-token: the Antigravity CLI (agy) 1.4 below
-//     HOME, where it keeps its login when no keyring is reachable, as in a slot.
+//     HOME, where it keeps its login when no keyring is reachable, as in a slot; the token's
+//     expiry is token.expiry, an RFC 3339 time.
 var homeCredentialFiles = []string{".credentials.json", ".gemini/antigravity-cli/antigravity-oauth-token"}
 
 // SandboxHome is a home a coding client keeps its settings and login in, made in the job's
@@ -54,14 +55,16 @@ type SandboxHomeCopy struct {
 }
 
 // SandboxHomeBind is a file bound into the home read-only. It names its token's expiry in
-// one of two ways, and the expiry must lie beyond the job's end: a client that found its
+// one of three ways, and the expiry must lie beyond the job's end: a client that found its
 // token expiring would try to refresh it and write the file, which it cannot. JWT is the
 // dotted path of a JSON Web Token in the file, whose exp claim is read; ExpiresMS is the
-// dotted path of a number in the file, the expiry in Unix milliseconds.
+// dotted path of a number in the file, the expiry in Unix milliseconds; ExpiresRFC3339 is
+// the dotted path of a string in the file, the expiry as an RFC 3339 time.
 type SandboxHomeBind struct {
-	File      string `koanf:"file" json:"file"`
-	JWT       string `koanf:"jwt" json:"jwt"`
-	ExpiresMS string `koanf:"expires_ms" json:"expires_ms"`
+	File           string `koanf:"file" json:"file"`
+	JWT            string `koanf:"jwt" json:"jwt"`
+	ExpiresMS      string `koanf:"expires_ms" json:"expires_ms"`
+	ExpiresRFC3339 string `koanf:"expires_rfc3339" json:"expires_rfc3339"`
 }
 
 // validateSandboxHome checks a home's shape: an absolute source, a variable the sandbox does
@@ -125,17 +128,25 @@ func validateHomeBind(i int, bind SandboxHomeBind) error {
 }
 
 func validateHomeExpiry(i int, bind SandboxHomeBind) error {
-	switch {
-	case bind.JWT == "" && bind.ExpiresMS == "":
-		return fmt.Errorf("home.bind/%d: names neither jwt nor expires_ms; a bound login's expiry is checked before each start", i)
-	case bind.JWT != "" && bind.ExpiresMS != "":
-		return fmt.Errorf("home.bind/%d: names both jwt and expires_ms; name the one the file holds", i)
-	case bind.JWT != "" && !homeJWTPath.MatchString(bind.JWT):
-		return fmt.Errorf("home.bind/%d.jwt: %q is no dotted path of 1..8 names", i, bind.JWT)
-	case bind.ExpiresMS != "" && !homeJWTPath.MatchString(bind.ExpiresMS):
-		return fmt.Errorf("home.bind/%d.expires_ms: %q is no dotted path of 1..8 names", i, bind.ExpiresMS)
+	kinds := []struct{ key, path string }{{"jwt", bind.JWT}, {"expires_ms", bind.ExpiresMS}, {"expires_rfc3339", bind.ExpiresRFC3339}}
+	named := 0
+	for k := 0; k < len(kinds); k++ {
+		if kinds[k].path == "" {
+			continue
+		}
+		named++
+		if !homeJWTPath.MatchString(kinds[k].path) {
+			return fmt.Errorf("home.bind/%d.%s: %q is no dotted path of 1..8 names", i, kinds[k].key, kinds[k].path)
+		}
 	}
-	return nil
+	switch named {
+	case 0:
+		return fmt.Errorf("home.bind/%d: names none of jwt, expires_ms, expires_rfc3339; a bound login's expiry is checked before each start", i)
+	case 1:
+		return nil
+	default:
+		return fmt.Errorf("home.bind/%d: names more than one of jwt, expires_ms, expires_rfc3339; name the one the file holds", i)
+	}
 }
 
 // validateHomeEnv checks the variable that points the client at its home. HOME is the one

@@ -81,8 +81,27 @@ func TestValidateSandboxHomeLoginRules(t *testing.T) {
 		edit func(*SandboxConfig)
 		want string
 	}{
-		{"bind with no expiry", func(s *SandboxConfig) { s.Home.Bind[0].JWT = "" }, "home.bind/0: names neither jwt nor expires_ms"},
-		{"bind with both expiries", func(s *SandboxConfig) { s.Home.Bind[0].ExpiresMS = "expiresAt" }, "home.bind/0: names both jwt and expires_ms"},
+		{"bind with no expiry", func(s *SandboxConfig) { s.Home.Bind[0].JWT = "" }, "home.bind/0: names none of jwt, expires_ms, expires_rfc3339"},
+		{"bind with both expiries", func(s *SandboxConfig) { s.Home.Bind[0].ExpiresMS = "expiresAt" }, "home.bind/0: names more than one of"},
+		{"bind with a jwt and an RFC 3339 expiry", func(s *SandboxConfig) { s.Home.Bind[0].ExpiresRFC3339 = "token.expiry" }, "home.bind/0: names more than one of"},
+		{"bind with all three expiries", func(s *SandboxConfig) {
+			s.Home.Bind[0].ExpiresMS, s.Home.Bind[0].ExpiresRFC3339 = "expiresAt", "token.expiry"
+		}, "home.bind/0: names more than one of"},
+		{"bind with an expiry in milliseconds and one in RFC 3339", func(s *SandboxConfig) {
+			s.Home.Bind[0] = SandboxHomeBind{File: "auth.json", ExpiresMS: "expiresAt", ExpiresRFC3339: "token.expiry"}
+		}, "home.bind/0: names more than one of"},
+		{"agy login with its RFC 3339 expiry", func(s *SandboxConfig) {
+			s.Home.Bind[0] = SandboxHomeBind{File: ".gemini/antigravity-cli/antigravity-oauth-token", ExpiresRFC3339: "token.expiry"}
+		}, ""},
+		{"RFC 3339 expiry path of eight names", func(s *SandboxConfig) {
+			s.Home.Bind[0].JWT, s.Home.Bind[0].ExpiresRFC3339 = "", "a.b.c.d.e.f.g.h"
+		}, ""},
+		{"RFC 3339 expiry path of nine names", func(s *SandboxConfig) {
+			s.Home.Bind[0].JWT, s.Home.Bind[0].ExpiresRFC3339 = "", "a.b.c.d.e.f.g.h.i"
+		}, "home.bind/0.expires_rfc3339"},
+		{"RFC 3339 expiry path with a slash", func(s *SandboxConfig) {
+			s.Home.Bind[0].JWT, s.Home.Bind[0].ExpiresRFC3339 = "", "token/expiry"
+		}, "home.bind/0.expires_rfc3339"},
 		{"bind with an expiry in milliseconds", func(s *SandboxConfig) {
 			s.Home.Bind[0] = SandboxHomeBind{File: ".credentials.json", ExpiresMS: "claudeAiOauth.expiresAt"}
 		}, ""},
