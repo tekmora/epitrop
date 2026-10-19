@@ -45,8 +45,8 @@ Weights are the third-party modules (golusoris modules excluded) in each package
 | Close-and-join errors | `core/errors` | core | used now: `httpfetch`, `litellmgateway`, `codexlocal`, `cmd/epitropctl` | `CloseJoin`; 1 module (go-faster/errors). |
 | Configuration | `core/config` | core | planned: `cmd/epitrop-server` | koanf: files, environment, Kubernetes secret directories, `*_FILE`; 16 modules. Organisation files under Git (agents, routines, budgets) are domain data for the task-graph store, not process configuration. |
 | Logging | `core/log` | core | planned: `cmd/epitrop-server` | slog; 26 modules. `epitropctl` operator output stays plain text on stdout; it is not logging. |
-| Retry | `core/retry` | core (new in core v0.10.0) | planned: non-HTTP retries | Capped exponential backoff with jitter on an injected clock; 6 modules. HTTP calls retry through `httpx/client` `RetryOptions`, not through `core/retry`. |
-| Clock | `core/clock` | core | planned (follow-up) | clockwork plus fx; 6 modules. Sources and `sync` still call `time.Now` for provenance timestamps; injecting `clock.Clock` changes their signatures, so it is a separate change. |
+| Retry | `core/retry` | core (new in core v0.10.0) | used now: `internal/eventlog` replay (#221) | Capped exponential backoff with jitter on an injected clock; 6 modules. HTTP calls retry through `httpx/client` `RetryOptions`, not through `core/retry`. |
+| Clock | `core/clock` | core | used now: `cmd/epitropctl` sync | clockwork plus fx; 6 modules. `epitropctl sync` reads the clock once and passes that time to every source's `Fetch` (#291). |
 | Identifiers | `core/id` | core | planned: task and event ids | UUIDv7 (time-ordered) and KSUID; 7 modules. |
 | Telemetry | `otel` | root | used now: `internal/telemetry`, `cmd/epitropctl` | Heaviest: 59 modules (OTLP gRPC exporters, Prometheus). No-op when no OTLP endpoint is set. `httpx/client` emits otelhttp spans to the global provider; `epitropctl` builds the providers with `otel.New`, so they export once an OTLP endpoint is set. |
 | REST server | `httpx/server`, `httpx/router`, `httpx/middleware` | root | planned: `cmd/epitrop-server` | `httpx/server` 25 modules, `httpx/router` 6. |
@@ -126,7 +126,8 @@ golusoris code is EUPL-1.2 from v0.9.0 on (`LICENSING.md` at v0.13.0), the same 
 
 ## Follow-ups
 
-- Inject `core/clock` into the sources and `sync`.
-- Ask golusoris to move the `idempotency` stores into subpackages, so the middleware links no database driver.
-- Ask golusoris for a core-level bounded reader with a regular-file guard, so `ReadAllBounded` need not come from `httpx/client` for file reads.
-- Add the Renovate `packageRules` entry that groups `github.com/golusoris/golusoris` and `github.com/golusoris/golusoris/core` into one pull request.
+- [x] Inject `core/clock` into the sources and `sync`: done in #291.
+- [x] Ask golusoris to move the `idempotency` stores into subpackages, so the middleware links no database driver: asked in golusoris/golusoris#818; the stores moved into their own packages in golusoris/golusoris#939, released in v0.18.0. Epitrop imports `idempotency` nowhere yet.
+- [x] Ask golusoris for a core-level bounded reader with a regular-file guard, so `ReadAllBounded` need not come from `httpx/client` for file reads: asked in golusoris/golusoris#1011.
+- Switch the file reads in `litellmgateway` and `cmd/epitropctl` to that reader once golusoris/golusoris#1011 ships.
+- [x] Add the Renovate `packageRules` entry that groups `github.com/golusoris/golusoris` and `github.com/golusoris/golusoris/core` into one pull request: `renovate.json` group `golusoris`, done in #291.
