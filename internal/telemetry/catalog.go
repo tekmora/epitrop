@@ -5,8 +5,7 @@
 // Package telemetry declares Epitrop's metrics and creates its spans and metric instruments
 // on the global OpenTelemetry providers.
 //
-// Until golusoris registers a metricdef catalog on an OTel meter (golusoris/golusoris#846),
-// this package creates the instruments itself and a test holds them in step with the catalog.
+// Metric instruments are registered on an OTel meter from the metricdef catalog via golusoris RegisterOTel.
 package telemetry
 
 import (
