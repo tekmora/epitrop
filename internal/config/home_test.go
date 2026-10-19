@@ -97,6 +97,23 @@ func TestValidateSandboxHomeLoginRules(t *testing.T) {
 		{"login file", func(s *SandboxConfig) { s.Home.Bind[0].File = ".credentials.json" }, ""},
 		{"login file as a copy", func(s *SandboxConfig) { s.Home.Copy[0].File = ".credentials.json" }, "is not one plain path element"},
 		{"login file below a folder", func(s *SandboxConfig) { s.Home.Bind[0].File = "sub/.credentials.json" }, "nor a known login file"},
+		{"agy login file", func(s *SandboxConfig) { s.Home.Bind[0].File = ".gemini/antigravity-cli/antigravity-oauth-token" }, ""},
+		{"agy login file as a copy", func(s *SandboxConfig) {
+			s.Home.Copy[0].File = ".gemini/antigravity-cli/antigravity-oauth-token"
+		}, "is not one plain path element"},
+		{"agy login folder", func(s *SandboxConfig) { s.Home.Bind[0].File = ".gemini/antigravity-cli" }, "nor a known login file"},
+		{"agy login file with a trailing slash", func(s *SandboxConfig) {
+			s.Home.Bind[0].File = ".gemini/antigravity-cli/antigravity-oauth-token/"
+		}, "nor a known login file"},
+		{"agy login file with a leading dot folder", func(s *SandboxConfig) {
+			s.Home.Bind[0].File = "./.gemini/antigravity-cli/antigravity-oauth-token"
+		}, "nor a known login file"},
+		{"agy login file climbing out", func(s *SandboxConfig) {
+			s.Home.Bind[0].File = ".gemini/../.gemini/antigravity-cli/antigravity-oauth-token"
+		}, "nor a known login file"},
+		{"another file in the agy folder", func(s *SandboxConfig) {
+			s.Home.Bind[0].File = ".gemini/antigravity-cli/settings.json"
+		}, "nor a known login file"},
 	}
 	for _, tc := range cases {
 		checkSandboxHomeRule(t, tc.name, tc.edit, tc.want)

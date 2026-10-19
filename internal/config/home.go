@@ -31,7 +31,9 @@ var (
 //
 //   - .credentials.json: Claude Code 2.1.302 below CLAUDE_CONFIG_DIR; the token's expiry
 //     is claudeAiOauth.expiresAt, in Unix milliseconds.
-var homeCredentialFiles = []string{".credentials.json"}
+//   - .gemini/antigravity-cli/antigravity-oauth-token: the Antigravity CLI (agy) 1.4 below
+//     HOME, where it keeps its login when no keyring is reachable, as in a slot.
+var homeCredentialFiles = []string{".credentials.json", ".gemini/antigravity-cli/antigravity-oauth-token"}
 
 // SandboxHome is a home a coding client keeps its settings and login in, made in the job's
 // workspace at SandboxHomeDir before each start. Copy files come from Source and must hash to
