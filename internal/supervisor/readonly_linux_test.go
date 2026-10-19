@@ -48,7 +48,7 @@ func TestAppendReadOnlyBindsPinsEachAncestorOnce(t *testing.T) {
 // before the binds they protect.
 func TestBuildSandboxCommandBindsReadOnlyOverTheWorkspace(t *testing.T) {
 	sandbox := readOnlyTestSandbox(t)
-	built, err := buildSandboxCommand([]string{"/usr/bin/true"}, sandbox, sandboxBuildOptions{Tools: sandboxTools{Bwrap: "/usr/bin/bwrap", Env: "/usr/bin/env"}, Env: os.LookupEnv})
+	built, err := buildSandboxCommand([]string{"/usr/bin/true"}, sandbox, sandboxBuildOptions{Tools: sandboxTools{Bwrap: "/usr/bin/bwrap", Env: "/usr/bin/env"}, Env: os.LookupEnv, Hosts: testHosts(t)})
 	if err != nil {
 		t.Fatalf("buildSandboxCommand() = %v, want nil", err)
 	}
@@ -80,7 +80,7 @@ func TestBuildSandboxCommandRefusesAReadOnlyPathSwappedOut(t *testing.T) {
 	if err := os.Symlink(t.TempDir(), hooks); err != nil {
 		t.Fatalf("Symlink(meta/hk) = %v, want nil", err)
 	}
-	_, err := buildSandboxCommand([]string{"/usr/bin/true"}, sandbox, sandboxBuildOptions{Tools: sandboxTools{Bwrap: "/usr/bin/bwrap", Env: "/usr/bin/env"}, Env: os.LookupEnv})
+	_, err := buildSandboxCommand([]string{"/usr/bin/true"}, sandbox, sandboxBuildOptions{Tools: sandboxTools{Bwrap: "/usr/bin/bwrap", Env: "/usr/bin/env"}, Env: os.LookupEnv, Hosts: testHosts(t)})
 	if err == nil || !strings.Contains(err.Error(), "read_only/0") || !strings.Contains(err.Error(), "not below the workspace") {
 		t.Fatalf("buildSandboxCommand(meta/hk now a symlink out) = %v, want the path refused", err)
 	}
@@ -113,7 +113,7 @@ if mv meta aside 2>/dev/null; then echo parent-moved >> writes.txt; mkdir -p met
 echo free > free.txt
 echo beside > meta/beside.txt
 : >> writes.txt`
-	built, err := buildSandboxCommand([]string{"/usr/bin/bash", "-c", script}, sandbox, sandboxBuildOptions{Tools: tools, Env: os.LookupEnv})
+	built, err := buildSandboxCommand([]string{"/usr/bin/bash", "-c", script}, sandbox, sandboxBuildOptions{Tools: tools, Env: os.LookupEnv, Hosts: testHosts(t)})
 	if err != nil {
 		t.Fatalf("buildSandboxCommand() = %v, want nil", err)
 	}

@@ -74,6 +74,7 @@ func TestSandboxProductionArgvKeepsSystemdPrefix(t *testing.T) {
 	sandbox := config.SandboxConfig{Mode: "enforce", Workspace: workspace, Network: "none", MemoryMax: "2G", CPUWeight: 100, TasksMax: 512}
 	built, err := buildSandboxCommand([]string{"/usr/bin/bash", "-c", "true"}, sandbox, sandboxBuildOptions{
 		Tools: sandboxTools{SystemdRun: "/usr/bin/systemd-run", Bwrap: "/usr/bin/bwrap", Env: "/usr/bin/env", Systemd: true},
+		Hosts: testHosts(t),
 	})
 	if err != nil {
 		t.Fatalf("buildSandboxCommand() = %v, want nil", err)
@@ -90,6 +91,7 @@ func TestSandboxProductionArgvKeepsSystemdPrefix(t *testing.T) {
 	}
 	direct, err := buildSandboxCommand([]string{"/usr/bin/bash", "-c", "true"}, sandbox, sandboxBuildOptions{
 		Tools: sandboxTools{Bwrap: "/usr/bin/bwrap", Env: "/usr/bin/env"},
+		Hosts: testHosts(t),
 	})
 	if err != nil || direct.Scope != "" || strings.Contains(strings.Join(direct.Argv, " "), "--unit=") {
 		t.Fatalf("buildSandboxCommand(no systemd) = scope %q argv %q, %v, want no scope to confirm", direct.Scope, direct.Argv, err)
@@ -233,6 +235,9 @@ func rt03Command(t *testing.T, fixture rt03Fixture, sandbox config.SandboxConfig
 	script := rt03Script(fixture.Attempt.Kind)
 	if sandbox.Network == "proxy" {
 		script = rt03RanMark + script
+	}
+	if opts.Hosts == "" {
+		opts.Hosts = testHosts(t)
 	}
 	command := []string{"/usr/bin/bash", "-c", script}
 	eventLog, _ := opts.Env("EVENT_LOG_DIR")
@@ -707,6 +712,7 @@ func TestSandboxArgvCarriesNoEnvValues(t *testing.T) {
 	built, err := buildSandboxCommand([]string{"/usr/bin/true"}, sandbox, sandboxBuildOptions{
 		Tools: sandboxTools{SystemdRun: "/usr/bin/systemd-run", Bwrap: "/usr/bin/bwrap", Pasta: "/usr/bin/pasta", Env: "/usr/bin/env", Systemd: true},
 		Env:   mapLookup(map[string]string{"FORGE_TOKEN": secret, "XDG_RUNTIME_DIR": "/run/user/1000", "UNLISTED": "x"}),
+		Hosts: testHosts(t),
 	})
 	if err != nil {
 		t.Fatalf("buildSandboxCommand() = %v, want nil", err)
@@ -740,6 +746,7 @@ func TestSandboxJobSeesExactlyItsEnvironment(t *testing.T) {
 	built, err := buildSandboxCommand([]string{"/usr/bin/env"}, sandbox, sandboxBuildOptions{
 		Tools: tools,
 		Env:   mapLookup(map[string]string{"ALLOWED": "yes", "SECRET": "no", "XDG_RUNTIME_DIR": "/run/user/1", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/x"}),
+		Hosts: testHosts(t),
 	})
 	if err != nil {
 		t.Fatalf("buildSandboxCommand() = %v, want nil", err)
@@ -948,6 +955,7 @@ func TestSandboxedJobArgumentsArriveUnexpanded(t *testing.T) {
 			}
 			return os.LookupEnv(name)
 		},
+		Hosts: testHosts(t),
 	})
 	if err != nil {
 		t.Fatalf("buildSandboxCommand() = %v, want nil", err)

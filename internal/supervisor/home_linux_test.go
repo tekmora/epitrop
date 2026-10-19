@@ -277,7 +277,7 @@ if echo changed > "$CODEX_HOME/auth.json"; then echo wrote >> writes.txt; fi
 if mv "$CODEX_HOME/auth.json" "$CODEX_HOME/moved" 2>/dev/null; then echo moved >> writes.txt; fi
 if rm -f "$CODEX_HOME/auth.json" 2>/dev/null && [ ! -e "$CODEX_HOME/auth.json" ]; then echo removed >> writes.txt; fi
 : >> writes.txt`
-	built, err := buildSandboxCommand([]string{"/usr/bin/bash", "-c", script}, sandbox, sandboxBuildOptions{Tools: tools, Env: os.LookupEnv, Until: time.Now().Add(time.Hour)})
+	built, err := buildSandboxCommand([]string{"/usr/bin/bash", "-c", script}, sandbox, sandboxBuildOptions{Tools: tools, Env: os.LookupEnv, Hosts: testHosts(t), Until: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatalf("buildSandboxCommand() = %v, want nil", err)
 	}
@@ -307,7 +307,7 @@ if rm -f "$CODEX_HOME/auth.json" 2>/dev/null && [ ! -e "$CODEX_HOME/auth.json" ]
 
 func TestBuildSandboxCommandRefusesAnExpiringLogin(t *testing.T) {
 	sandbox := homeTestSandbox(t, time.Now().Add(30*time.Minute).Unix())
-	_, err := buildSandboxCommand([]string{"/bin/true"}, sandbox, sandboxBuildOptions{Tools: sandboxTools{Bwrap: "/usr/bin/bwrap", Env: "/usr/bin/env"}, Env: os.LookupEnv, Until: time.Now().Add(time.Hour)})
+	_, err := buildSandboxCommand([]string{"/bin/true"}, sandbox, sandboxBuildOptions{Tools: sandboxTools{Bwrap: "/usr/bin/bwrap", Env: "/usr/bin/env"}, Env: os.LookupEnv, Hosts: testHosts(t), Until: time.Now().Add(time.Hour)})
 	if !errors.Is(err, errHomeToken) {
 		t.Fatalf("buildSandboxCommand(login expiring in the run) = %v, want errHomeToken", err)
 	}
@@ -324,8 +324,8 @@ func TestLatestEndCountsTheDeadlineAndTheGrace(t *testing.T) {
 		t.Errorf("latestEnd(no deadline) = %s, want the longest runtime: %s", got, want)
 	}
 	cfg = shimConfig{EventLogDir: "/events", SigningKey: "/key", MaxRuntimeSeconds: 60}
-	opts := shimBuildOptions(cfg, sandboxProxy{Socket: "/s"}, now)
-	if !opts.Until.Equal(now.Add(time.Minute)) || opts.Proxy.Socket != "/s" || opts.Paths.EventLogDir != "/events" || opts.Paths.SigningKey != "/key" || opts.Env == nil {
-		t.Errorf("shimBuildOptions() = %+v, want the job's latest end, proxy, paths and environment", opts)
+	opts := shimBuildOptions(cfg, sandboxProxy{Socket: "/s"}, "/h", now)
+	if !opts.Until.Equal(now.Add(time.Minute)) || opts.Proxy.Socket != "/s" || opts.Paths.EventLogDir != "/events" || opts.Paths.SigningKey != "/key" || opts.Env == nil || opts.Hosts != "/h" {
+		t.Errorf("shimBuildOptions() = %+v, want the job's latest end, proxy, paths, hosts and environment", opts)
 	}
 }

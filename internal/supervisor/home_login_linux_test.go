@@ -177,7 +177,7 @@ func TestBwrapArgsSetHOMEOnce(t *testing.T) {
 	tools := sandboxTools{Bwrap: "/usr/bin/bwrap", Env: "/usr/bin/env"}
 	for _, tc := range []struct{ env, home string }{{"HOME", homeDir(sandbox)}, {"CODEX_HOME", sandbox.Workspace}} {
 		sandbox.Home.Env = tc.env
-		args := bwrapArgs("/usr/bin/true", []string{"/usr/bin/true"}, sandbox, tools, sandboxProxy{}, nil)
+		args := bwrapArgs("/usr/bin/true", []string{"/usr/bin/true"}, sandbox, tools, sandboxProxy{}, nil, "/dummy/hosts")
 		var homes []string
 		for i := 0; i+2 < len(args); i++ {
 			if args[i] == "--setenv" && args[i+1] == "HOME" {
@@ -189,7 +189,7 @@ func TestBwrapArgsSetHOMEOnce(t *testing.T) {
 		}
 	}
 	sandbox.Home = nil
-	args := strings.Join(bwrapArgs("/usr/bin/true", []string{"/usr/bin/true"}, sandbox, tools, sandboxProxy{}, nil), " ")
+	args := strings.Join(bwrapArgs("/usr/bin/true", []string{"/usr/bin/true"}, sandbox, tools, sandboxProxy{}, nil, "/dummy/hosts"), " ")
 	if !strings.Contains(args, "--setenv HOME "+sandbox.Workspace+" ") {
 		t.Errorf("bwrapArgs(no home) = %q, want HOME at the workspace", args)
 	}
@@ -210,7 +210,7 @@ done
 if mv "$HOME/.client" "$HOME/.aside" 2>/dev/null; then echo "moved the folder" >> writes.txt; fi
 if mv "$HOME/.client/login" "$HOME/.client/aside" 2>/dev/null; then echo "moved the inner folder" >> writes.txt; fi
 : >> writes.txt`
-	built, err := buildSandboxCommand([]string{"/usr/bin/bash", "-c", script}, sandbox, sandboxBuildOptions{Tools: tools, Env: os.LookupEnv, Until: time.Now().Add(time.Hour)})
+	built, err := buildSandboxCommand([]string{"/usr/bin/bash", "-c", script}, sandbox, sandboxBuildOptions{Tools: tools, Env: os.LookupEnv, Hosts: testHosts(t), Until: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatalf("buildSandboxCommand() = %v, want nil", err)
 	}

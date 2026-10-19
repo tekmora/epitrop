@@ -109,7 +109,7 @@ func TestSandboxedJobReadsOnlyItsOwnClientLogin(t *testing.T) {
 	for i := 0; i < len(sandboxLogins); i++ {
 		fmt.Fprintf(&script, "if cat '%s' >/dev/null 2>&1; then echo '%s' >> reads.txt; fi\n", filepath.Join(home, sandboxLogins[i]), sandboxLogins[i])
 	}
-	built, err := buildSandboxCommand([]string{"/usr/bin/bash", "-c", script.String()}, job.Sandbox, sandboxBuildOptions{Tools: tools, Env: os.LookupEnv})
+	built, err := buildSandboxCommand([]string{"/usr/bin/bash", "-c", script.String()}, job.Sandbox, sandboxBuildOptions{Tools: tools, Env: os.LookupEnv, Hosts: testHosts(t)})
 	if err != nil {
 		t.Fatalf("buildSandboxCommand() = %v, want nil", err)
 	}
