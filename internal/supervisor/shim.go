@@ -160,7 +160,12 @@ func runShim(cfg shimConfig) error {
 		return refuseJob(cfg, logFile, err)
 	}
 	defer stopProxyForShim(proxy, logFile)
-	cmd, started, err := startConfirmedJob(runCtx, cfg, proxy.binds(), logFile)
+	hosts, err := startJobHosts(cfg.Sandbox)
+	if err != nil {
+		return refuseJob(cfg, logFile, err)
+	}
+	defer stopHostsForShim(hosts, logFile)
+	cmd, started, err := startConfirmedJob(runCtx, cfg, proxy.binds(), hosts.path, logFile)
 	if err != nil {
 		return refuseJob(cfg, logFile, err)
 	}
@@ -195,8 +200,8 @@ func stopAtDeadline(cfg shimConfig, pid int) error {
 // startConfirmedJob builds the job's command, starts it, writes its record and confirms its
 // scope. After any error the job is not running: one that had started is killed with its
 // process group.
-func startConfirmedJob(ctx context.Context, cfg shimConfig, proxy sandboxProxy, logFile *os.File) (*exec.Cmd, string, error) {
-	command, err := buildJobCommand(cfg.Command, cfg.Sandbox, shimBuildOptions(cfg, proxy, time.Now()))
+func startConfirmedJob(ctx context.Context, cfg shimConfig, proxy sandboxProxy, hosts string, logFile *os.File) (*exec.Cmd, string, error) {
+	command, err := buildJobCommand(cfg.Command, cfg.Sandbox, shimBuildOptions(cfg, proxy, hosts, time.Now()))
 	if err != nil {
 		return nil, "", fmt.Errorf("job-shim: sandbox %s: %w", cfg.Name, err)
 	}
@@ -224,11 +229,12 @@ func startConfirmedJob(ctx context.Context, cfg shimConfig, proxy sandboxProxy, 
 }
 
 // shimBuildOptions are the options the shim builds a job's command with, for a start at now.
-func shimBuildOptions(cfg shimConfig, proxy sandboxProxy, now time.Time) sandboxBuildOptions {
+func shimBuildOptions(cfg shimConfig, proxy sandboxProxy, hosts string, now time.Time) sandboxBuildOptions {
 	return sandboxBuildOptions{
 		Paths: sandboxPaths{EventLogDir: cfg.EventLogDir, SigningKey: cfg.SigningKey},
 		Env:   os.LookupEnv,
 		Proxy: proxy,
+		Hosts: hosts,
 		Until: latestEnd(cfg, now),
 	}
 }

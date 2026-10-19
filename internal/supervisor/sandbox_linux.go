@@ -70,10 +70,7 @@ func buildSandboxCommand(command []string, sandbox config.SandboxConfig, opts sa
 	if err != nil {
 		return jobCommand{}, err
 	}
-	if err = validateSandboxRuntimePaths(sandbox, opts.Paths); err != nil {
-		return jobCommand{}, err
-	}
-	if err = validateSandboxProxy(sandbox, opts.Proxy); err != nil {
+	if err = validateSandboxOptions(sandbox, opts); err != nil {
 		return jobCommand{}, err
 	}
 	if err = prepareHome(sandbox, opts.Until); err != nil {
@@ -85,7 +82,7 @@ func buildSandboxCommand(command []string, sandbox config.SandboxConfig, opts sa
 	if err != nil {
 		return jobCommand{}, fmt.Errorf("sandbox: %w", err)
 	}
-	inner := bwrapArgs(resolvedCommand, command, sandbox, tools, opts.Proxy, readOnly)
+	inner := bwrapArgs(resolvedCommand, command, sandbox, tools, opts.Proxy, readOnly, opts.Hosts)
 	if sandbox.Network == "egress" {
 		inner = append(pastaArgs(tools.Pasta), inner...)
 	}
@@ -366,8 +363,8 @@ func pastaArgs(path string) []string {
 	}
 }
 
-func bwrapArgs(commandPath string, command []string, sandbox config.SandboxConfig, tools sandboxTools, proxy sandboxProxy, readOnly []string) []string {
-	args := bwrapBaseArgs(tools.Bwrap, sandbox)
+func bwrapArgs(commandPath string, command []string, sandbox config.SandboxConfig, tools sandboxTools, proxy sandboxProxy, readOnly []string, hosts string) []string {
+	args := bwrapBaseArgs(tools.Bwrap, sandbox, hosts)
 	args = append(args, "--bind", sandbox.Workspace, sandbox.Workspace)
 	args = appendReadOnlyBinds(args, sandbox.Workspace, readOnly)
 	args = appendInputBinds(args, sandbox.Inputs)
@@ -407,7 +404,7 @@ func relayArgs() []string {
 	}
 }
 
-func bwrapBaseArgs(path string, sandbox config.SandboxConfig) []string {
+func bwrapBaseArgs(path string, sandbox config.SandboxConfig, hosts string) []string {
 	args := []string{
 		path, "--die-with-parent", "--unshare-all",
 	}
@@ -421,6 +418,7 @@ func bwrapBaseArgs(path string, sandbox config.SandboxConfig) []string {
 		"--symlink", "usr/lib64", "/lib64",
 		"--ro-bind", "/etc/ssl", "/etc/ssl",
 		"--ro-bind", "/etc/ca-certificates", "/etc/ca-certificates",
+		"--ro-bind", hosts, "/etc/hosts",
 	)
 	if sandbox.Network == "egress" {
 		args = append(args, "--ro-bind", resolvedConfPath, "/etc/resolv.conf")
@@ -494,4 +492,24 @@ func sandboxEnv(sandbox config.SandboxConfig, lookup func(string) (string, bool)
 		}
 	}
 	return env
+}
+
+func validateSandboxOptions(sandbox config.SandboxConfig, opts sandboxBuildOptions) error {
+	if err := validateSandboxRuntimePaths(sandbox, opts.Paths); err != nil {
+		return err
+	}
+	if err := validateSandboxProxy(sandbox, opts.Proxy); err != nil {
+		return err
+	}
+	return validateSandboxHosts(opts.Hosts)
+}
+
+func validateSandboxHosts(path string) error {
+	if path == "" {
+		return fmt.Errorf("sandbox: hosts path is required")
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("sandbox: hosts path %s is relative", path)
+	}
+	return nil
 }

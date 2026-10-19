@@ -33,6 +33,8 @@ type sandboxBuildOptions struct {
 	Tools sandboxTools
 	Env   func(string) (string, bool)
 	Proxy sandboxProxy
+	// Hosts is the path of the private hosts file bound into the sandbox.
+	Hosts string
 	// Until is the latest time the job can still run, stop grace included; a home's bound
 	// token has to outlast it.
 	Until time.Time

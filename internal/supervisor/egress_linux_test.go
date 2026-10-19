@@ -42,6 +42,7 @@ func proxyTestArgv(t *testing.T, sandbox config.SandboxConfig, proxy sandboxProx
 	built, err := buildSandboxCommand([]string{"/usr/bin/true", "x"}, sandbox, sandboxBuildOptions{
 		Tools: sandboxTools{SystemdRun: "/usr/bin/systemd-run", Bwrap: "/usr/bin/bwrap", Pasta: "/usr/bin/pasta", Env: "/usr/bin/env", Systemd: true},
 		Proxy: proxy,
+		Hosts: testHosts(t),
 	})
 	if err != nil {
 		t.Fatalf("buildSandboxCommand(network=%s) = %v, want nil", sandbox.Network, err)

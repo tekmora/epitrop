@@ -1,0 +1,2 @@
+type: fixed
+title: 'Sandboxed jobs resolve localhost: every sandbox gets a read-only /etc/hosts that names only localhost, never the host''s file'
