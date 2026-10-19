@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	otelapi "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/tekmora/epitrop/internal/graph"
 	"github.com/tekmora/epitrop/internal/telemetry/telemetrytest"
@@ -289,39 +291,47 @@ func TestUnknownOutcomeAndNilReceiverBoundary(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
+	assertUnknownOutcomes(t, rec, tel)
+	assertNilReceiver(t)
+}
+
+func assertUnknownOutcomes(t *testing.T, rec *telemetrytest.Recorder, tel *Telemetry) {
+	t.Helper()
 	ctx := context.Background()
 	tel.EffectRun(ctx, "unrecognized_effect")
 	tel.SlotRun(ctx, "unrecognized_slot")
 	tel.JobRun(ctx, "unrecognized_job")
+	tel.CheckpointWrite(ctx, "unrecognized_checkpoint")
 	tel.AdmissionDecision(ctx, "unrecognized_admission")
 	tel.GraphTasks(ctx, map[graph.StatusName]int{
 		"unrecognized_status": 7,
 		"fix-round-3":         2,
 	})
 
-	if v := rec.Value(t, MetricEffectRunsTotal, "outcome", "other"); v != 1 {
-		t.Errorf("unknown effect outcome = %d, want 1 under other", v)
-	}
-	if v := rec.Value(t, MetricSlotRunsTotal, "outcome", "other"); v != 1 {
-		t.Errorf("unknown slot outcome = %d, want 1 under other", v)
-	}
-	if v := rec.Value(t, MetricJobRunsTotal, "outcome", "other"); v != 1 {
-		t.Errorf("unknown job outcome = %d, want 1 under other", v)
-	}
-	if v := rec.Value(t, MetricAdmissionDecisionsTotal, "outcome", "other"); v != 1 {
-		t.Errorf("unknown admission outcome = %d, want 1 under other", v)
-	}
-	if v := rec.Value(t, MetricGraphTasks, "status", "other"); v != 7 {
-		t.Errorf("unknown graph status = %d, want 7 under other", v)
-	}
-	if v := rec.Value(t, MetricGraphTasks, "status", "fix-round"); v != 2 {
-		t.Errorf("folded fix-round = %d, want 2 under fix-round", v)
-	}
+	checkEqual(t, rec.Value(t, MetricEffectRunsTotal, "outcome", "other"), 1, "unknown effect outcome")
+	checkEqual(t, rec.Value(t, MetricSlotRunsTotal, "outcome", "other"), 1, "unknown slot outcome")
+	checkEqual(t, rec.Value(t, MetricJobRunsTotal, "outcome", "other"), 1, "unknown job outcome")
+	checkEqual(t, rec.Value(t, MetricCheckpointWritesTotal, "outcome", "other"), 1, "unknown checkpoint outcome")
+	checkEqual(t, rec.Value(t, MetricAdmissionDecisionsTotal, "outcome", "other"), 1, "unknown admission outcome")
+	checkEqual(t, rec.Value(t, MetricGraphTasks, "status", "other"), 7, "unknown graph status")
+	checkEqual(t, rec.Value(t, MetricGraphTasks, "status", "fix-round"), 2, "folded fix-round")
+}
 
+func checkEqual(t *testing.T, got, want int64, desc string) {
+	t.Helper()
+	if got != want {
+		t.Errorf("%s = %d, want %d", desc, got, want)
+	}
+}
+
+func assertNilReceiver(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
 	var nilT *Telemetry
 	nilT.EffectRun(ctx, "executed")
 	nilT.SlotRun(ctx, "done")
 	nilT.JobRun(ctx, "started")
+	nilT.CheckpointWrite(ctx, "written")
 	nilT.AdmissionDecision(ctx, "admitted")
 	nilT.GraphTasks(ctx, map[graph.StatusName]int{graph.StatusReady: 1})
 	nilT.BudgetUsed(ctx, BudgetLayerPlatform, new(int64))
@@ -332,6 +342,94 @@ func TestUnknownOutcomeAndNilReceiverBoundary(t *testing.T) {
 	span.RecordError(errors.New("fail"))
 	span.SetStatus(codes.Error, "fail")
 	span.End()
+}
+
+func TestMetricValueTypes(t *testing.T) {
+	rec := telemetrytest.Install(t)
+	tel, err := New(nil, rec.MeterProvider())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	tel.EffectRun(ctx, "executed")
+	tel.SlotRun(ctx, "done")
+	tel.JobRun(ctx, "started")
+	tel.CheckpointWrite(ctx, "written")
+	tel.AdmissionDecision(ctx, "admitted")
+	tel.GraphTasks(ctx, map[graph.StatusName]int{graph.StatusReady: 4})
+	used := int64(500)
+	tel.BudgetUsed(ctx, BudgetLayerPlatform, &used)
+
+	rm := rec.ResourceMetrics(t)
+	found := make(map[string]string)
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			switch d := m.Data.(type) {
+			case metricdata.Sum[float64]:
+				if !d.IsMonotonic {
+					t.Errorf("counter %s is not monotonic", m.Name)
+				}
+				found[m.Name] = "sum_float64"
+			case metricdata.Gauge[float64]:
+				found[m.Name] = "gauge_float64"
+			default:
+				found[m.Name] = fmt.Sprintf("%T", m.Data)
+			}
+		}
+	}
+
+	expected := map[string]string{
+		"epitrop_effect_runs":          "sum_float64",
+		"epitrop_slot_runs":            "sum_float64",
+		"epitrop_job_runs":             "sum_float64",
+		"epitrop_checkpoint_writes":    "sum_float64",
+		"epitrop_admission_decisions":  "sum_float64",
+		MetricGraphTasks:               "gauge_float64",
+		MetricBudgetUsedFrontierTokens: "gauge_float64",
+	}
+	for name, want := range expected {
+		if got := found[name]; got != want {
+			t.Errorf("metric %s data type = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestAllowListFoldingBoundary(t *testing.T) {
+	rec := telemetrytest.Install(t)
+	tel, err := New(nil, rec.MeterProvider())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+
+	tel.EffectRun(ctx, "")
+	tel.SlotRun(ctx, "")
+	tel.JobRun(ctx, "")
+	tel.CheckpointWrite(ctx, "")
+	tel.AdmissionDecision(ctx, "")
+
+	for _, name := range []string{
+		MetricEffectRunsTotal,
+		MetricSlotRunsTotal,
+		MetricJobRunsTotal,
+		MetricCheckpointWritesTotal,
+		MetricAdmissionDecisionsTotal,
+	} {
+		if v := rec.Value(t, name, "outcome", "other"); v != 1 {
+			t.Errorf("metric %s empty outcome = %d, want 1 under other", name, v)
+		}
+	}
+
+	tel.GraphTasks(ctx, map[graph.StatusName]int{"": 5})
+	if v := rec.Value(t, MetricGraphTasks, "status", "other"); v != 5 {
+		t.Errorf("graph tasks empty status = %d, want 5 under other", v)
+	}
+
+	used := int64(99)
+	tel.BudgetUsed(ctx, "", &used)
+	if v := rec.Value(t, MetricBudgetUsedFrontierTokens, "layer", "other"); v != 99 {
+		t.Errorf("budget used empty layer = %d, want 99 under other", v)
+	}
 }
 
 func TestGraphTasksGaugeReset(t *testing.T) {
