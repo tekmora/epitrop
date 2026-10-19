@@ -403,6 +403,11 @@
                           "type": "string",
                           "default": "",
                           "maxLength": 520
+                        },
+                        "expires_rfc3339": {
+                          "type": "string",
+                          "default": "",
+                          "maxLength": 520
                         }
                       }
                     }

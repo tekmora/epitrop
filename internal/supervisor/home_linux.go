@@ -237,6 +237,9 @@ func checkHomeBind(source string, entry config.SandboxHomeBind, until time.Time)
 	case entry.ExpiresMS != "":
 		path = entry.ExpiresMS
 		exp, err = millisExpiry(body, entry.ExpiresMS)
+	case entry.ExpiresRFC3339 != "":
+		path = entry.ExpiresRFC3339
+		exp, err = rfc3339Expiry(body, entry.ExpiresRFC3339)
 	default:
 		return fmt.Errorf("home: bind %s names no expiry; the configuration checks it", entry.File)
 	}
@@ -301,6 +304,24 @@ func millisExpiry(body []byte, path string) (time.Time, error) {
 		return time.Time{}, errors.New("the value is no time in milliseconds")
 	}
 	return time.UnixMilli(ms), nil
+}
+
+// rfc3339Expiry reads the RFC 3339 time at the dotted path in a JSON document. The parse
+// error is not passed on: it quotes the value.
+func rfc3339Expiry(body []byte, path string) (time.Time, error) {
+	doc, err := jsonValueAt(body, path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	text, ok := doc.(string)
+	if !ok {
+		return time.Time{}, errors.New("the value is no string")
+	}
+	exp, err := time.Parse(time.RFC3339, text)
+	if err != nil {
+		return time.Time{}, errors.New("the value is no RFC 3339 time")
+	}
+	return exp, nil
 }
 
 func jwtClaimExp(token string) (time.Time, error) {
