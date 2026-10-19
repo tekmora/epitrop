@@ -83,25 +83,6 @@ func TestValidateSandboxHomeLoginRules(t *testing.T) {
 	}{
 		{"bind with no expiry", func(s *SandboxConfig) { s.Home.Bind[0].JWT = "" }, "home.bind/0: names none of jwt, expires_ms, expires_rfc3339"},
 		{"bind with both expiries", func(s *SandboxConfig) { s.Home.Bind[0].ExpiresMS = "expiresAt" }, "home.bind/0: names more than one of"},
-		{"bind with a jwt and an RFC 3339 expiry", func(s *SandboxConfig) { s.Home.Bind[0].ExpiresRFC3339 = "token.expiry" }, "home.bind/0: names more than one of"},
-		{"bind with all three expiries", func(s *SandboxConfig) {
-			s.Home.Bind[0].ExpiresMS, s.Home.Bind[0].ExpiresRFC3339 = "expiresAt", "token.expiry"
-		}, "home.bind/0: names more than one of"},
-		{"bind with an expiry in milliseconds and one in RFC 3339", func(s *SandboxConfig) {
-			s.Home.Bind[0] = SandboxHomeBind{File: "auth.json", ExpiresMS: "expiresAt", ExpiresRFC3339: "token.expiry"}
-		}, "home.bind/0: names more than one of"},
-		{"agy login with its RFC 3339 expiry", func(s *SandboxConfig) {
-			s.Home.Bind[0] = SandboxHomeBind{File: ".gemini/antigravity-cli/antigravity-oauth-token", ExpiresRFC3339: "token.expiry"}
-		}, ""},
-		{"RFC 3339 expiry path of eight names", func(s *SandboxConfig) {
-			s.Home.Bind[0].JWT, s.Home.Bind[0].ExpiresRFC3339 = "", "a.b.c.d.e.f.g.h"
-		}, ""},
-		{"RFC 3339 expiry path of nine names", func(s *SandboxConfig) {
-			s.Home.Bind[0].JWT, s.Home.Bind[0].ExpiresRFC3339 = "", "a.b.c.d.e.f.g.h.i"
-		}, "home.bind/0.expires_rfc3339"},
-		{"RFC 3339 expiry path with a slash", func(s *SandboxConfig) {
-			s.Home.Bind[0].JWT, s.Home.Bind[0].ExpiresRFC3339 = "", "token/expiry"
-		}, "home.bind/0.expires_rfc3339"},
 		{"bind with an expiry in milliseconds", func(s *SandboxConfig) {
 			s.Home.Bind[0] = SandboxHomeBind{File: ".credentials.json", ExpiresMS: "claudeAiOauth.expiresAt"}
 		}, ""},
@@ -133,6 +114,37 @@ func TestValidateSandboxHomeLoginRules(t *testing.T) {
 		{"another file in the agy folder", func(s *SandboxConfig) {
 			s.Home.Bind[0].File = ".gemini/antigravity-cli/settings.json"
 		}, "nor a known login file"},
+	}
+	for _, tc := range cases {
+		checkSandboxHomeRule(t, tc.name, tc.edit, tc.want)
+	}
+}
+
+func TestValidateSandboxHomeRFC3339Rules(t *testing.T) {
+	cases := []struct {
+		name string
+		edit func(*SandboxConfig)
+		want string
+	}{
+		{"bind with a jwt and an RFC 3339 expiry", func(s *SandboxConfig) { s.Home.Bind[0].ExpiresRFC3339 = "token.expiry" }, "home.bind/0: names more than one of"},
+		{"bind with all three expiries", func(s *SandboxConfig) {
+			s.Home.Bind[0].ExpiresMS, s.Home.Bind[0].ExpiresRFC3339 = "expiresAt", "token.expiry"
+		}, "home.bind/0: names more than one of"},
+		{"bind with an expiry in milliseconds and one in RFC 3339", func(s *SandboxConfig) {
+			s.Home.Bind[0] = SandboxHomeBind{File: "auth.json", ExpiresMS: "expiresAt", ExpiresRFC3339: "token.expiry"}
+		}, "home.bind/0: names more than one of"},
+		{"agy login with its RFC 3339 expiry", func(s *SandboxConfig) {
+			s.Home.Bind[0] = SandboxHomeBind{File: ".gemini/antigravity-cli/antigravity-oauth-token", ExpiresRFC3339: "token.expiry"}
+		}, ""},
+		{"RFC 3339 expiry path of eight names", func(s *SandboxConfig) {
+			s.Home.Bind[0].JWT, s.Home.Bind[0].ExpiresRFC3339 = "", "a.b.c.d.e.f.g.h"
+		}, ""},
+		{"RFC 3339 expiry path of nine names", func(s *SandboxConfig) {
+			s.Home.Bind[0].JWT, s.Home.Bind[0].ExpiresRFC3339 = "", "a.b.c.d.e.f.g.h.i"
+		}, "home.bind/0.expires_rfc3339"},
+		{"RFC 3339 expiry path with a slash", func(s *SandboxConfig) {
+			s.Home.Bind[0].JWT, s.Home.Bind[0].ExpiresRFC3339 = "", "token/expiry"
+		}, "home.bind/0.expires_rfc3339"},
 	}
 	for _, tc := range cases {
 		checkSandboxHomeRule(t, tc.name, tc.edit, tc.want)
