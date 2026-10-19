@@ -7,6 +7,7 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -26,21 +27,15 @@ const instrumentationScope = "github.com/tekmora/epitrop"
 
 // Telemetry holds OpenTelemetry tracer and metric instruments.
 type Telemetry struct {
-	tracer                   trace.Tracer
-	effectRuns               metric.Int64Counter
-	slotRuns                 metric.Int64Counter
-	jobRuns                  metric.Int64Counter
-	checkpointWrites         metric.Int64Counter
-	admissionDecisions       metric.Int64Counter
-	graphTasks               metric.Int64Gauge
-	budgetUsed               metric.Int64Gauge
-	allowedEffectOutcome     map[string]struct{}
-	allowedSlotOutcome       map[string]struct{}
-	allowedJobOutcome        map[string]struct{}
-	allowedCheckpointOutcome map[string]struct{}
-	allowedAdmissionOutcome  map[string]struct{}
-	allowedGraphStatus       map[string]struct{}
-	allowedBudgetLayer       map[string]struct{}
+	tracer             trace.Tracer
+	effectRuns         *metricdef.Counter
+	slotRuns           *metricdef.Counter
+	jobRuns            *metricdef.Counter
+	checkpointWrites   *metricdef.Counter
+	admissionDecisions *metricdef.Counter
+	graphTasks         *metricdef.OTelGauge
+	budgetUsed         *metricdef.OTelGauge
+	allowedGraphStatus []string
 }
 
 // New constructs Telemetry with instruments created on the provided meter provider
@@ -57,111 +52,59 @@ func New(tp trace.TracerProvider, mp metric.MeterProvider) (*Telemetry, error) {
 
 	cat, err := Catalog()
 	if err != nil {
+		return nil, fmt.Errorf("telemetry: catalog: %w", err)
+	}
+	handles, err := cat.RegisterOTel(meter)
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: register OTel: %w", err)
+	}
+
+	t := &Telemetry{tracer: tracer}
+	if err := t.bindHandles(cat, handles); err != nil {
 		return nil, err
 	}
-	t := &Telemetry{
-		tracer: tracer,
-	}
-	if err := t.initInstruments(meter, cat); err != nil {
-		return nil, err
-	}
-	t.initAllowedSets(cat)
 	return t, nil
 }
 
-func (t *Telemetry) initInstruments(meter metric.Meter, cat *metricdef.Catalog) error {
-	for _, def := range cat.Defs() {
-		switch def.Kind {
-		case metricdef.KindCounter:
-			c, err := meter.Int64Counter(
-				strings.TrimSuffix(def.Name, "_total"),
-				metric.WithDescription(def.Help),
-			)
-			if err != nil {
-				return err
-			}
-			t.setCounter(def.Name, c)
-		case metricdef.KindGauge:
-			g, err := meter.Int64Gauge(
-				def.Name,
-				metric.WithDescription(def.Help),
-			)
-			if err != nil {
-				return err
-			}
-			t.setGauge(def.Name, g)
-		default:
-			return fmt.Errorf("telemetry: unknown metric kind %v for %q", def.Kind, def.Name)
-		}
+func (t *Telemetry) bindHandles(cat *metricdef.Catalog, handles *metricdef.Handles) error {
+	var err error
+	if t.effectRuns, err = handles.Counter(MetricEffectRunsTotal); err != nil {
+		return fmt.Errorf("telemetry: counter %s: %w", MetricEffectRunsTotal, err)
 	}
+	if t.slotRuns, err = handles.Counter(MetricSlotRunsTotal); err != nil {
+		return fmt.Errorf("telemetry: counter %s: %w", MetricSlotRunsTotal, err)
+	}
+	if t.jobRuns, err = handles.Counter(MetricJobRunsTotal); err != nil {
+		return fmt.Errorf("telemetry: counter %s: %w", MetricJobRunsTotal, err)
+	}
+	if t.checkpointWrites, err = handles.Counter(MetricCheckpointWritesTotal); err != nil {
+		return fmt.Errorf("telemetry: counter %s: %w", MetricCheckpointWritesTotal, err)
+	}
+	if t.admissionDecisions, err = handles.Counter(MetricAdmissionDecisionsTotal); err != nil {
+		return fmt.Errorf("telemetry: counter %s: %w", MetricAdmissionDecisionsTotal, err)
+	}
+	if t.graphTasks, err = handles.OTelGauge(MetricGraphTasks); err != nil {
+		return fmt.Errorf("telemetry: gauge %s: %w", MetricGraphTasks, err)
+	}
+	if t.budgetUsed, err = handles.OTelGauge(MetricBudgetUsedFrontierTokens); err != nil {
+		return fmt.Errorf("telemetry: gauge %s: %w", MetricBudgetUsedFrontierTokens, err)
+	}
+	graphDef, ok := cat.Lookup(MetricGraphTasks)
+	if !ok {
+		return fmt.Errorf("telemetry: metric %s absent from catalog", MetricGraphTasks)
+	}
+	t.allowedGraphStatus = graphDef.Limits["status"].Allow
 	return nil
 }
 
-func (t *Telemetry) setCounter(name string, c metric.Int64Counter) {
-	switch name {
-	case MetricEffectRunsTotal:
-		t.effectRuns = c
-	case MetricSlotRunsTotal:
-		t.slotRuns = c
-	case MetricJobRunsTotal:
-		t.jobRuns = c
-	case MetricCheckpointWritesTotal:
-		t.checkpointWrites = c
-	case MetricAdmissionDecisionsTotal:
-		t.admissionDecisions = c
-	}
-}
-
-func (t *Telemetry) setGauge(name string, g metric.Int64Gauge) {
-	switch name {
-	case MetricGraphTasks:
-		t.graphTasks = g
-	case MetricBudgetUsedFrontierTokens:
-		t.budgetUsed = g
-	}
-}
-
-func (t *Telemetry) initAllowedSets(cat *metricdef.Catalog) {
-	for _, def := range cat.Defs() {
-		t.applyAllowedLimits(def)
-	}
-}
-
-func (t *Telemetry) applyAllowedLimits(def metricdef.Def) {
-	switch def.Name {
-	case MetricEffectRunsTotal:
-		t.allowedEffectOutcome = toAllowSet(def.Limits["outcome"].Allow)
-	case MetricSlotRunsTotal:
-		t.allowedSlotOutcome = toAllowSet(def.Limits["outcome"].Allow)
-	case MetricJobRunsTotal:
-		t.allowedJobOutcome = toAllowSet(def.Limits["outcome"].Allow)
-	case MetricCheckpointWritesTotal:
-		t.allowedCheckpointOutcome = toAllowSet(def.Limits["outcome"].Allow)
-	case MetricAdmissionDecisionsTotal:
-		t.allowedAdmissionOutcome = toAllowSet(def.Limits["outcome"].Allow)
-	case MetricGraphTasks:
-		t.allowedGraphStatus = toAllowSet(def.Limits["status"].Allow)
-	case MetricBudgetUsedFrontierTokens:
-		t.allowedBudgetLayer = toAllowSet(def.Limits["layer"].Allow)
-	}
-}
-
-func toAllowSet(items []string) map[string]struct{} {
-	m := make(map[string]struct{}, len(items))
-	for i := 0; i < len(items); i++ {
-		m[items[i]] = struct{}{}
-	}
-	return m
-}
-
-func (t *Telemetry) add(ctx context.Context, counter metric.Int64Counter, allow map[string]struct{}, outcome string) {
+func (t *Telemetry) inc(ctx context.Context, counter *metricdef.Counter, outcome string) {
 	if counter == nil {
 		return
 	}
-	if _, ok := allow[outcome]; !ok {
-		outcome = metricdef.OtherValue
+	// A failed recording must not fail the caller's operation; it goes to the OTel error handler.
+	if err := counter.Inc(ctx, outcome); err != nil {
+		otelapi.Handle(err)
 	}
-	counter.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
 }
 
 // EffectRun records one side effect execution outcome.
@@ -169,7 +112,7 @@ func (t *Telemetry) EffectRun(ctx context.Context, outcome string) {
 	if t == nil {
 		return
 	}
-	t.add(ctx, t.effectRuns, t.allowedEffectOutcome, outcome)
+	t.inc(ctx, t.effectRuns, outcome)
 }
 
 // SlotRun records one slot execution outcome.
@@ -177,7 +120,7 @@ func (t *Telemetry) SlotRun(ctx context.Context, outcome string) {
 	if t == nil {
 		return
 	}
-	t.add(ctx, t.slotRuns, t.allowedSlotOutcome, outcome)
+	t.inc(ctx, t.slotRuns, outcome)
 }
 
 // JobRun records one supervisor job start outcome.
@@ -185,7 +128,7 @@ func (t *Telemetry) JobRun(ctx context.Context, outcome string) {
 	if t == nil {
 		return
 	}
-	t.add(ctx, t.jobRuns, t.allowedJobOutcome, outcome)
+	t.inc(ctx, t.jobRuns, outcome)
 }
 
 // CheckpointWrite records one event log checkpoint write attempt outcome.
@@ -193,7 +136,7 @@ func (t *Telemetry) CheckpointWrite(ctx context.Context, outcome string) {
 	if t == nil {
 		return
 	}
-	t.add(ctx, t.checkpointWrites, t.allowedCheckpointOutcome, outcome)
+	t.inc(ctx, t.checkpointWrites, outcome)
 }
 
 // AdmissionDecision records one router alias admission decision outcome.
@@ -201,50 +144,55 @@ func (t *Telemetry) AdmissionDecision(ctx context.Context, outcome string) {
 	if t == nil {
 		return
 	}
-	t.add(ctx, t.admissionDecisions, t.allowedAdmissionOutcome, outcome)
+	t.inc(ctx, t.admissionDecisions, outcome)
 }
 
 // GraphTasks records queue depth for each task status in counts.
 // Statuses of kind fix-round-N fold into "fix-round".
-func (t *Telemetry) GraphTasks(ctx context.Context, counts map[graph.StatusName]int) {
+func (t *Telemetry) GraphTasks(_ context.Context, counts map[graph.StatusName]int) {
 	if t == nil || t.graphTasks == nil {
 		return
 	}
-	recorded := make(map[string]int64, len(t.allowedGraphStatus)+1)
-	for s := range t.allowedGraphStatus {
-		recorded[s] = 0
+	recorded := make(map[string]float64, len(t.allowedGraphStatus)+1)
+	for i := 0; i < len(t.allowedGraphStatus); i++ {
+		recorded[t.allowedGraphStatus[i]] = 0
 	}
-	var otherCount int64
+	var otherCount float64
 	for status, count := range counts {
 		s := string(status)
 		if s == string(graph.StatusFixRound) || strings.HasPrefix(s, "fix-round") {
 			s = "fix-round"
 		}
-		if _, ok := t.allowedGraphStatus[s]; ok {
-			recorded[s] += int64(count)
+		if slices.Contains(t.allowedGraphStatus, s) {
+			recorded[s] += float64(count)
 		} else {
-			otherCount += int64(count)
+			otherCount += float64(count)
 		}
 	}
 	if otherCount > 0 {
 		recorded[metricdef.OtherValue] = otherCount
 	}
 	for s, c := range recorded {
-		t.graphTasks.Record(ctx, c, metric.WithAttributes(attribute.String("status", s)))
+		setGauge(t.graphTasks, c, s)
 	}
 }
 
 // BudgetUsed records the frontier tokens layer has used. A nil used means the ledger
 // has not measured them; nothing is recorded then, so the metric never shows a zero
 // that was not measured.
-func (t *Telemetry) BudgetUsed(ctx context.Context, layer string, used *int64) {
+func (t *Telemetry) BudgetUsed(_ context.Context, layer string, used *int64) {
 	if t == nil || t.budgetUsed == nil || used == nil {
 		return
 	}
-	if _, ok := t.allowedBudgetLayer[layer]; !ok {
-		layer = metricdef.OtherValue
+	setGauge(t.budgetUsed, float64(*used), layer)
+}
+
+// setGauge records v under label. A failed recording must not fail the caller's
+// operation; it goes to the OTel error handler.
+func setGauge(g *metricdef.OTelGauge, v float64, label string) {
+	if err := g.Set(v, label); err != nil {
+		otelapi.Handle(err)
 	}
-	t.budgetUsed.Record(ctx, *used, metric.WithAttributes(attribute.String("layer", layer)))
 }
 
 // StartSpan starts an OpenTelemetry span on the configured tracer.

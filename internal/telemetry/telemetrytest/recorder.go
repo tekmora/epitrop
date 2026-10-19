@@ -79,46 +79,17 @@ func (r *Recorder) Spans() tracetest.SpanStubs {
 	return r.exporter.GetSpans()
 }
 
-// Value returns the aggregated int64 metric value matching attrKey=attrVal.
+// Value returns the aggregated metric value matching attrKey=attrVal, truncated to int64.
 func (r *Recorder) Value(t testing.TB, name, attrKey, attrVal string) int64 {
 	t.Helper()
-	if r == nil || r.reader == nil {
-		return 0
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var rm metricdata.ResourceMetrics
-	if err := r.reader.Collect(ctx, &rm); err != nil {
-		t.Fatalf("telemetrytest: collect metrics: %v", err)
-	}
-	trimmed := strings.TrimSuffix(name, "_total")
-	var sum int64
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != name && m.Name != trimmed {
-				continue
-			}
-			sum += extractDataPoint(m.Data, attrKey, attrVal)
-		}
-	}
-	return sum
+	return int64(r.FloatValue(t, name, attrKey, attrVal))
 }
 
 // Recorded reports whether metric name has a data point with attrKey=attrVal, so a
 // test can tell a value that was never written from a written zero.
 func (r *Recorder) Recorded(t testing.TB, name, attrKey, attrVal string) bool {
 	t.Helper()
-	if r == nil || r.reader == nil {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var rm metricdata.ResourceMetrics
-	if err := r.reader.Collect(ctx, &rm); err != nil {
-		t.Fatalf("telemetrytest: collect metrics: %v", err)
-	}
+	rm := r.ResourceMetrics(t)
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			if m.Name == name && hasGaugePoint(m.Data, attrKey, attrVal) {
@@ -129,34 +100,105 @@ func (r *Recorder) Recorded(t testing.TB, name, attrKey, attrVal string) bool {
 	return false
 }
 
-func hasGaugePoint(data metricdata.Aggregation, attrKey, attrVal string) bool {
-	d, ok := data.(metricdata.Gauge[int64])
-	if !ok {
-		return false
+// ResourceMetrics returns captured resource metrics.
+func (r *Recorder) ResourceMetrics(t testing.TB) metricdata.ResourceMetrics {
+	t.Helper()
+	if r == nil || r.reader == nil {
+		return metricdata.ResourceMetrics{}
 	}
-	for _, dp := range d.DataPoints {
-		if hasAttr(dp.Attributes, attrKey, attrVal) {
-			return true
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var rm metricdata.ResourceMetrics
+	if err := r.reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("telemetrytest: collect metrics: %v", err)
+	}
+	return rm
+}
+
+// FloatValue returns the aggregated float64 metric value matching attrKey=attrVal.
+func (r *Recorder) FloatValue(t testing.TB, name, attrKey, attrVal string) float64 {
+	t.Helper()
+	rm := r.ResourceMetrics(t)
+	trimmed := strings.TrimSuffix(name, "_total")
+	var sum float64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name && m.Name != trimmed {
+				continue
+			}
+			sum += extractFloatDataPoint(m.Data, attrKey, attrVal)
+		}
+	}
+	return sum
+}
+
+func hasGaugePoint(data metricdata.Aggregation, attrKey, attrVal string) bool {
+	switch d := data.(type) {
+	case metricdata.Gauge[int64]:
+		for _, dp := range d.DataPoints {
+			if hasAttr(dp.Attributes, attrKey, attrVal) {
+				return true
+			}
+		}
+	case metricdata.Gauge[float64]:
+		for _, dp := range d.DataPoints {
+			if hasAttr(dp.Attributes, attrKey, attrVal) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func extractDataPoint(data metricdata.Aggregation, attrKey, attrVal string) int64 {
+func extractFloatDataPoint(data metricdata.Aggregation, attrKey, attrVal string) float64 {
 	switch d := data.(type) {
 	case metricdata.Sum[int64]:
-		var s int64
-		for _, dp := range d.DataPoints {
-			if hasAttr(dp.Attributes, attrKey, attrVal) {
-				s += dp.Value
-			}
-		}
-		return s
+		return sumIntPoints(d.DataPoints, attrKey, attrVal)
+	case metricdata.Sum[float64]:
+		return sumFloatPoints(d.DataPoints, attrKey, attrVal)
 	case metricdata.Gauge[int64]:
-		for _, dp := range d.DataPoints {
-			if hasAttr(dp.Attributes, attrKey, attrVal) {
-				return dp.Value
-			}
+		return gaugeIntPoints(d.DataPoints, attrKey, attrVal)
+	case metricdata.Gauge[float64]:
+		return gaugeFloatPoints(d.DataPoints, attrKey, attrVal)
+	default:
+		return 0
+	}
+}
+
+func sumFloatPoints(dps []metricdata.DataPoint[float64], attrKey, attrVal string) float64 {
+	var s float64
+	for _, dp := range dps {
+		if hasAttr(dp.Attributes, attrKey, attrVal) {
+			s += dp.Value
+		}
+	}
+	return s
+}
+
+func sumIntPoints(dps []metricdata.DataPoint[int64], attrKey, attrVal string) float64 {
+	var s int64
+	for _, dp := range dps {
+		if hasAttr(dp.Attributes, attrKey, attrVal) {
+			s += dp.Value
+		}
+	}
+	return float64(s)
+}
+
+func gaugeFloatPoints(dps []metricdata.DataPoint[float64], attrKey, attrVal string) float64 {
+	for _, dp := range dps {
+		if hasAttr(dp.Attributes, attrKey, attrVal) {
+			return dp.Value
+		}
+	}
+	return 0
+}
+
+func gaugeIntPoints(dps []metricdata.DataPoint[int64], attrKey, attrVal string) float64 {
+	for _, dp := range dps {
+		if hasAttr(dp.Attributes, attrKey, attrVal) {
+			return float64(dp.Value)
 		}
 	}
 	return 0
