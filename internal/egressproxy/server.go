@@ -163,22 +163,22 @@ func (s *Server) handle(ctx context.Context, client net.Conn, deadline time.Time
 	reader := bufio.NewReaderSize(client, maxRequestBytes)
 	target, status, err := readConnect(reader)
 	if err != nil {
-		s.refuse(client, status, target, err)
+		s.refuseAndDrain(client, status, target, err)
 		return
 	}
 	dest, err := s.declared(target)
 	if err != nil {
-		s.refuse(client, "403 Forbidden", target, err)
+		s.refuseAndDrain(client, "403 Forbidden", target, err)
 		return
 	}
 	upstream, err := s.connect(ctx, dest)
 	if err != nil {
-		s.refuse(client, "502 Bad Gateway", target, err)
+		s.refuseAndDrain(client, "502 Bad Gateway", target, err)
 		return
 	}
 	defer func() { s.pool.fault(closed(upstream)) }()
 	if err = errors.Join(client.SetDeadline(deadline), upstream.SetDeadline(deadline)); err != nil {
-		s.refuse(client, "500 Internal Server Error", target, err)
+		s.refuseAndDrain(client, "500 Internal Server Error", target, err)
 		return
 	}
 	if _, err = io.WriteString(client, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
@@ -300,6 +300,13 @@ func (s *Server) refuse(client net.Conn, status string, target string, cause err
 	s.refused++
 	s.mu.Unlock()
 	s.logLine(fmt.Sprintf("egress proxy: refused %.*q: %v", maxLoggedTarget, target, cause))
+}
+
+// refuseAndDrain answers a refused request, logs the refusal, and drains unread bytes
+// from the client under a read deadline before handle returns.
+func (s *Server) refuseAndDrain(client net.Conn, status string, target string, cause error) {
+	s.refuse(client, status, target, cause)
+	s.pool.fault(s.pool.drain(client))
 }
 
 func answer(client net.Conn, status string) error {
