@@ -482,12 +482,16 @@ func TestServerLogIsBounded(t *testing.T) {
 	server := startServer(t, Options{Destinations: []string{"gateway.example:443"}})
 	const extra = 5
 	for i := 0; i < maxLoggedLines+extra; i++ {
-		if _, status := ask(t, server.Server, connectRequest("other.example:443")); !strings.Contains(status, " 403 ") {
+		tun, status := ask(t, server.Server, connectRequest("other.example:443"))
+		if !strings.Contains(status, " 403 ") {
 			t.Fatalf("request %d: status = %q, want 403", i, status)
 		}
+		if err := tun.conn.Close(); err != nil {
+			t.Fatalf("request %d: Close() = %v, want nil", i, err)
+		}
 		// A refusal keeps its slot until it has been logged, after the client has read the
-		// answer. Without this wait, a slow runner piles up more than maxTunnels of them and
-		// the next request is answered as busy.
+		// answer. The client closes so the drain ends. Without this wait, a slow runner piles up
+		// more than maxTunnels of them and the next request is answered as busy.
 		if !waitFor(func() bool { return len(server.pool.slots) == 0 }) {
 			t.Fatalf("request %d: %d slots still held, want the refusal to free its slot", i, len(server.pool.slots))
 		}

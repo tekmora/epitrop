@@ -1,0 +1,3 @@
+type: fixed
+title: 'A request the egress proxy refuses for its form, its destination or an upstream failure is drained under a deadline before the connection closes, so the client reads the answer instead of a reset'
+issue: "318"

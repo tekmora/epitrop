@@ -128,10 +128,9 @@ func (p *pool) serveOne(conn net.Conn, serving *sync.WaitGroup, handle func(net.
 	}()
 }
 
-// closeRefused ends a refused connection cleanly: after the answer is written, it
-// half-closes the write side if the connection supports it, reads and discards what the
-// client sent under a read deadline so closing the socket sends no reset, and closes it.
-func (p *pool) closeRefused(conn net.Conn) {
+// drain discards what the client sent under a read deadline so closing the socket sends
+// no reset.
+func (p *pool) drain(conn net.Conn) error {
 	var err error
 	if half, ok := conn.(halfCloser); ok {
 		err = errors.Join(err, endWrite(half))
@@ -143,7 +142,14 @@ func (p *pool) closeRefused(conn net.Conn) {
 	if drainErr != nil && !errors.Is(drainErr, os.ErrDeadlineExceeded) && !peerEnded(drainErr) {
 		err = errors.Join(err, ignoreClosed(drainErr))
 	}
-	p.fault(errors.Join(err, closed(conn)))
+	return err
+}
+
+// closeRefused ends a refused connection cleanly: after the answer is written, it
+// half-closes the write side if the connection supports it, reads and discards what the
+// client sent under a read deadline so closing the socket sends no reset, and closes it.
+func (p *pool) closeRefused(conn net.Conn) {
+	p.fault(errors.Join(p.drain(conn), closed(conn)))
 }
 
 // fault keeps an error that belongs to no single connection. nil is none; past maxFaults
