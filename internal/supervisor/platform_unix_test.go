@@ -699,7 +699,10 @@ func startSleep(t *testing.T, setpgid bool) *exec.Cmd {
 			done <- cmd.Wait()
 		}()
 		select {
-		case <-done:
+		case err := <-done:
+			if err != nil {
+				t.Logf("wait sleep pid %d = %v", cmd.Process.Pid, err)
+			}
 		case <-time.After(time.Second):
 			t.Fatalf("sleep pid %d did not exit after cleanup kill", cmd.Process.Pid)
 		}
