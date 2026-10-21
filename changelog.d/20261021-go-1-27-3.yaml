@@ -1,0 +1,2 @@
+type: fixed
+title: 'Built with Go 1.27.3, which fixes GO-2026-6809 in crypto/x509 certificate verification'
