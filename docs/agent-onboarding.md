@@ -8,7 +8,7 @@ An agent runtime and task-graph engine for the Tekmora ecosystem. It reads its o
 
 Planned stack:
 
-- Control plane: Go 1.27.2+ (`cmd/`, `internal/`), built on pinned golusoris modules ([ADR-0004](adr/0004-golusoris-pinned-base.md)).
+- Control plane: Go 1.27.3+ (`cmd/`, `internal/`), built on pinned golusoris modules ([ADR-0004](adr/0004-golusoris-pinned-base.md)).
 - Vector kernel: Rust (`crates/epitrop-graph`), SIMD skill matching.
 - Operator UI: Svelte 5 (`ui/`).
 
