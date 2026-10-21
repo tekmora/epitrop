@@ -24,7 +24,9 @@ func (c countedConn) Close() error {
 	return nil
 }
 
-func (countedConn) SetDeadline(time.Time) error { return nil }
+func (countedConn) SetDeadline(time.Time) error     { return nil }
+func (countedConn) SetReadDeadline(time.Time) error { return nil }
+func (countedConn) Read([]byte) (int, error)        { return 0, io.EOF }
 
 // TestPoolClosesEveryConnectionOnce: a served connection and one answered as busy are both
 // closed by the pool, each exactly once.

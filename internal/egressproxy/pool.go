@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"sync"
@@ -18,8 +19,15 @@ const (
 	// maxTunnels is how many connections are served at a time. One more is answered as
 	// busy.
 	maxTunnels = 64
+	// maxRefusing is how many refused connections may drain at a time. Matching maxTunnels
+	// caps the goroutines for refused traffic at the same scale as served traffic, so a
+	// connection flood cannot spawn unbounded goroutines.
+	maxRefusing = maxTunnels
 	// maxFaults is how many errors that belong to no request are kept for the caller.
 	maxFaults = 8
+	// drainDeadline bounds how long a refused connection waits to discard the client's
+	// request before closing, so closing a socket with unread data sends no reset.
+	drainDeadline = 1 * time.Second
 )
 
 // deadlineListener is a listener whose Accept can be given a deadline, as the TCP and Unix
@@ -33,15 +41,20 @@ type deadlineListener interface {
 // maxTunnels at a time. It keeps the errors that belong to no single connection, such as
 // a close that failed, for serve to return.
 type pool struct {
-	slots chan struct{}
-	limit int
+	slots    chan struct{}
+	refusing chan struct{}
+	limit    int
 
 	mu     sync.Mutex
 	faults []error
 }
 
 func newPool() *pool {
-	return &pool{slots: make(chan struct{}, maxTunnels), limit: MaxConnections}
+	return &pool{
+		slots:    make(chan struct{}, maxTunnels),
+		refusing: make(chan struct{}, maxRefusing),
+		limit:    MaxConnections,
+	}
 }
 
 // serve accepts until ctx ends, the listener is closed or deadline has passed, and returns
@@ -91,8 +104,19 @@ func (p *pool) serveOne(conn net.Conn, serving *sync.WaitGroup, handle func(net.
 	select {
 	case p.slots <- struct{}{}:
 	default:
-		busy(conn)
-		p.fault(closed(conn))
+		select {
+		case p.refusing <- struct{}{}:
+			serving.Add(1)
+			go func() {
+				defer serving.Done()
+				defer func() { <-p.refusing }()
+				busy(conn)
+				p.closeRefused(conn)
+			}()
+		default:
+			busy(conn)
+			p.fault(closed(conn))
+		}
 		return
 	}
 	serving.Add(1)
@@ -102,6 +126,24 @@ func (p *pool) serveOne(conn net.Conn, serving *sync.WaitGroup, handle func(net.
 		defer func() { p.fault(closed(conn)) }()
 		handle(conn)
 	}()
+}
+
+// closeRefused ends a refused connection cleanly: after the answer is written, it
+// half-closes the write side if the connection supports it, reads and discards what the
+// client sent under a read deadline so closing the socket sends no reset, and closes it.
+func (p *pool) closeRefused(conn net.Conn) {
+	var err error
+	if half, ok := conn.(halfCloser); ok {
+		err = errors.Join(err, endWrite(half))
+	}
+	if dlErr := conn.SetReadDeadline(time.Now().Add(drainDeadline)); dlErr != nil {
+		err = errors.Join(err, ignoreClosed(dlErr))
+	}
+	_, drainErr := io.Copy(io.Discard, io.LimitReader(conn, maxRequestBytes))
+	if drainErr != nil && !errors.Is(drainErr, os.ErrDeadlineExceeded) && !peerEnded(drainErr) {
+		err = errors.Join(err, ignoreClosed(drainErr))
+	}
+	p.fault(errors.Join(err, closed(conn)))
 }
 
 // fault keeps an error that belongs to no single connection. nil is none; past maxFaults
