@@ -1,6 +1,6 @@
 module github.com/tekmora/epitrop/tools/go
 
-go 1.27.1
+go 1.27.3
 
 tool (
 	github.com/cordanaLLM/praetor/cmd/standardsctl
