@@ -1,0 +1,3 @@
+type: fixed
+title: 'A connection refused as busy is drained under a deadline before closing, so closing a socket with unread data sends no reset'
+issue: "314"

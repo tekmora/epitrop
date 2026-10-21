@@ -1,13 +1,16 @@
 package egressproxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -35,7 +38,9 @@ func (l *scriptedListener) SetDeadline(time.Time) error { return l.deadlineErr }
 // does with a connection itself.
 type idleConn struct{ net.Conn }
 
-func (idleConn) Close() error { return nil }
+func (idleConn) Close() error                    { return nil }
+func (idleConn) SetReadDeadline(time.Time) error { return nil }
+func (idleConn) Read([]byte) (int, error)        { return 0, io.EOF }
 
 func TestPoolKeepsAFixedNumberOfFaults(t *testing.T) {
 	tests := []struct {
@@ -228,5 +233,287 @@ func TestPipeEndsBothDirectionsWhenAnEndCannotHalfClose(t *testing.T) {
 	}
 	if _, err = upstreamNear.Write([]byte("x")); err == nil || !strings.Contains(err.Error(), "use of closed network connection") {
 		t.Errorf("write on the tunnel's end = %v, want it closed", err)
+	}
+}
+
+// orderRecordConn records the order of CloseWrite, Read, Write, and Close calls.
+type orderRecordConn struct {
+	mu         sync.Mutex
+	calls      []string
+	request    *bytes.Buffer
+	drainBytes int
+	closed     bool
+	halfClosed bool
+}
+
+func (c *orderRecordConn) CloseWrite() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.halfClosed = true
+	c.calls = append(c.calls, "CloseWrite")
+	return nil
+}
+
+func (c *orderRecordConn) Read(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, "Read")
+	n, err := c.request.Read(p)
+	c.drainBytes += n
+	return n, err
+}
+
+func (c *orderRecordConn) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, "Write")
+	return len(p), nil
+}
+
+func (c *orderRecordConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	c.calls = append(c.calls, "Close")
+	return nil
+}
+
+func (c *orderRecordConn) SetDeadline(time.Time) error      { return nil }
+func (c *orderRecordConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *orderRecordConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *orderRecordConn) LocalAddr() net.Addr              { return &net.UnixAddr{Name: "order", Net: "unix"} }
+func (c *orderRecordConn) RemoteAddr() net.Addr             { return &net.UnixAddr{Name: "order", Net: "unix"} }
+
+func checkOrder(calls []string, first, second string) bool {
+	f := slices.Index(calls, first)
+	s := slices.Index(calls, second)
+	return f >= 0 && s >= 0 && f < s
+}
+
+// TestPoolRefusedConnDrainsBeforeClose verifies call order on refused connections:
+// request bytes are drained before Close, and CloseWrite is called when available.
+func TestPoolRefusedConnDrainsBeforeClose(t *testing.T) {
+	p := newPool()
+	for i := 0; i < maxTunnels; i++ {
+		p.slots <- struct{}{}
+	}
+	req := "CONNECT target.example:443 HTTP/1.1\r\nHost: target.example:443\r\n\r\n"
+	conn := &orderRecordConn{request: bytes.NewBufferString(req)}
+	var serving sync.WaitGroup
+	p.serveOne(conn, &serving, func(net.Conn) {}, func(c net.Conn) {
+		if _, err := io.WriteString(c, "HTTP/1.1 503 Service Unavailable\r\n\r\n"); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	})
+	serving.Wait()
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if !conn.halfClosed {
+		t.Fatalf("CloseWrite was not called on connection that supports it")
+	}
+	if !conn.closed {
+		t.Fatalf("Close was not called")
+	}
+	if conn.drainBytes != len(req) {
+		t.Fatalf("drained %d bytes, want %d", conn.drainBytes, len(req))
+	}
+	if !checkOrder(conn.calls, "Read", "Close") {
+		t.Errorf("calls = %v: want Read before Close", conn.calls)
+	}
+	if !checkOrder(conn.calls, "CloseWrite", "Close") {
+		t.Errorf("calls = %v: want CloseWrite before Close", conn.calls)
+	}
+}
+
+// streamConn produces bytes indefinitely until closed.
+type streamConn struct {
+	mu     sync.Mutex
+	read   int
+	closed bool
+}
+
+func (c *streamConn) Read(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return 0, net.ErrClosed
+	}
+	c.read += len(p)
+	return len(p), nil
+}
+
+func (c *streamConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	return nil
+}
+
+func (c *streamConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (c *streamConn) SetDeadline(time.Time) error      { return nil }
+func (c *streamConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *streamConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *streamConn) LocalAddr() net.Addr              { return &net.UnixAddr{Name: "stream", Net: "unix"} }
+func (c *streamConn) RemoteAddr() net.Addr             { return &net.UnixAddr{Name: "stream", Net: "unix"} }
+
+// TestPoolRefusedConnBoundaryMaxRequestBytes verifies that a client sending more than
+// maxRequestBytes is capped: the drain stops at maxRequestBytes and close still happens.
+func TestPoolRefusedConnBoundaryMaxRequestBytes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	p := newPool()
+	for i := 0; i < maxTunnels; i++ {
+		p.slots <- struct{}{}
+	}
+	conn := &streamConn{}
+	var serving sync.WaitGroup
+	p.serveOne(conn, &serving, func(net.Conn) {}, func(net.Conn) {})
+
+	done := make(chan struct{})
+	go func() {
+		serving.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("drain hung reading past maxRequestBytes")
+	}
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if !conn.closed {
+		t.Errorf("Close() was not called")
+	}
+	if conn.read != maxRequestBytes {
+		t.Errorf("read %d bytes, want exactly maxRequestBytes (%d)", conn.read, maxRequestBytes)
+	}
+}
+
+// silentConn blocks reads until its read deadline or until closed.
+type silentConn struct {
+	deadline atomic.Pointer[time.Time]
+	closed   chan struct{}
+}
+
+func newSilentConn() *silentConn {
+	return &silentConn{closed: make(chan struct{})}
+}
+
+func (c *silentConn) SetReadDeadline(t time.Time) error {
+	c.deadline.Store(&t)
+	return nil
+}
+
+func (c *silentConn) Read([]byte) (int, error) {
+	dl := c.deadline.Load()
+	if dl == nil || dl.IsZero() {
+		<-c.closed
+		return 0, net.ErrClosed
+	}
+	wait := time.Until(*dl)
+	if wait <= 0 {
+		return 0, os.ErrDeadlineExceeded
+	}
+	select {
+	case <-time.After(wait):
+		return 0, os.ErrDeadlineExceeded
+	case <-c.closed:
+		return 0, net.ErrClosed
+	}
+}
+
+func (c *silentConn) Close() error {
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+	return nil
+}
+
+func (c *silentConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (c *silentConn) SetDeadline(time.Time) error      { return nil }
+func (c *silentConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *silentConn) LocalAddr() net.Addr              { return &net.UnixAddr{Name: "silent", Net: "unix"} }
+func (c *silentConn) RemoteAddr() net.Addr             { return &net.UnixAddr{Name: "silent", Net: "unix"} }
+
+// TestPoolRefusedConnNegativeNeverSends verifies that a client sending nothing and never
+// closing is bounded by the drain deadline before closing.
+func TestPoolRefusedConnNegativeNeverSends(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	p := newPool()
+	for i := 0; i < maxTunnels; i++ {
+		p.slots <- struct{}{}
+	}
+	conn := newSilentConn()
+	start := time.Now()
+	var serving sync.WaitGroup
+	p.serveOne(conn, &serving, func(net.Conn) {}, func(net.Conn) {})
+
+	done := make(chan struct{})
+	go func() {
+		serving.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("drain hung on silent client")
+	}
+
+	elapsed := time.Since(start)
+	if elapsed < drainDeadline {
+		t.Errorf("closed after %s, want at least drainDeadline (%s)", elapsed, drainDeadline)
+	}
+	if elapsed > drainDeadline+2*time.Second {
+		t.Errorf("closed after %s, want bounded close near drainDeadline (%s)", elapsed, drainDeadline)
+	}
+	select {
+	case <-conn.closed:
+	default:
+		t.Errorf("Close() was not called on the connection")
+	}
+}
+
+// TestPoolRefusedConnBoundaryRefusingFull verifies that when the refusing semaphore is
+// at capacity, serveOne answers synchronously: busy is called, Close is called before
+// serveOne returns, and no drain read is attempted.
+func TestPoolRefusedConnBoundaryRefusingFull(t *testing.T) {
+	p := newPool()
+	for i := 0; i < maxTunnels; i++ {
+		p.slots <- struct{}{}
+	}
+	for i := 0; i < maxRefusing; i++ {
+		p.refusing <- struct{}{}
+	}
+	req := "CONNECT target.example:443 HTTP/1.1\r\nHost: target.example:443\r\n\r\n"
+	conn := &orderRecordConn{request: bytes.NewBufferString(req)}
+	var busyCalled bool
+	var serving sync.WaitGroup
+	p.serveOne(conn, &serving, func(net.Conn) {}, func(c net.Conn) {
+		busyCalled = true
+	})
+
+	conn.mu.Lock()
+	closedImmediately := conn.closed
+	conn.mu.Unlock()
+
+	serving.Wait()
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if !busyCalled {
+		t.Errorf("busy was not called synchronously")
+	}
+	if !closedImmediately {
+		t.Errorf("Close was not called synchronously before serveOne returned")
+	}
+	if slices.Contains(conn.calls, "Read") {
+		t.Errorf("Read was called (%d bytes drained), want Read never called", conn.drainBytes)
 	}
 }
