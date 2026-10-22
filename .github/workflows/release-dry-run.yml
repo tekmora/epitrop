@@ -21,6 +21,8 @@ on:
       - 'catalog/snapshot.schema.json'
       - 'CHANGELOG.md'
       - '.github/workflows/release*.yml'
+      - '.github/actions/setup-go/**'
+      - '.github/actions/release-check/**'
   pull_request:
     branches: [main]
     paths:
@@ -35,6 +37,8 @@ on:
       - 'catalog/snapshot.schema.json'
       - 'CHANGELOG.md'
       - '.github/workflows/release*.yml'
+      - '.github/actions/setup-go/**'
+      - '.github/actions/release-check/**'
 
 permissions:
   contents: read
