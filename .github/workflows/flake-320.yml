@@ -1,0 +1,35 @@
+name: Windows flake reproduction (issue #320)
+
+# Acceptance for issue #320: exercise AF_UNIX half-close and the two proxy tests
+# that flaked on Windows runners (windows-2025 and windows-11-arm). A path filter
+# runs this workflow only on changes to egressproxy or this workflow, sparing
+# runner time on unrelated changes.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/egressproxy/**'
+      - '.github/workflows/flake-320.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    name: flake reproduction (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, windows-11-arm]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+      - name: Run Windows flake reproduction tests
+        run: go test -count=30 -run 'TestUnixHalfCloseReachesThePeer|TestRelayReachesADeclaredDestination$|TestServerRefusesARequestThatEndsInItsHeader$' -v ./internal/egressproxy/
