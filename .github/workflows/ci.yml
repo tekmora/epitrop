@@ -35,7 +35,7 @@ jobs:
       - name: Commit messages and the pull request text name no model or coding tool as an author
         # On a pull request: the commits it adds and its text. On a push: the commits the push
         # brought, so the text a squash merge was given is read as well.
-        env:
+        env: &push-range
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
@@ -161,13 +161,7 @@ jobs:
           trivy fs --scanners misconfig,secret --exit-code 1 --severity HIGH,CRITICAL
           --skip-version-check --disable-telemetry .
       - name: Documentation drift
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-          PUSH_BEFORE: ${{ github.event.before }}
-          PUSH_HEAD: ${{ github.sha }}
+        env: *push-range
         run: |
           if [ "$EVENT_NAME" = "pull_request" ]; then
             printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/pr-body.txt"

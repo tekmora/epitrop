@@ -1,0 +1,17 @@
+name: Setup Go Toolchain
+description: Set up the Go version that go.mod names, with the module cache on or off
+
+inputs:
+  cache:
+    description: Whether setup-go restores and saves the module cache
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Go Toolchain
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+      with:
+        go-version-file: 'go.mod'
+        cache: ${{ inputs.cache }}
