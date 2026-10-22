@@ -68,6 +68,16 @@ func (r *runningServer) end() error {
 	return r.err
 }
 
+// skipWithoutUnixHalfClose skips a test that needs the peer to see a half-close over a Unix
+// socket: on Windows it is lost now and then (issue #320), and the egress proxy runs only on
+// Linux (ADR-0006).
+func skipWithoutUnixHalfClose(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("a half-close over a Unix socket is not reliably seen by the peer on Windows (issue #320); the egress proxy runs only on Linux (ADR-0006)")
+	}
+}
+
 // shortDir is a directory with a short path: a socket address holds 108 bytes, and the
 // temporary directory of a test with a long name leaves too few.
 func shortDir(t *testing.T) string {
@@ -235,6 +245,7 @@ func finish(t *testing.T, tun tunnel) string {
 }
 
 func TestServerTunnelsToDeclaredAddress(t *testing.T) {
+	skipWithoutUnixHalfClose(t)
 	target := upstream(t)
 	server := startServer(t, Options{Destinations: []string{target}})
 	tun, status := ask(t, server.Server, connectRequest(target))
@@ -255,6 +266,7 @@ func TestServerTunnelsToDeclaredAddress(t *testing.T) {
 }
 
 func TestServerPassesBytesSentWithTheRequest(t *testing.T) {
+	skipWithoutUnixHalfClose(t)
 	target := upstream(t)
 	server := startServer(t, Options{Destinations: []string{target}})
 	tun, status := ask(t, server.Server, connectRequest(target)+"early")
@@ -380,6 +392,7 @@ func TestServerNameNeverLeadsToTheHost(t *testing.T) {
 }
 
 func TestServerNameSkipsLocalAddresses(t *testing.T) {
+	skipWithoutUnixHalfClose(t)
 	dials := &dialLog{to: upstream(t)}
 	server := startServer(t, Options{
 		Destinations: []string{"gateway.example:8443"},
@@ -453,6 +466,7 @@ func TestServerAddressIsReachedAsDeclared(t *testing.T) {
 }
 
 func TestServerRefusesMoreThanMaxTunnels(t *testing.T) {
+	skipWithoutUnixHalfClose(t)
 	target := upstream(t)
 	server := startServer(t, Options{Destinations: []string{target}})
 	open := make([]tunnel, 0, maxTunnels)
