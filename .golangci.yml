@@ -26,7 +26,7 @@ linters:
       check-blank: true
   exclusions:
     # One rule per file and linter for the HISS-04 caps; each is a dated exception that
-    # tools/lintexceptions checks: a rule without its comment, or past its date, fails.
+    # the engine audit checks: a rule without its comment, or past its date, fails.
     rules: []
 issues:
   max-issues-per-linter: 0

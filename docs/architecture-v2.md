@@ -287,7 +287,7 @@ Every model call goes through a router alias. No concrete model name appears in 
 | `internal/slot` | `ReadResult`, `ResultSchema` (reader and schema of a slot's result) | no issue yet |
 | `internal/config` | `SchemaJSON` (embedded config schema, compared with `docs/config.schema.json` by tests) | no issue yet |
 | `internal/releasewatch` | `Service.State`, `State.Count` (read-back for tests) | no issue yet |
-| `internal/telemetry/telemetrytest`, `tools/lintexceptions` | test helpers, stay | - |
+| `internal/telemetry/telemetrytest` | test helper, stays | - |
 
 ## Milestones
 

@@ -21,6 +21,10 @@ MAX_WORKTREES = 512
 MAX_UNFINISHED_WORKTREES = 20
 MAX_WORKTREE_ACTIONS = 10
 OPEN_ITEMS_LIMIT = 1024 * 1024
+SESSION_ENV = "PRAETOR_CHECKPOINT_SESSION"
+MAX_RECORD_BYTES = 512 * 1024
+OWNERSHIP_UNKNOWN_REASON = "worktree ownership unknown: judged by recent activity"
+SESSION_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
 # The hook has no session-start timestamp; recent Git admin-file activity stands in for
 # "created or changed by this session" and deliberately excludes older inventory worktrees.
 WORKTREE_ACTIVITY_WINDOW = 24 * 60 * 60
@@ -642,7 +646,16 @@ def _pull_request_states(root, cfg, branches, deadline):
     return _probe_pull_requests(root, cfg, branches, states, deadline), ""
 
 
-def _recent_unnamed_worktrees(root, common_dir, open_text, now):
+def _is_gate_scratch(resolved, root_path):
+    """Whether resolved path lies under checkout's .standards/worktrees directory."""
+    try:
+        scratch = (root_path / ".standards" / "worktrees").resolve()
+        return resolved == scratch or resolved.is_relative_to(scratch)
+    except (ValueError, AttributeError):
+        return False
+
+
+def _recent_unnamed_worktrees(root, common_dir, open_text, now, owned=None):
     """Return bounded listed worktrees that are recent, present, and unnamed."""
     root_path = Path(
         _git(root, "rev-parse", "--show-toplevel", timeout=WORKTREE_COMMAND_TIMEOUT)
@@ -661,14 +674,38 @@ def _recent_unnamed_worktrees(root, common_dir, open_text, now):
             or entry.get("bare")
             or entry.get("prunable")
             or not resolved.is_dir()
+            or _is_gate_scratch(resolved, root_path)
             or not _worktree_recent(resolved, common_dir, now)
         ):
+            continue
+        if owned is not None and str(resolved) not in owned:
             continue
         entry["path"] = str(resolved)
         entry["branch"] = entry.get("branch", "").removeprefix("refs/heads/")
         if not _named_worktree(open_text, entry):
             candidates.append((entry, resolved))
     return candidates
+
+
+def _session_owned_worktrees(common_dir):
+    """Return set of resolved worktree paths owned by session, or None if unknown."""
+    session_hash = os.environ.get(SESSION_ENV, "").strip().lower()
+    if not SESSION_HASH_RE.fullmatch(session_hash):
+        return None
+    record_file = (
+        common_dir / "praetor-checkpoint" / "sessions" / f"{session_hash}.json"
+    )
+    try:
+        with record_file.open("rb") as stream:
+            raw = stream.read(MAX_RECORD_BYTES + 1)
+        if len(raw) > MAX_RECORD_BYTES:
+            return None
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            return None
+        return {str(Path(p).resolve()) for p in data if isinstance(p, str)}
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
 
 
 def _public_change_reason(path):
@@ -725,6 +762,25 @@ def _worktree_unpublished_count(path):
     return _rev_list_count(path, "--remotes")
 
 
+def _worktree_pr_needed(path, cfg, reasons):
+    """Check unpublished commits and base ahead; append reasons and return needs_pr."""
+    try:
+        count = _worktree_unpublished_count(path)
+    except (CheckpointError, ValueError, OSError) as error:
+        reasons.append(f"commit state not verified ({error})")
+        return False
+    if count:
+        reasons.append(f"{count} commit(s) not on any remote")
+        return False
+    if not cfg.get("enabled") or not cfg.get("repository"):
+        return False
+    try:
+        return _worktree_base_ahead(path, cfg)
+    except (CheckpointError, ValueError, OSError) as error:
+        reasons.append(f"pull request state not verified ({error})")
+        return False
+
+
 def _judge_worktree(root, cfg, entry, path, deadline):
     """Return one worktree's unfinished reasons and whether its PR needs checking."""
     if time.monotonic() >= deadline:
@@ -736,21 +792,8 @@ def _judge_worktree(root, cfg, entry, path, deadline):
     reasons = _public_change_reason(path)
     if not reasons and _landed(path, cfg):
         return entry, [], False
-    try:
-        count = _worktree_unpublished_count(path)
-    except (CheckpointError, ValueError, OSError) as error:
-        reasons.append(f"commit state not verified ({error})")
-        return entry, reasons, False
-    if count:
-        reasons.append(f"{count} commit(s) not on any remote")
-        return entry, reasons, False
-    if not cfg.get("enabled") or not cfg.get("repository"):
-        return entry, reasons, False
-    try:
-        return entry, reasons, _worktree_base_ahead(path, cfg)
-    except (CheckpointError, ValueError, OSError) as error:
-        reasons.append(f"pull request state not verified ({error})")
-        return entry, reasons, False
+    needs_pr = _worktree_pr_needed(path, cfg, reasons)
+    return entry, reasons, needs_pr
 
 
 def _ordered_map(fn, items):
@@ -799,10 +842,9 @@ def _judge_worktree_candidates(root, cfg, candidates, deadline):
     return records, pr_candidates
 
 
-def _unfinished_worktree_records(root, cfg):
-    """Observe only recent, unnamed linked worktrees; return records and optional skip note."""
-    deadline = time.monotonic() + WORKTREE_CHECK_BUDGET
-    common_raw = (
+def _git_common_dir(root):
+    """Resolve repository common Git directory."""
+    raw = (
         _git(
             root,
             "rev-parse",
@@ -813,9 +855,16 @@ def _unfinished_worktree_records(root, cfg):
         .decode()
         .strip()
     )
-    common_dir = Path(common_raw).resolve()
+    return Path(raw).resolve()
+
+
+def _unfinished_worktree_records(root, cfg):
+    """Observe only recent, unnamed linked worktrees; return records and optional skip note."""
+    deadline = time.monotonic() + WORKTREE_CHECK_BUDGET
+    common_dir = _git_common_dir(root)
+    owned = _session_owned_worktrees(common_dir)
     candidates = _recent_unnamed_worktrees(
-        root, common_dir, _open_worktree_text(root), time.time()
+        root, common_dir, _open_worktree_text(root), time.time(), owned=owned
     )
     records, pr_candidates = _judge_worktree_candidates(root, cfg, candidates, deadline)
     states, skipped = _pull_request_states(
@@ -829,7 +878,11 @@ def _unfinished_worktree_records(root, cfg):
             reasons.append(
                 "pushed branch ahead of base has no open or merged pull request"
             )
-    return [(entry, reasons) for entry, reasons in records if reasons], skipped
+    unfinished = [(entry, reasons) for entry, reasons in records if reasons]
+    if owned is None:
+        for _entry, reasons in unfinished:
+            reasons.append(OWNERSHIP_UNKNOWN_REASON)
+    return unfinished, skipped
 
 
 def _add_unfinished_worktrees(root, cfg, result):
@@ -1339,7 +1392,7 @@ def _empty_result(include_paths):
     return result
 
 
-def _observe_worktree(root, cfg, event, include_paths, result, require_branch=True):
+def _observe_worktree(root, cfg, event, include_paths, result, *, require_branch=True):
     result["enabled"] = True
     result["review_status"] = (
         "not_observed" if cfg.get("require_checks", False) else "not_requested"

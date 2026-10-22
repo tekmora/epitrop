@@ -4,8 +4,11 @@ import contextlib
 import math
 import os
 import selectors
+import shutil
 import signal
+import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -576,10 +579,52 @@ def clean_env():
     return env
 
 
+# A snapshot whose hook was killed (a timeout, a cancelled push) keeps its directory: a commit
+# snapshot holds a full clone, 0.6-0.7 GB. Before a new snapshot, the directories of this prefix
+# that this user owns and nobody touched for SNAPSHOT_STALE_S are removed; no hook runs that long.
+SNAPSHOT_PREFIX = "praetor-hook-"
+SNAPSHOT_STALE_S = 3 * 60 * 60
+MAX_STALE_SNAPSHOTS = 256
+
+
+def _writable_retry(function, path, _exc):
+    """rmtree onexc: make the parent and the entry writable, then retry the removal once."""
+    for target in (os.path.dirname(path), path):
+        with contextlib.suppress(OSError):
+            os.chmod(target, os.stat(target).st_mode | stat.S_IWUSR | stat.S_IXUSR)
+    function(path)
+
+
+def sweep_stale_snapshots(root=None, now=None):
+    """Remove leaked snapshot directories in root (the temporary directory); the count removed."""
+    root = Path(root or tempfile.gettempdir())
+    now = time.time() if now is None else now
+    removed = 0
+    for entry in sorted(root.glob(SNAPSHOT_PREFIX + "*"))[:MAX_STALE_SNAPSHOTS]:
+        with contextlib.suppress(OSError):
+            info = entry.lstat()
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or now - info.st_mtime < SNAPSHOT_STALE_S
+                or (hasattr(os, "getuid") and info.st_uid != os.getuid())
+            ):
+                continue
+            if sys.version_info >= (3, 12):
+                shutil.rmtree(entry, onexc=_writable_retry)
+            else:  # Python 3.10 and 3.11 (the hooks' floor) name the callback onerror
+                shutil.rmtree(
+                    entry, onerror=_writable_retry
+                )  # pylint: disable=deprecated-argument
+            removed += 1
+    return removed
+
+
 @contextlib.contextmanager
 def snapshot(ref=None):
-    """Export the exact index or commit; never stash, stage, or edit the source."""
-    with tempfile.TemporaryDirectory(prefix="praetor-hook-") as directory:
+    """Export the exact index or commit; never stash, stage, or edit the source. Leaked snapshots of
+    killed hooks are swept first (sweep_stale_snapshots)."""
+    sweep_stale_snapshots()
+    with tempfile.TemporaryDirectory(prefix=SNAPSHOT_PREFIX) as directory:
         dest = Path(directory)
         env = clean_env()
         if ref is None:
