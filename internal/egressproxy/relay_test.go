@@ -313,6 +313,7 @@ func TestRelayFailsOnBadArguments(t *testing.T) {
 // TestRelayReachesADeclaredDestination is the whole way a job's request takes: client, relay
 // on loopback, socket, server, destination.
 func TestRelayReachesADeclaredDestination(t *testing.T) {
+	skipWithoutUnixHalfClose(t)
 	target := upstream(t)
 	server := startServer(t, Options{Destinations: []string{target}})
 	listen := freeLoopback(t)

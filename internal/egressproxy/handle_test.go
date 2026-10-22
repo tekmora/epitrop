@@ -104,6 +104,7 @@ func TestServerHandleFaultsOfTheClientConnection(t *testing.T) {
 
 // A request that ends inside its header lines is refused, not waited for.
 func TestServerRefusesARequestThatEndsInItsHeader(t *testing.T) {
+	skipWithoutUnixHalfClose(t)
 	server := startServer(t, Options{Destinations: []string{"gateway.example:443"}})
 	tun := dialServer(t, server.Server)
 	if _, err := io.WriteString(tun.conn, "CONNECT gateway.example:443 HTTP/1.1\r\nHost: gateway.example:443\r\n"); err != nil {
@@ -208,6 +209,7 @@ func TestServerHandleRefusalDrainsLongRequestLine(t *testing.T) {
 // TestServerRefusalClientSeesCleanEOF verifies that a client sending an oversized request
 // followed by more data sees a clean EOF rather than a reset after closing its write side.
 func TestServerRefusalClientSeesCleanEOF(t *testing.T) {
+	skipWithoutUnixHalfClose(t)
 	server := startServer(t, Options{Destinations: []string{"declared.example:443"}})
 	tun := dialServer(t, server.Server)
 	req := strings.Repeat("A", maxRequestBytes+100) + "\r\n" + "extra bytes after request line"
