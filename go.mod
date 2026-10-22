@@ -5,8 +5,8 @@ go 1.27.3
 require (
 	github.com/adhocore/gronx v1.20.5
 	github.com/gofrs/flock v0.13.1
-	github.com/golusoris/golusoris v0.19.0
-	github.com/golusoris/golusoris/core v0.12.0
+	github.com/golusoris/golusoris v0.20.0
+	github.com/golusoris/golusoris/core v0.12.1
 	github.com/jonboulle/clockwork v0.5.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/prometheus/client_golang v1.25.0
