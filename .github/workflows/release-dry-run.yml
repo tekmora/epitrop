@@ -21,6 +21,8 @@ on:
       - 'catalog/snapshot.schema.json'
       - 'CHANGELOG.md'
       - '.github/workflows/release*.yml'
+      - '.github/actions/setup-go/**'
+      - '.github/actions/release-check/**'
   pull_request:
     branches: [main]
     paths:
@@ -35,6 +37,8 @@ on:
       - 'catalog/snapshot.schema.json'
       - 'CHANGELOG.md'
       - '.github/workflows/release*.yml'
+      - '.github/actions/setup-go/**'
+      - '.github/actions/release-check/**'
 
 permissions:
   contents: read
@@ -45,8 +49,9 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
-      # The tool versions are the ones release-binaries.yml uses: a dry run with
-      # other tools proves nothing about the release.
+      # The Go setup and the release check come from the same local actions
+      # release-binaries.yml uses: a dry run with other tools proves nothing
+      # about the release.
       - name: Checkout Source Code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -54,22 +59,12 @@ jobs:
           persist-credentials: false
 
       - name: Setup Go Toolchain
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        uses: ./.github/actions/setup-go
         with:
-          go-version-file: 'go.mod'
-          cache: false
-
-      - name: Install Syft
-        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c  # v0.24.3
-        with:
-          syft-version: v1.54.1
+          cache: 'false'
 
       - name: Check GoReleaser Configuration
-        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de  # v7.3.0
-        with:
-          distribution: goreleaser
-          version: v2.18.3
-          args: check
+        uses: ./.github/actions/release-check
 
       # A snapshot builds no release notes, so the command the release
       # workflow runs for them runs here on the newest released section of the

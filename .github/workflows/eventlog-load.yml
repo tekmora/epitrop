@@ -11,6 +11,7 @@ on:
     paths:
       - 'internal/eventlog/**'
       - '.github/workflows/eventlog-load.yml'
+      - '.github/actions/setup-go/**'
       - 'go.mod'
       - 'go.sum'
   pull_request:
@@ -18,6 +19,7 @@ on:
     paths:
       - 'internal/eventlog/**'
       - '.github/workflows/eventlog-load.yml'
+      - '.github/actions/setup-go/**'
       - 'go.mod'
       - 'go.sum'
 
@@ -33,9 +35,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
-        with:
-          go-version-file: 'go.mod'
+      - uses: ./.github/actions/setup-go
       - name: Install btrfs-progs and stress-ng
         # btrfs-progs provides mkfs.btrfs to format the loopback image; stress-ng provides
         # the concurrent CPU and disk write load that exercises the default lock timeout.
