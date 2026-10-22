@@ -1,4 +1,4 @@
-# Praetor bootstrap v1; selected source digest sha256:b002769b6ea67780b1a0512feb5369eb41870576741c276a1da08063098b6af6
+# Praetor bootstrap v1; selected source digest sha256:f3bd8230c78bf74d84d56d109a8f35e99c5e851fcbe469620f43f7c5a5a60f5c
 FROM docker.io/library/golang@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS praetor_build
 WORKDIR /praetor-source
 COPY ["praetor-source.000.b64", "/tmp/praetor-source/000.b64"]
@@ -9,12 +9,16 @@ COPY ["praetor-source.004.b64", "/tmp/praetor-source/004.b64"]
 COPY ["praetor-source.005.b64", "/tmp/praetor-source/005.b64"]
 COPY ["praetor-source.006.b64", "/tmp/praetor-source/006.b64"]
 RUN cat /tmp/praetor-source/*.b64 > /tmp/praetor-source.b64 && base64 -d /tmp/praetor-source.b64 > /tmp/praetor-source.tar.gz
-RUN echo '62ce1f8d326171528b77ccacae1812e838a0fbfb466c63dfd8149aef851dbd75  /tmp/praetor-source.tar.gz' > /tmp/praetor-source.sha256 && sha256sum -c /tmp/praetor-source.sha256 && tar -xzf /tmp/praetor-source.tar.gz -C /praetor-source
+RUN echo '5eaed1e43ea1b90e906242a34a9fe996d025b8e95eddf54e877bb08ddec08bdc  /tmp/praetor-source.tar.gz' > /tmp/praetor-source.sha256 && sha256sum -c /tmp/praetor-source.sha256 && tar -xzf /tmp/praetor-source.tar.gz -C /praetor-source
 ENV GOTOOLCHAIN=local CGO_ENABLED=0 GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org
 RUN sha256sum go.mod go.sum > /tmp/praetor-modules.sha256 && /usr/local/go/bin/go mod download && /usr/local/go/bin/go mod verify && sha256sum -c /tmp/praetor-modules.sha256
 RUN /usr/local/go/bin/go build -mod=readonly -trimpath -buildvcs=false -o /out/praetorctl ./cmd/standardsctl
+# Pinned golangci-lint installed outside the Go feature so installGoTools: false retains it.
+# Verification: go install verifies against module checksum database (GOSUMDB=sum.golang.org).
+RUN GOBIN=/out /usr/local/go/bin/go install -trimpath github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
 FROM mcr.microsoft.com/devcontainers/base@sha256:91eff046d5c12318fc98e59258982b87ba896c467427ed8b5dab5a02107a5db7
 COPY --from=praetor_build --chmod=0444 /praetor-source/LICENSE /usr/local/share/praetor/LICENSE
 COPY --from=praetor_build --chmod=0555 /out/praetorctl /usr/local/bin/praetorctl
 COPY --from=praetor_build --chmod=0555 /out/praetorctl /usr/local/bin/standardsctl
+COPY --from=praetor_build --chmod=0555 /out/golangci-lint /usr/local/bin/golangci-lint
 USER vscode

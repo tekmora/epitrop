@@ -1,6 +1,10 @@
 # Captured upstream answers: the tests split them on blank lines (\n\n), so a checkout keeps LF.
 internal/sources/**/testdata/upstream/** text eol=lf
 
+# Pinned testdata JSON and JSONL fixtures keep LF on all platforms (HISS-21).
+*.json eol=lf
+*.jsonl eol=lf
+
 # Planted claude-local snapshot: a claudelocal test compares Fetch output to these bytes.
 catalog/testdata/claude-local.snapshot.json text eol=lf
 
