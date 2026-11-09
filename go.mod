@@ -3,7 +3,7 @@ module github.com/tekmora/epitrop
 go 1.27.3
 
 require (
-	github.com/adhocore/gronx v1.20.5
+	github.com/adhocore/gronx v1.20.6
 	github.com/gofrs/flock v0.13.1
 	github.com/golusoris/golusoris v0.21.0
 	github.com/golusoris/golusoris/core v0.12.2
