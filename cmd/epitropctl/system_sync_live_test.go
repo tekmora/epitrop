@@ -1,16 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	gerrors "github.com/golusoris/golusoris/core/errors"
 
 	"github.com/tekmora/epitrop/catalog"
 	"github.com/tekmora/epitrop/internal/sources/httpfetch"
@@ -19,9 +24,17 @@ import (
 )
 
 const (
-	liveHTTPTimeout  = 10 * time.Second
-	liveMaxBodyBytes = 8 << 20
-	liveMaxModels    = 5000
+	liveHTTPTimeout       = 10 * time.Second
+	liveEmbedTimeout      = 60 * time.Second
+	liveEmbedMaxBodyBytes = 1 << 20
+	liveMaxBodyBytes      = 8 << 20
+	liveMaxModels         = 5000
+	// liveSyncCLIDeadline bounds one two-source epitropctl sync invocation:
+	// ollamalocal.Fetch makes 2 GETs (/api/tags and /api/ps, 5s each) and
+	// litellmgateway.Fetch makes 1 GET (/v1/models, 15s), 3 requests = 25s of
+	// per-request timeouts, plus process start and atomic snapshot write
+	// (inside syncTimeout = 3m).
+	liveSyncCLIDeadline = 2 * time.Minute
 )
 
 var liveSyncEnvNames = [5]string{
@@ -70,6 +83,9 @@ func runLiveSyncSuite(t *testing.T, cfg liveSyncEnv) {
 	}
 
 	bin := buildCLI(t)
+	if err := loadOllamaModel(t.Context(), cfg.ollama, cfg.ollamaModel); err != nil {
+		t.Fatalf("ollama load model %q: %v", cfg.ollamaModel, err)
+	}
 	t.Run("positive_and_boundary", func(t *testing.T) {
 		runLiveSyncPositiveAndBoundary(t, bin, cfg, wantOllama, wantGateway)
 	})
@@ -187,8 +203,55 @@ func fetchLiteLLMModelCount(ctx context.Context, baseURL, tokenFile string) (int
 	return len(parsed.Data), nil
 }
 
+func loadOllamaModel(ctx context.Context, baseURL, model string) (err error) {
+	reqCtx, cancel := context.WithTimeout(ctx, liveEmbedTimeout)
+	defer cancel()
+
+	payload, err := json.Marshal(struct {
+		Model     string `json:"model"`
+		Input     string `json:"input"`
+		KeepAlive string `json:"keep_alive"`
+	}{
+		Model:     model,
+		Input:     "live sync",
+		KeepAlive: "10m",
+	})
+	if err != nil {
+		return fmt.Errorf("marshal ollama /api/embed request: %w", err)
+	}
+	url := baseURL + "/api/embed"
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build ollama /api/embed request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	httpClient := &http.Client{Timeout: liveEmbedTimeout}
+	// #nosec G704 -- baseURL is the test's configured local Ollama endpoint or httptest server.
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request ollama /api/embed: %w", err)
+	}
+	defer func() { gerrors.CloseJoin(resp.Body, &err, "close ollama /api/embed response") }()
+
+	if _, drainErr := io.Copy(io.Discard, io.LimitReader(resp.Body, liveEmbedMaxBodyBytes)); drainErr != nil {
+		return fmt.Errorf("drain ollama /api/embed response: %w", drainErr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("ollama %s returned HTTP %d", url, resp.StatusCode)
+	}
+	return nil
+}
+
 func runLiveSyncPositiveAndBoundary(t *testing.T, bin string, cfg liveSyncEnv, wantOllama, wantGateway int) {
 	t.Helper()
+	token, err := litellmgateway.ReadToken(cfg.litellmTokenFile)
+	if err != nil {
+		t.Fatalf("read litellm token: %v", err)
+	}
+	if token == "" {
+		t.Fatalf("litellm token file %s is empty", cfg.litellmTokenFile)
+	}
 	snapshotPath := filepath.Join(t.TempDir(), "snapshot.json")
 	args := []string{
 		"sync",
@@ -198,22 +261,15 @@ func runLiveSyncPositiveAndBoundary(t *testing.T, bin string, cfg liveSyncEnv, w
 		"--litellm-token-file=" + cfg.litellmTokenFile,
 		"--out=" + snapshotPath,
 	}
-	stdout, stderr, code, err := runSystemCLI(t, bin, args...)
-	if err != nil || code != 0 {
-		t.Fatalf("sync exited with code %d, err %v: %s\n%s", code, err, stdout, stderr)
-	}
-	token, err := litellmgateway.ReadToken(cfg.litellmTokenFile)
-	if err != nil {
-		t.Fatalf("read litellm token: %v", err)
-	}
-	if token == "" {
-		t.Fatalf("litellm token file %s is empty", cfg.litellmTokenFile)
-	}
+	stdout, stderr, code, err := runSystemCLIWithDeadline(t, bin, liveSyncCLIDeadline, nil, args...)
 	if strings.Contains(stdout, token) {
 		t.Fatalf("sync leaked the bearer token on stdout")
 	}
 	if strings.Contains(stderr, token) {
 		t.Fatalf("sync leaked the bearer token on stderr")
+	}
+	if err != nil || code != 0 {
+		t.Fatalf("sync exited with code %d, err %v: %s\n%s", code, err, stdout, stderr)
 	}
 	t.Logf("sync stdout:\n%s", strings.TrimRight(stdout, "\r\n"))
 
@@ -242,8 +298,15 @@ func assertLivePositiveSnapshot(t *testing.T, snapshotPath string, cfg liveSyncE
 		t.Fatalf("len(records) = %d, want %d", len(snap.Records), wantOllama+wantGateway)
 	}
 	assertLiveSourceRuns(t, snap.SourceRuns, catalog.StatusOK, wantOllama, catalog.StatusOK, wantGateway)
-	if got := countLiveRecords(snap.Records, cfg.ollamaModel, catalog.AccessLocal, ollamalocal.SourceName); got != 1 {
-		t.Fatalf("local record count for %q = %d, want 1", cfg.ollamaModel, got)
+	localRecords := matchingLiveRecords(snap.Records, cfg.ollamaModel, catalog.AccessLocal, ollamalocal.SourceName)
+	if len(localRecords) != 1 {
+		t.Fatalf("local record count for %q = %d, want 1", cfg.ollamaModel, len(localRecords))
+	}
+	if reason, hasAbsent := localRecords[0].Absent["capabilities.loaded"]; hasAbsent {
+		t.Fatalf("local record for %q has Absent[\"capabilities.loaded\"] = %q (capabilities = %v), want none", cfg.ollamaModel, reason, localRecords[0].Capabilities)
+	}
+	if !slices.Contains(localRecords[0].Capabilities, "loaded") {
+		t.Fatalf("local record for %q capabilities = %v, want capability \"loaded\"", cfg.ollamaModel, localRecords[0].Capabilities)
 	}
 	if got := countLiveRecords(snap.Records, cfg.litellmModel, catalog.AccessGateway, litellmgateway.SourceName); got != 1 {
 		t.Fatalf("gateway record count for %q = %d, want 1", cfg.litellmModel, got)
@@ -266,7 +329,7 @@ func runLiveSyncNegativeWrongToken(t *testing.T, bin string, cfg liveSyncEnv, wa
 		"--litellm-token-file=" + wrongTokenFile,
 		"--out=" + snapshotPath,
 	}
-	stdout, stderr, code, err := runSystemCLI(t, bin, args...)
+	stdout, stderr, code, err := runSystemCLIWithDeadline(t, bin, liveSyncCLIDeadline, nil, args...)
 	if err != nil || code != 0 {
 		t.Fatalf("sync with wrong token exited with code %d, err %v: %s\n%s", code, err, stdout, stderr)
 	}
@@ -319,15 +382,19 @@ func assertLiveSourceRuns(t *testing.T, runs []catalog.SourceRun, wantOllama cat
 	}
 }
 
-func countLiveRecords(records []catalog.Record, modelID string, access catalog.AccessPath, source string) int {
-	matched := 0
+func matchingLiveRecords(records []catalog.Record, modelID string, access catalog.AccessPath, source string) []catalog.Record {
+	var matched []catalog.Record
 	for i := 0; i < len(records) && i < catalog.MaxSnapshotRecords; i++ {
 		r := records[i]
 		if r.ModelID == modelID && r.AccessPath == access && r.Provenance.Source == source && r.Provenance.Kind == catalog.KindMeasured {
-			matched++
+			matched = append(matched, r)
 		}
 	}
 	return matched
+}
+
+func countLiveRecords(records []catalog.Record, modelID string, access catalog.AccessPath, source string) int {
+	return len(matchingLiveRecords(records, modelID, access, source))
 }
 
 // TestLiveSyncSuiteOnStandIns runs the live suite against httptest stand-ins under default go test.
@@ -347,6 +414,11 @@ func TestLiveSyncSuiteOnStandIns(t *testing.T) {
 	}
 	runLiveSyncSuite(t, cfg)
 
+	t.Run("embed_rejects_non_post", func(t *testing.T) {
+		if _, err := httpfetch.Get(t.Context(), ollamaSrv.URL+"/api/embed", liveHTTPTimeout, liveMaxBodyBytes); err == nil || !strings.Contains(err.Error(), "HTTP 405") {
+			t.Fatalf("GET /api/embed err = %v, want HTTP 405", err)
+		}
+	})
 	t.Run("rejects_versionless_endpoint", func(t *testing.T) {
 		emptySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			writeContractJSON(t, w, http.StatusOK, `{}`)
@@ -363,19 +435,40 @@ func TestLiveSyncSuiteOnStandIns(t *testing.T) {
 
 func newContractLiveServers(t *testing.T, validKey string) (*httptest.Server, *httptest.Server) {
 	t.Helper()
-	ollamaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ollamaSrv := httptest.NewServer(ollamaContractHandler(t))
+	litellmSrv := httptest.NewServer(litellmContractHandler(t, validKey))
+	t.Cleanup(func() {
+		ollamaSrv.Close()
+		litellmSrv.Close()
+	})
+	return ollamaSrv, litellmSrv
+}
+
+func ollamaContractHandler(t *testing.T) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/version":
 			writeContractJSON(t, w, http.StatusOK, `{"version":"0.0.0-standin"}`)
 		case "/api/tags":
 			writeContractJSON(t, w, http.StatusOK, `{"models":[{"name":"all-minilm:22m","details":{"parameter_size":"22M","quantization_level":"F16","context_length":512}}]}`)
 		case "/api/ps":
-			writeContractJSON(t, w, http.StatusOK, `{"models":[]}`)
+			writeContractJSON(t, w, http.StatusOK, `{"models":[{"name":"all-minilm:22m"}]}`)
+		case "/api/embed":
+			if r.Method != http.MethodPost {
+				writeContractJSON(t, w, http.StatusMethodNotAllowed, `{"error":"method not allowed"}`)
+				return
+			}
+			writeContractJSON(t, w, http.StatusOK, `{"model":"all-minilm:22m","embeddings":[[0.1]]}`)
 		default:
 			writeContractJSON(t, w, http.StatusNotFound, `{"error":"not found"}`)
 		}
-	}))
-	litellmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	})
+}
+
+func litellmContractHandler(t *testing.T, validKey string) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/health/readiness":
 			// v1.109.1 public readiness payload omits litellm_version by default.
@@ -391,19 +484,14 @@ func newContractLiveServers(t *testing.T, validKey string) (*httptest.Server, *h
 		default:
 			writeContractJSON(t, w, http.StatusNotFound, `{"error":"not found"}`)
 		}
-	}))
-	t.Cleanup(func() {
-		ollamaSrv.Close()
-		litellmSrv.Close()
 	})
-	return ollamaSrv, litellmSrv
 }
 
 func writeContractJSON(t *testing.T, w http.ResponseWriter, status int, body string) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if _, err := w.Write([]byte(body)); err != nil {
-		t.Errorf("write contract response: %v", err)
+	if err := json.NewEncoder(w).Encode(json.RawMessage(body)); err != nil {
+		t.Errorf("encode contract response: %v", err)
 	}
 }

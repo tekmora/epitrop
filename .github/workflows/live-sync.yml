@@ -10,9 +10,13 @@ on:
   push:
     branches: [main]
     paths:
+      - 'catalog/**'
+      - 'internal/atomicfile/**'
       - 'internal/sources/ollamalocal/**'
       - 'internal/sources/litellmgateway/**'
       - 'internal/sources/httpfetch/**'
+      - 'cmd/epitropctl/sync.go'
+      - 'cmd/epitropctl/cli_build_test.go'
       - 'cmd/epitropctl/system_sync_live_test.go'
       - 'cmd/epitropctl/testdata/live/**'
       - '.github/workflows/live-sync.yml'
@@ -23,9 +27,13 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
     paths:
+      - 'catalog/**'
+      - 'internal/atomicfile/**'
       - 'internal/sources/ollamalocal/**'
       - 'internal/sources/litellmgateway/**'
       - 'internal/sources/httpfetch/**'
+      - 'cmd/epitropctl/sync.go'
+      - 'cmd/epitropctl/cli_build_test.go'
       - 'cmd/epitropctl/system_sync_live_test.go'
       - 'cmd/epitropctl/testdata/live/**'
       - '.github/workflows/live-sync.yml'
@@ -100,8 +108,9 @@ jobs:
           set -euo pipefail
           TOKEN_FILE="$RUNNER_TEMP/litellm-master-key"
           umask 077
+          # The key is random per run, only the LiteLLM container on 127.0.0.1 accepts it, cleanup
+          # removes that container, and no step prints it (the positive row fails when sync prints it).
           LITELLM_MASTER_KEY="sk-$(openssl rand -hex 32)"
-          echo "::add-mask::$LITELLM_MASTER_KEY"
           printf '%s\n' "$LITELLM_MASTER_KEY" > "$TOKEN_FILE"
           chmod 0600 "$TOKEN_FILE"
           export LITELLM_MASTER_KEY
@@ -161,12 +170,23 @@ jobs:
       - name: Cleanup containers and network
         if: always() && github.event.pull_request.draft != true
         run: |
+          status=0
           for c in "$LITELLM_CONTAINER" "$OLLAMA_CONTAINER"; do
             if docker container inspect "$c" >/dev/null 2>&1; then
-              docker rm -f "$c"
+              if ! docker rm -f "$c"; then
+                echo "::error::could not remove container $c"
+                status=1
+              fi
             fi
           done
           if docker network inspect "$LIVE_NETWORK" >/dev/null 2>&1; then
-            docker network rm "$LIVE_NETWORK"
+            if ! docker network rm "$LIVE_NETWORK"; then
+              echo "::error::could not remove network $LIVE_NETWORK"
+              status=1
+            fi
           fi
-          rm -f "$RUNNER_TEMP/litellm-master-key"
+          if ! rm -f "$RUNNER_TEMP/litellm-master-key"; then
+            echo "::error::could not remove token file $RUNNER_TEMP/litellm-master-key"
+            status=1
+          fi
+          exit "$status"
