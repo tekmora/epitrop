@@ -1,7 +1,7 @@
 # Provenance:
 # Source URL: https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties.md
 # Pinned revision: OpenAPI info.version 1.0.0
-# Full document sha256: e34bf4a4e01c917f7c1e39d2592b2b1f108982e34edfc5c18501d4e05c77180c
+# Full document sha256: 1da924d0a4f2eb6f3df9866b03517ad5937eae9e4e026b25335b8443a8fd9930
 # Extraction date: 2026-10-09
 # SPDX licence: MIT
 # Copyright holder: OpenRouter
@@ -179,6 +179,33 @@ paths:
             description: >-
               Filter models by input modality. Comma-separated list of: text,
               image, audio, file.
+            type: string
+        - description: >-
+            Filter models by the request API paths they serve, as listed in each
+            model's `endpoints` field. Comma-separated; a model must serve every
+            listed path. Valid values: /api/v1/chat/completions,
+            /api/v1/completions, /api/v1/messages, /api/v1/responses,
+            /api/v1/embeddings, /api/v1/rerank, /api/alpha/decisions,
+            /api/alpha/extractions, /api/v1/videos, /api/v1/audio/speech,
+            /api/v1/audio/transcriptions, /api/v1/images, /api/v1/batches. When
+            set without `output_modalities`, models of every output modality are
+            considered (the companion `/api/alpha/extractions` route is served
+            by text and decisions models alike).
+          in: query
+          name: endpoints
+          required: false
+          schema:
+            description: >-
+              Filter models by the request API paths they serve, as listed in
+              each model's `endpoints` field. Comma-separated; a model must
+              serve every listed path. Valid values: /api/v1/chat/completions,
+              /api/v1/completions, /api/v1/messages, /api/v1/responses,
+              /api/v1/embeddings, /api/v1/rerank, /api/alpha/decisions,
+              /api/alpha/extractions, /api/v1/videos, /api/v1/audio/speech,
+              /api/v1/audio/transcriptions, /api/v1/images, /api/v1/batches.
+              When set without `output_modalities`, models of every output
+              modality are considered (the companion `/api/alpha/extractions`
+              route is served by text and decisions models alike).
             type: string
         - description: >-
             Minimum context length (tokens). Models with smaller context are
@@ -428,18 +455,54 @@ paths:
               schema:
                 $ref: '#/components/schemas/BadRequestResponse'
           description: Bad Request - Invalid request parameters or malformed input
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedResponse'
+          description: Unauthorized - Authentication required or invalid credentials
         '403':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ForbiddenResponse'
           description: Forbidden - Authentication successful but insufficient permissions
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundResponse'
+          description: Not Found - Resource does not exist
+        '408':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestTimeoutResponse'
+          description: Request Timeout - Operation exceeded time limit
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictResponse'
+          description: Conflict - Resource conflict or concurrent modification
+        '429':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TooManyRequestsResponse'
+          description: Too Many Requests - Rate limit exceeded
         '500':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/InternalServerResponse'
           description: Internal Server Error - Unexpected server error
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceUnavailableResponse'
+          description: Service Unavailable - Service temporarily unavailable
 components:
   schemas:
     ModelsListResponse:
@@ -498,6 +561,14 @@ components:
         description:
           description: Description of the model
           type: string
+        endpoints:
+          description: >-
+            Request API paths that serve this model, derived from the same
+            modality and adapter rules the routers use. A model served only
+            through an alpha surface lists only that path.
+          items:
+            type: string
+          type: array
         expiration_date:
           description: >-
             The date after which the model may be removed. ISO 8601 date string
@@ -561,6 +632,7 @@ components:
         - default_parameters
         - supported_voices
         - links
+        - endpoints
       type: object
     ModelArchitecture:
       description: Model architecture information
@@ -667,6 +739,23 @@ components:
       properties:
         error:
           $ref: '#/components/schemas/BadRequestResponseErrorData'
+        openrouter_metadata:
+          additionalProperties: {}
+          type:
+            - object
+            - 'null'
+        user_id:
+          type:
+            - string
+            - 'null'
+      required:
+        - error
+      type: object
+    ConflictResponse:
+      description: Conflict - Resource conflict or concurrent modification
+      properties:
+        error:
+          $ref: '#/components/schemas/ConflictResponseErrorData'
         openrouter_metadata:
           additionalProperties: {}
           type:
@@ -891,6 +980,23 @@ components:
       required:
         - mandatory
       type: object
+    NotFoundResponse:
+      description: Not Found - Resource does not exist
+      properties:
+        error:
+          $ref: '#/components/schemas/NotFoundResponseErrorData'
+        openrouter_metadata:
+          additionalProperties: {}
+          type:
+            - object
+            - 'null'
+        user_id:
+          type:
+            - string
+            - 'null'
+      required:
+        - error
+      type: object
     OutputModality:
       enum:
         - text
@@ -1016,6 +1122,57 @@ components:
           format: double
           type: number
       type: object
+    RequestTimeoutResponse:
+      description: Request Timeout - Operation exceeded time limit
+      properties:
+        error:
+          $ref: '#/components/schemas/RequestTimeoutResponseErrorData'
+        openrouter_metadata:
+          additionalProperties: {}
+          type:
+            - object
+            - 'null'
+        user_id:
+          type:
+            - string
+            - 'null'
+      required:
+        - error
+      type: object
+    ServiceUnavailableResponse:
+      description: Service Unavailable - Service temporarily unavailable
+      properties:
+        error:
+          $ref: '#/components/schemas/ServiceUnavailableResponseErrorData'
+        openrouter_metadata:
+          additionalProperties: {}
+          type:
+            - object
+            - 'null'
+        user_id:
+          type:
+            - string
+            - 'null'
+      required:
+        - error
+      type: object
+    TooManyRequestsResponse:
+      description: Too Many Requests - Rate limit exceeded
+      properties:
+        error:
+          $ref: '#/components/schemas/TooManyRequestsResponseErrorData'
+        openrouter_metadata:
+          additionalProperties: {}
+          type:
+            - object
+            - 'null'
+        user_id:
+          type:
+            - string
+            - 'null'
+      required:
+        - error
+      type: object
     TopProviderInfo:
       description: Information about the top provider for this model
       properties:
@@ -1038,6 +1195,23 @@ components:
             - 'null'
       required:
         - is_moderated
+      type: object
+    UnauthorizedResponse:
+      description: Unauthorized - Authentication required or invalid credentials
+      properties:
+        error:
+          $ref: '#/components/schemas/UnauthorizedResponseErrorData'
+        openrouter_metadata:
+          additionalProperties: {}
+          type:
+            - object
+            - 'null'
+        user_id:
+          type:
+            - string
+            - 'null'
+      required:
+        - error
       type: object
     AABenchmarkEntry:
       description: Artificial Analysis benchmark index scores.
@@ -1067,6 +1241,22 @@ components:
       type: object
     BadRequestResponseErrorData:
       description: Error data for BadRequestResponse
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        metadata:
+          additionalProperties: {}
+          type:
+            - object
+            - 'null'
+      required:
+        - code
+        - message
+      type: object
+    ConflictResponseErrorData:
+      description: Error data for ConflictResponse
       properties:
         code:
           type: integer
@@ -1142,6 +1332,22 @@ components:
         - code
         - message
       type: object
+    NotFoundResponseErrorData:
+      description: Error data for NotFoundResponse
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        metadata:
+          additionalProperties: {}
+          type:
+            - object
+            - 'null'
+      required:
+        - code
+        - message
+      type: object
     ReasoningEffort:
       enum:
         - max
@@ -1155,3 +1361,67 @@ components:
       type:
         - string
         - 'null'
+    RequestTimeoutResponseErrorData:
+      description: Error data for RequestTimeoutResponse
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        metadata:
+          additionalProperties: {}
+          type:
+            - object
+            - 'null'
+      required:
+        - code
+        - message
+      type: object
+    ServiceUnavailableResponseErrorData:
+      description: Error data for ServiceUnavailableResponse
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        metadata:
+          additionalProperties: {}
+          type:
+            - object
+            - 'null'
+      required:
+        - code
+        - message
+      type: object
+    TooManyRequestsResponseErrorData:
+      description: Error data for TooManyRequestsResponse
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        metadata:
+          additionalProperties: {}
+          type:
+            - object
+            - 'null'
+      required:
+        - code
+        - message
+      type: object
+    UnauthorizedResponseErrorData:
+      description: Error data for UnauthorizedResponse
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        metadata:
+          additionalProperties: {}
+          type:
+            - object
+            - 'null'
+      required:
+        - code
+        - message
+      type: object
