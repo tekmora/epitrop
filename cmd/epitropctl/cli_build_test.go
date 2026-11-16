@@ -83,7 +83,13 @@ func runSystemCLI(t *testing.T, bin string, args ...string) (string, string, int
 // runSystemCLIWithEnv runs the built binary with additional environment variables.
 func runSystemCLIWithEnv(t *testing.T, bin string, extraEnv []string, args ...string) (string, string, int, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	return runSystemCLIWithDeadline(t, bin, 30*time.Second, extraEnv, args...)
+}
+
+// runSystemCLIWithDeadline runs the built binary under deadline with additional environment variables.
+func runSystemCLIWithDeadline(t *testing.T, bin string, deadline time.Duration, extraEnv []string, args ...string) (string, string, int, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), deadline)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, args...)
