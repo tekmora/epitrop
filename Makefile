@@ -48,10 +48,21 @@ schemas-check:
 	@go run -tags schemasrefresh ./tools/schemas -mode=check -root=.
 
 # The messages of the commits this branch adds to origin/main name no model or coding tool
-# as an author. CI runs the same check on every pull request and on every push to main.
+# as an author. CI runs the same check on every pull request and on every push to main. A
+# branch that adds no commit prints the skip line below, while CI keeps the tool's refusal of
+# an empty range.
 .PHONY: commit-messages
 commit-messages:
-	@f=$$(mktemp) && git log -z --format='%H%n%B' origin/main..HEAD > "$$f" \
+	@n=$$(git rev-list --count origin/main..HEAD) \
+		|| { echo "commit-messages: git rev-list --count origin/main..HEAD failed" >&2; exit 1; }; \
+	case "$$n" in ""|*[!0123456789]*) \
+		echo "commit-messages: git rev-list --count origin/main..HEAD returned non-numeric count: $$n" >&2; exit 1 ;; \
+	esac; \
+	if [ "$$n" -eq 0 ]; then \
+		echo "commit-messages: skipped: HEAD adds no commit to origin/main"; \
+		exit 0; \
+	fi; \
+	f=$$(mktemp) && git log -z --format='%H%n%B' origin/main..HEAD > "$$f" \
 		&& go run ./tools/commitmsg -messages="$$f"; rc=$$?; rm -f "$$f"; exit $$rc
 
 # make verify-all runs every step of ci.yml's required go job as well, so that a green local
