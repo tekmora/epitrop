@@ -22,6 +22,9 @@ const (
 	skipLine       = "commit-messages: skipped: HEAD adds no commit to origin/main"
 	makeRunTimeout = 2 * time.Minute
 	gitSetupLimit  = 30 * time.Second
+	// pipeWaitDelay bounds the wait for captured output after a deadline kills a child: a
+	// descendant such as the binary go run starts can hold the pipes open past the kill.
+	pipeWaitDelay = 5 * time.Second
 )
 
 type makeResult struct {
@@ -256,6 +259,7 @@ func runGit(parent context.Context, dir string, args ...string) error {
 	defer cancel()
 	// #nosec G204 -- fixed git subcommands and test-owned arguments in a temp repository.
 	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.WaitDelay = pipeWaitDelay
 	cmd.Dir = dir
 	cmd.Env = gitChildEnv(os.Environ())
 	out, err := cmd.CombinedOutput()
@@ -270,6 +274,7 @@ func runMakeCommitMessages(parent context.Context, root string, repoDir string) 
 	defer cancel()
 	// #nosec G204 -- fixed make invocation against the repository root Makefile.
 	cmd := exec.CommandContext(ctx, "make", "-s", "-C", root, "commit-messages")
+	cmd.WaitDelay = pipeWaitDelay
 	cmd.Dir = root
 	cmd.Env = makeChildEnv(os.Environ(), repoDir)
 	var stdout, stderr bytes.Buffer
