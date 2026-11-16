@@ -111,7 +111,7 @@ The sources were first verified live on 2026-09-18, before their parsers were wr
 
 The pinned schema fragments record the revision and full-document digest each parser was last checked against (2026-10-09; `litellm-key-info` 2026-10-17). The `litellm-key-budget` parser follows the `/key/info` docstring at the pinned LiteLLM revision and the fixture in `internal/sources/litellmgateway/testdata/fixtures/key-info-response.json`; it has not yet been run against a live gateway.
 
-`.github/workflows/live-sync.yml` runs `TestSystemSyncLive` (`cmd/epitropctl/system_sync_live_test.go`) against a real Ollama container and a real LiteLLM proxy container configured by `cmd/epitropctl/testdata/live/litellm-config.yaml` (no database, per-run `sk-` master key). It proves that the built `epitropctl sync` binary parses real `/api/tags`, `/api/ps` and `/v1/models` responses, logs both server versions (`GET /api/version` and `GET /public/model_hub/info`), reports `ok` counts matching direct server reads, writes a `schema_version` 1 snapshot with `local` and `gateway` records for the configured models, and keeps `ollama-local` `ok` when `litellm-gateway` fails on a wrong bearer key. The workflow runs weekly, on `workflow_dispatch`, and on `main` pushes and pull requests touching `internal/sources/ollamalocal/**`, `internal/sources/litellmgateway/**`, `internal/sources/httpfetch/**`, `cmd/epitropctl/system_sync_live_test.go`, `cmd/epitropctl/testdata/live/**`, `.github/workflows/live-sync.yml`, `.github/actions/setup-go/**`, `go.mod` or `go.sum`. Both `tag@sha256` image pins and the pulled minimal model live in `.github/workflows/live-sync.yml` and are updated by Renovate (`renovate.json`).
+`.github/workflows/live-sync.yml` runs `TestSystemSyncLive` (`cmd/epitropctl/system_sync_live_test.go`) against a real Ollama container and a real LiteLLM proxy container configured by `cmd/epitropctl/testdata/live/litellm-config.yaml` (no database, per-run `sk-` master key). It proves that the built `epitropctl sync` binary parses real `/api/tags`, `/api/ps` and `/v1/models` responses, logs both server versions (`GET /api/version` and `GET /public/model_hub/info`), reports `ok` counts matching direct server reads, writes a `schema_version` 1 snapshot with `local` and `gateway` records for the configured models, and keeps `ollama-local` `ok` when `litellm-gateway` fails on a wrong bearer key. The workflow runs weekly, on `workflow_dispatch`, and on pushes to `main` and pull requests that touch the paths in the workflow's `on:` block. The two `tag@sha256` image pins in `.github/workflows/live-sync.yml` are moved by Renovate (`renovate.json` customManagers entry); the model tag (`OLLAMA_MODEL`, all-minilm:22m) has no Renovate manager and is bumped by hand together with `cmd/epitropctl/testdata/live/litellm-config.yaml`.
 
 `TestSystemSyncLive` reads five environment variables — `EPITROP_LIVE_OLLAMA`, `EPITROP_LIVE_OLLAMA_MODEL`, `EPITROP_LIVE_LITELLM_BASE`, `EPITROP_LIVE_LITELLM_TOKEN_FILE` and `EPITROP_LIVE_LITELLM_MODEL` — and skips naming any unset variable during default `go test` runs. To run it locally with rootless Podman using the image pins in `.github/workflows/live-sync.yml`:
 
@@ -124,11 +124,14 @@ printf '%s\n' "$LITELLM_MASTER_KEY" > "$KEY_FILE"
 export LITELLM_MASTER_KEY
 podman network create epitrop-live-sync
 podman run -d --name epitrop-live-ollama --network epitrop-live-sync -p 127.0.0.1:11434:11434 "$OLLAMA_IMG"
+for i in $(seq 1 30); do curl -fsS --max-time 2 http://127.0.0.1:11434/api/version >/dev/null && break; sleep 2; done
 podman exec epitrop-live-ollama ollama pull all-minilm:22m
 podman run -d --name epitrop-live-litellm --network epitrop-live-sync -p 127.0.0.1:4000:4000 \
   -e LITELLM_MASTER_KEY \
   -v "$PWD/cmd/epitropctl/testdata/live/litellm-config.yaml:/etc/litellm/config.yaml:ro,Z" \
   "$LITELLM_IMG" --config /etc/litellm/config.yaml --port 4000
+unset LITELLM_MASTER_KEY
+for i in $(seq 1 30); do curl -fsS --max-time 2 http://127.0.0.1:4000/health/readiness >/dev/null && break; sleep 2; done
 EPITROP_LIVE_OLLAMA=http://127.0.0.1:11434 \
 EPITROP_LIVE_OLLAMA_MODEL=all-minilm:22m \
 EPITROP_LIVE_LITELLM_BASE=http://127.0.0.1:4000 \

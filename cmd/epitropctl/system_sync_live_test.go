@@ -126,6 +126,7 @@ func fetchOllamaVersion(ctx context.Context, baseURL string) (string, error) {
 // (litellm/proxy/public_endpoints/public_endpoints.py:417-439, mounted at
 // litellm/proxy/proxy_server.py:21832, listed in public_routes at
 // litellm/proxy/_types.py:750) returns litellm_version unconditionally.
+// verified live 2026-11-16 against ghcr.io/berriai/litellm:v1.109.1 (unauthenticated GET /public/model_hub/info returned litellm_version 1.109.1).
 func fetchLiteLLMVersion(ctx context.Context, baseURL string) (string, error) {
 	body, err := httpfetch.Get(ctx, baseURL+"/public/model_hub/info", liveHTTPTimeout, liveMaxBodyBytes)
 	if err != nil {
@@ -200,6 +201,19 @@ func runLiveSyncPositiveAndBoundary(t *testing.T, bin string, cfg liveSyncEnv, w
 	stdout, stderr, code, err := runSystemCLI(t, bin, args...)
 	if err != nil || code != 0 {
 		t.Fatalf("sync exited with code %d, err %v: %s\n%s", code, err, stdout, stderr)
+	}
+	token, err := litellmgateway.ReadToken(cfg.litellmTokenFile)
+	if err != nil {
+		t.Fatalf("read litellm token: %v", err)
+	}
+	if token == "" {
+		t.Fatalf("litellm token file %s is empty", cfg.litellmTokenFile)
+	}
+	if strings.Contains(stdout, token) {
+		t.Fatalf("sync leaked the bearer token on stdout")
+	}
+	if strings.Contains(stderr, token) {
+		t.Fatalf("sync leaked the bearer token on stderr")
 	}
 	t.Logf("sync stdout:\n%s", strings.TrimRight(stdout, "\r\n"))
 
@@ -316,7 +330,8 @@ func countLiveRecords(records []catalog.Record, modelID string, access catalog.A
 	return matched
 }
 
-func TestLiveSyncContract(t *testing.T) {
+// TestLiveSyncSuiteOnStandIns runs the live suite against httptest stand-ins under default go test.
+func TestLiveSyncSuiteOnStandIns(t *testing.T) {
 	const goodKey = "sk-live-contract-key-0123456789abcdef"
 	ollamaSrv, litellmSrv := newContractLiveServers(t, goodKey)
 	tokenFile := filepath.Join(t.TempDir(), "token")
@@ -351,7 +366,7 @@ func newContractLiveServers(t *testing.T, validKey string) (*httptest.Server, *h
 	ollamaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/version":
-			writeContractJSON(t, w, http.StatusOK, `{"version":"0.40.16"}`)
+			writeContractJSON(t, w, http.StatusOK, `{"version":"0.0.0-standin"}`)
 		case "/api/tags":
 			writeContractJSON(t, w, http.StatusOK, `{"models":[{"name":"all-minilm:22m","details":{"parameter_size":"22M","quantization_level":"F16","context_length":512}}]}`)
 		case "/api/ps":
@@ -366,7 +381,7 @@ func newContractLiveServers(t *testing.T, validKey string) (*httptest.Server, *h
 			// v1.109.1 public readiness payload omits litellm_version by default.
 			writeContractJSON(t, w, http.StatusOK, `{"status":"healthy","db":"Not connected"}`)
 		case "/public/model_hub/info":
-			writeContractJSON(t, w, http.StatusOK, `{"docs_title":"LiteLLM API","litellm_version":"1.109.1"}`)
+			writeContractJSON(t, w, http.StatusOK, `{"docs_title":"LiteLLM API","litellm_version":"0.0.0-standin"}`)
 		case "/v1/models":
 			if r.Header.Get("Authorization") != "Bearer "+validKey {
 				writeContractJSON(t, w, http.StatusUnauthorized, `{"error":{"message":"Authentication Error"}}`)
