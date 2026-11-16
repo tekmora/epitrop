@@ -1,0 +1,157 @@
+name: Live catalog sync
+
+# Runs epitropctl sync against real Ollama and LiteLLM containers (issue #359) so
+# upstream response-shape drift in /api/tags, /api/ps, or /v1/models is caught
+# against live servers, not only committed fixtures.
+on:
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'internal/sources/ollamalocal/**'
+      - 'internal/sources/litellmgateway/**'
+      - 'internal/sources/httpfetch/**'
+      - 'cmd/epitropctl/system_sync_live_test.go'
+      - 'cmd/epitropctl/testdata/live/**'
+      - '.github/workflows/live-sync.yml'
+      - '.github/actions/setup-go/**'
+      - 'go.mod'
+      - 'go.sum'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/sources/ollamalocal/**'
+      - 'internal/sources/litellmgateway/**'
+      - 'internal/sources/httpfetch/**'
+      - 'cmd/epitropctl/system_sync_live_test.go'
+      - 'cmd/epitropctl/testdata/live/**'
+      - '.github/workflows/live-sync.yml'
+      - '.github/actions/setup-go/**'
+      - 'go.mod'
+      - 'go.sum'
+
+permissions:
+  contents: read
+
+jobs:
+  live-sync:
+    name: Ollama and LiteLLM live sync
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    env:
+      OLLAMA_IMAGE: docker.io/ollama/ollama:0.40.16@sha256:910d0d8107b538fb0894e63163eb195de0cc7aefcbc666dc62d3b18f71124592
+      LITELLM_IMAGE: ghcr.io/berriai/litellm:v1.109.1@sha256:11175975a3093e05e92faee2fe2fe3412a3ae2fcaa849eb0fe25d5f0d8bcb2e9
+      LIVE_NETWORK: epitrop-live-sync
+      OLLAMA_CONTAINER: epitrop-live-ollama
+      LITELLM_CONTAINER: epitrop-live-litellm
+      OLLAMA_MODEL: all-minilm:22m
+      LITELLM_MODEL: live/all-minilm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+
+      - name: Start Ollama and pull minimal model
+        run: |
+          set -euo pipefail
+          docker network create "$LIVE_NETWORK"
+          docker run -d \
+            --name "$OLLAMA_CONTAINER" \
+            --network "$LIVE_NETWORK" \
+            -p 127.0.0.1:11434:11434 \
+            "$OLLAMA_IMAGE"
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl -fsS --max-time 2 http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::Ollama did not become ready within 30 attempts"
+            exit 1
+          fi
+          if ! timeout --preserve-status 180s docker exec "$OLLAMA_CONTAINER" ollama pull "$OLLAMA_MODEL"; then
+            echo "::error::Ollama model pull timed out or failed for $OLLAMA_MODEL"
+            exit 1
+          fi
+
+      - name: Start LiteLLM proxy
+        run: |
+          set -euo pipefail
+          TOKEN_FILE="$RUNNER_TEMP/litellm-master-key"
+          umask 077
+          LITELLM_MASTER_KEY="sk-$(openssl rand -hex 32)"
+          echo "::add-mask::$LITELLM_MASTER_KEY"
+          printf '%s\n' "$LITELLM_MASTER_KEY" > "$TOKEN_FILE"
+          chmod 0600 "$TOKEN_FILE"
+          export LITELLM_MASTER_KEY
+          docker run -d \
+            --name "$LITELLM_CONTAINER" \
+            --network "$LIVE_NETWORK" \
+            -p 127.0.0.1:4000:4000 \
+            -e LITELLM_MASTER_KEY \
+            -v "$GITHUB_WORKSPACE/cmd/epitropctl/testdata/live/litellm-config.yaml:/etc/litellm/config.yaml:ro" \
+            "$LITELLM_IMAGE" \
+            --config /etc/litellm/config.yaml --port 4000
+          ready=0
+          for _ in $(seq 1 60); do
+            if curl -fsS --max-time 2 http://127.0.0.1:4000/health/readiness >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::LiteLLM proxy did not become ready within 60 attempts"
+            exit 1
+          fi
+
+      - name: Run live catalog sync test
+        env:
+          EPITROP_LIVE_OLLAMA: http://127.0.0.1:11434
+          EPITROP_LIVE_OLLAMA_MODEL: ${{ env.OLLAMA_MODEL }}
+          EPITROP_LIVE_LITELLM_BASE: http://127.0.0.1:4000
+          EPITROP_LIVE_LITELLM_MODEL: ${{ env.LITELLM_MODEL }}
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/live-sync-test.log"
+          EPITROP_LIVE_LITELLM_TOKEN_FILE="$RUNNER_TEMP/litellm-master-key" \
+            go test -count=1 -run '^TestSystemSyncLive' -v ./cmd/epitropctl/ 2>&1 | tee "$OUT"
+          if grep -q -- "--- SKIP" "$OUT"; then
+            echo "::error::TestSystemSyncLive was skipped; expected to run against live servers" >&2
+            exit 1
+          fi
+          if ! grep -q -- "--- PASS: TestSystemSyncLive" "$OUT"; then
+            echo "::error::TestSystemSyncLive did not pass" >&2
+            exit 1
+          fi
+
+      - name: Print container logs on failure
+        if: failure()
+        run: |
+          for c in "$OLLAMA_CONTAINER" "$LITELLM_CONTAINER"; do
+            if docker container inspect "$c" >/dev/null 2>&1; then
+              echo "=== $c (last 100 lines) ==="
+              if ! docker logs --tail 100 "$c"; then
+                echo "::warning::could not read the logs of $c"
+              fi
+            fi
+          done
+
+      - name: Cleanup containers and network
+        if: always()
+        run: |
+          for c in "$LITELLM_CONTAINER" "$OLLAMA_CONTAINER"; do
+            if docker container inspect "$c" >/dev/null 2>&1; then
+              docker rm -f "$c"
+            fi
+          done
+          if docker network inspect "$LIVE_NETWORK" >/dev/null 2>&1; then
+            docker network rm "$LIVE_NETWORK"
+          fi
+          rm -f "$RUNNER_TEMP/litellm-master-key"

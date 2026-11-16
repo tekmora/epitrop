@@ -1,0 +1,8 @@
+# Minimal LiteLLM proxy configuration for .github/workflows/live-sync.yml and
+# local live-sync runs (docs/data-sync.md). No database is configured; the
+# master key arrives via LITELLM_MASTER_KEY in the container environment.
+model_list:
+  - model_name: live/all-minilm
+    litellm_params:
+      model: ollama/all-minilm:22m
+      api_base: http://epitrop-live-ollama:11434
