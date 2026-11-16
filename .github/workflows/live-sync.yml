@@ -20,6 +20,7 @@ on:
       - 'go.mod'
       - 'go.sum'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
     paths:
       - 'internal/sources/ollamalocal/**'
@@ -49,10 +50,24 @@ jobs:
       OLLAMA_MODEL: all-minilm:22m
       LITELLM_MODEL: live/all-minilm
     steps:
+      - name: Stop on a draft pull request
+        if: github.event.pull_request.draft == true
+        shell: bash
+        env:
+          TITLE: Gate not run on a draft
+          MESSAGE: >-
+            The gate did not run because the pull request is a draft.
+            It runs when the pull request is marked ready for review.
+        run: |
+          echo "::error title=$TITLE::$MESSAGE"
+          echo "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: github.event.pull_request.draft != true
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
+        if: github.event.pull_request.draft != true
 
       - name: Start Ollama and pull minimal model
         run: |
@@ -132,7 +147,7 @@ jobs:
           fi
 
       - name: Print container logs on failure
-        if: failure()
+        if: failure() && github.event.pull_request.draft != true
         run: |
           for c in "$OLLAMA_CONTAINER" "$LITELLM_CONTAINER"; do
             if docker container inspect "$c" >/dev/null 2>&1; then
@@ -144,7 +159,7 @@ jobs:
           done
 
       - name: Cleanup containers and network
-        if: always()
+        if: always() && github.event.pull_request.draft != true
         run: |
           for c in "$LITELLM_CONTAINER" "$OLLAMA_CONTAINER"; do
             if docker container inspect "$c" >/dev/null 2>&1; then
