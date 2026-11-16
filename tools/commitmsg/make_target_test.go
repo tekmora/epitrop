@@ -105,8 +105,10 @@ func makeTargetCases() []makeTargetCase {
 			wantStdout: "trailer Co-authored-by names a model or a coding tool: Co-authored-by: Claude <noreply@anthropic.com>",
 			wantStderr: "1 of 1 texts name a model or a coding tool as an author",
 		},
-		{name: "no origin/main ref", setup: setupWithoutOriginMainRepo, wantZero: false, wantSkip: false, wantStderr: "git rev-list"},
-		{name: "not a git repository", setup: nil, wantZero: false, wantSkip: false, wantStderr: "git rev-list"},
+		{name: "no origin/main ref", setup: setupWithoutOriginMainRepo, wantZero: false, wantSkip: false, wantStderr: "git rev-parse origin/main"},
+		{name: "unborn HEAD", setup: setupUnbornHeadRepo, wantZero: false, wantSkip: false, wantStderr: "git rev-parse HEAD"},
+		{name: "missing history object", setup: setupMissingObjectRepo, wantZero: false, wantSkip: false, wantStderr: "git rev-list"},
+		{name: "not a git repository", setup: nil, wantZero: false, wantSkip: false, wantStderr: "git rev-parse origin/main"},
 	}
 }
 
@@ -150,9 +152,45 @@ func setupWithoutOriginMainRepo(t *testing.T, dir string) {
 	addCommit(t, dir, "chore: base")
 }
 
+func setupUnbornHeadRepo(t *testing.T, dir string) {
+	t.Helper()
+	initGitRepo(t, dir)
+	addCommit(t, dir, "chore: base")
+	setOriginMain(t, dir, "HEAD")
+	if err := runGit(t.Context(), dir, "symbolic-ref", "HEAD", "refs/heads/unborn"); err != nil {
+		t.Fatalf("point HEAD at an unborn branch: %v", err)
+	}
+}
+
+// setupMissingObjectRepo removes the loose object of the commit between origin/main and HEAD:
+// both refs still resolve, but walking the range fails.
+func setupMissingObjectRepo(t *testing.T, dir string) {
+	t.Helper()
+	initGitRepo(t, dir)
+	addCommit(t, dir, "chore: base")
+	setOriginMain(t, dir, "HEAD")
+	addCommit(t, dir, "fix: middle change")
+	mid, err := gitOutput(t.Context(), dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve middle commit: %v", err)
+	}
+	if len(mid) < 3 {
+		t.Fatalf("middle commit id %q is too short", mid)
+	}
+	addCommit(t, dir, "fix: tip change")
+	obj := filepath.Join(dir, ".git", "objects", mid[:2], mid[2:])
+	// Git writes loose objects read-only; Windows refuses to remove a read-only file.
+	if err := os.Chmod(obj, 0o600); err != nil {
+		t.Fatalf("make middle commit object writable: %v", err)
+	}
+	if err := os.Remove(obj); err != nil {
+		t.Fatalf("remove middle commit object: %v", err)
+	}
+}
+
 func requireTools(t *testing.T) {
 	t.Helper()
-	tools := [2]string{"make", "git"}
+	tools := [3]string{"make", "git", "go"}
 	for i := 0; i < len(tools); i++ {
 		if _, err := exec.LookPath(tools[i]); err != nil {
 			t.Skipf("%s not found in PATH: %v", tools[i], err)
@@ -255,6 +293,12 @@ func setOriginMain(t *testing.T, dir string, rev string) {
 }
 
 func runGit(parent context.Context, dir string, args ...string) error {
+	_, err := gitOutput(parent, dir, args...)
+	return err
+}
+
+// gitOutput runs git in dir and returns its trimmed standard output.
+func gitOutput(parent context.Context, dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, gitSetupLimit)
 	defer cancel()
 	// #nosec G204 -- fixed git subcommands and test-owned arguments in a temp repository.
@@ -262,11 +306,13 @@ func runGit(parent context.Context, dir string, args ...string) error {
 	cmd.WaitDelay = pipeWaitDelay
 	cmd.Dir = dir
 	cmd.Env = gitChildEnv(os.Environ())
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
-	return nil
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 func runMakeCommitMessages(parent context.Context, root string, repoDir string) (makeResult, error) {
