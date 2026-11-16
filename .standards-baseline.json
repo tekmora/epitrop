@@ -1,8 +1,42 @@
 {
   "version": 1,
-  "generated_at": "2026-10-09T01:19:55Z",
+  "generated_at": "2026-11-16T01:25:05Z",
   "repository": "tekmora/epitrop",
   "commit_sha": "40b4fde55ad28d6f01b3cd35d51662de5a21ff1e",
-  "total_infractions": 0,
-  "infractions": []
+  "total_infractions": 4,
+  "increase_rationale": "adoption baseline",
+  "infractions": [
+    {
+      "rule_id": "RELEASE-TEST-LEVEL",
+      "file_path": ".standards.yaml",
+      "line_number": 1,
+      "message": "missing release test level integration for profile app-service: no tracked file matches paths [**/*_integration_test.go **/integration/** **/tests/integration/** **/test/integration/** **/*.integration.ts **/*.integration.js **/test_*_integration.py]",
+      "anchor": "level:app-service:integration",
+      "fingerprint": ".standards.yaml:RELEASE-TEST-LEVEL:level:app-service:integration#1"
+    },
+    {
+      "rule_id": "RELEASE-TEST-LEVEL",
+      "file_path": ".standards.yaml",
+      "line_number": 1,
+      "message": "missing release test level e2e for profile app-service: no tracked file matches paths [e2e/** tests/e2e/** test/e2e/** **/*_e2e_test.go **/*.e2e.ts **/*.e2e.js playwright/** cypress/**]",
+      "anchor": "level:app-service:e2e",
+      "fingerprint": ".standards.yaml:RELEASE-TEST-LEVEL:level:app-service:e2e#1"
+    },
+    {
+      "rule_id": "RELEASE-TEST-LEVEL",
+      "file_path": ".standards.yaml",
+      "line_number": 1,
+      "message": "missing release test level load_soak for profile app-service: no tracked file matches paths [load/** soak/** perf/** bench/** k6/** tests/load/** tests/soak/** test/load/** test/soak/** **/*_load_test.go **/*_soak_test.go **/*_bench_test.go]",
+      "anchor": "level:app-service:load_soak",
+      "fingerprint": ".standards.yaml:RELEASE-TEST-LEVEL:level:app-service:load_soak#1"
+    },
+    {
+      "rule_id": "RELEASE-TEST-LEVEL",
+      "file_path": ".standards.yaml",
+      "line_number": 1,
+      "message": "missing release test level recovery_restore for profile app-service: no tracked file matches paths [recovery/** restore/** dr/** tests/recovery/** tests/restore/** test/recovery/** test/restore/** **/*_recovery_test.go **/*_restore_test.go]",
+      "anchor": "level:app-service:recovery_restore",
+      "fingerprint": ".standards.yaml:RELEASE-TEST-LEVEL:level:app-service:recovery_restore#1"
+    }
+  ]
 }

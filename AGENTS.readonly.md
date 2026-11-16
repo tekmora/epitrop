@@ -1,3 +1,4 @@
+<!-- markdownlint-capture -->
 <!-- markdownlint-disable MD013 -->
 # tekmora/epitrop Agent Operating Harness
 
@@ -7,7 +8,7 @@ Run read-only: file edits, state mutations, commits prohibited. Mutating steps d
 
 ## Core Directives & Invariants
 
-Adopted check = coverage state + mechanism; else audit scanner; else `unknown`. Gates = (none: no generated verification gate, no praetor `lefthook.yml`); edits not reflected.
+Adopted check = coverage state + catalog path; else audit scanner; else `unknown`. Gates = (repository-owned verification gate (unread) + repository-owned `lefthook.yml` (unread)); edits not reflected. Adopted-check cells credit generated gates only.
 
 | Invariant | Rule | Adopted check | On fail |
 | :--- | :--- | :--- | :--- |
@@ -49,7 +50,7 @@ Adopted check = coverage state + mechanism; else audit scanner; else `unknown`. 
 
 4. **SARIF diagnostic distillation.** Compiler/linter errors -> distill to $\le 1,500$ tokens ($< 60$ lines): top 3 root-cause failures with file/line pointers; full SARIF logs -> ephemeral storage.
 
-5. **No evasion.** Never attempt `--no-verify`, `LEFTHOOK=0`, or modifying `.git/hooks`. Adoption installed no hooks here (`lefthook.yml` not praetor-written, or `git-hooks` declined). Adoption adds no server-side `praetorctl` gate run. Scaffolded CI: `.github/workflows/praetor-docs.yml` runs step `Stop on a draft pull request`, `node tools/markdownlint/verify.mjs`, step `Verify figures`; `.github/workflows/praetor-api.yml` runs step `Stop on a draft pull request`, `go run tools/apicompat/gate/main.go -base="$BASE"`.
+5. **No evasion.** Never attempt `--no-verify`, `LEFTHOOK=0`, or modifying `.git/hooks`. Adoption installed no hooks here (`lefthook.yml` not praetor-written, or `git-hooks` declined). Adoption adds no server-side `praetorctl` gate run. Scaffolded CI: `.github/workflows/praetor-docs.yml` runs step `Stop on a draft pull request`, `node tools/markdownlint/verify.mjs ${BASE:+--changed-since "$BASE"}`, step `Verify figures`; `.github/workflows/praetor-api.yml` runs step `Stop on a draft pull request`, `go run tools/apicompat/gate/main.go -base="$BASE"`.
 
 6. **Anti-loop interception.** Same AST diff + error category repeats $\ge 3$ times -> halt immediately. Re-evaluate design; no micro-textual retries.
 
@@ -88,6 +89,6 @@ praetorctl compile-context --verify
 praetorctl audit
 ```
 
-<!-- markdownlint-enable MD013 -->
+<!-- markdownlint-restore -->
 <!-- markdownlint-disable MD025 -->
 <!-- praetor:harness:end -->
