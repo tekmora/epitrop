@@ -127,24 +127,24 @@ func checkIntervalTriggerArmed(t *testing.T, sup *Supervisor, rt testRuntimeConf
 
 func checkIntervalTriggerFired(t *testing.T, sup *Supervisor, rt testRuntimeConfig, clk *clockwork.FakeClock, ctx context.Context) {
 	t.Helper()
-	// Step 2: clock at 02:00:30 -> one job.triggered started (due 02:00) and one start.
-	clk.Advance(90 * time.Second)
+	// Step 2: clock at 02:00:59 -> one job.triggered started (due 02:00) and one start.
+	clk.Advance(119 * time.Second)
 	if err := sup.Reconcile(ctx); err != nil {
-		t.Fatalf("Reconcile(02:00:30) = %v, want nil", err)
+		t.Fatalf("Reconcile(02:00:59) = %v, want nil", err)
 	}
 	triggers := collectTriggeredEvents(t, sup, "cron-t1")
 	if len(triggers) != 1 || triggers[0].Outcome != "started" || triggers[0].Due != "2026-10-14T02:00:00Z" {
-		t.Fatalf("triggers after 02:00:30 = %+v, want one started due 02:00:00", triggers)
+		t.Fatalf("triggers after 02:00:59 = %+v, want one started due 02:00:00", triggers)
 	}
 	if starts := countEvents(t, rt.EventLogDir, "job.started"); starts != 1 {
-		t.Fatalf("job.started events at 02:00:30 = %d, want 1", starts)
+		t.Fatalf("job.started events at 02:00:59 = %d, want 1", starts)
 	}
 }
 
 func checkIntervalTriggerNoDuplicate(t *testing.T, sup *Supervisor, clk *clockwork.FakeClock, ctx context.Context) {
 	t.Helper()
 	// Step 3: Reconcile again at 02:01:00 -> no second start.
-	clk.Advance(30 * time.Second)
+	clk.Advance(time.Second)
 	if err := sup.Reconcile(ctx); err != nil {
 		t.Fatalf("Reconcile(02:01:00) = %v, want nil", err)
 	}
