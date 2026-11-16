@@ -51,4 +51,4 @@ We enforce Conventional Commits:
 - `chore:` Maintenance and governance
 - `feat!:` / `fix!:` Breaking API changes (must include `Migration:` footer)
 
-A commit message or a pull request text names no model and no coding tool as an author of the change: no co-author trailer for one, no "generated with" line. `tools/commitmsg` refuses both shapes. CI runs it on the commits and the text of every pull request and on every push to `main`; `make commit-messages` runs it on the commits your branch adds to `origin/main`.
+A commit message or a pull request text names no model and no coding tool as an author of the change: no co-author trailer for one, no "generated with" line. `tools/commitmsg` refuses both shapes. CI runs it on the commits and the text of every pull request and on every push to `main`; `make commit-messages` runs it on the commits your branch adds to `origin/main`, and on a branch that adds no commit to `origin/main` it prints a skip line and passes.
