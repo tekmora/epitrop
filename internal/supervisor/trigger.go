@@ -97,7 +97,8 @@ func (s *Supervisor) ensureArmed(ctx context.Context, job config.JobConfig, st e
 
 func (s *Supervisor) reconcileCronJob(ctx context.Context, job config.JobConfig, st eventlog.Job) error {
 	now := s.clk.Now().UTC()
-	due, err := gronx.PrevTickBefore(job.Schedule, now, true)
+	// Five-field schedules have minute precision; gronx v1.20.7 can return an in-slot reference second.
+	due, err := gronx.PrevTickBefore(job.Schedule, now.Truncate(time.Minute), true)
 	if err != nil {
 		return fmt.Errorf("supervisor: job %s: prev tick for %q: %w", job.Name, job.Schedule, err)
 	}
