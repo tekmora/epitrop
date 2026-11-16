@@ -1,6 +1,6 @@
 module github.com/tekmora/epitrop/tools/gitleaks
 
-go 1.27.3
+go 1.27.4
 
 tool github.com/zricethezav/gitleaks/v8
 
