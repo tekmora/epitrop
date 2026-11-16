@@ -26,25 +26,13 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { CheckError, OUT_DIR, REBUILD, ROOT, SLUG, SPEC_DIR, checkSite, engineHash, portable, readText, siteUrl, sourceSites, sources } from './checks.mjs';
+import { CheckError, OUT_DIR, REBUILD, ROOT, SLUG, SPEC_DIR, checkSite, engineHash, portable, readText, siteUrl, sourceSites, sources, withTimeout } from './checks.mjs';
 import { LIMITS, render, sha256, validate } from './core.mjs';
 
 export { OUT_DIR, REBUILD, ROOT, SPEC_DIR, engineHash };
+export { withTimeout };
 export const VENDOR_JSON = 'tools/figures/third_party/interfig/vendor.json';
 const TIMEOUT_MS = 120_000;
-
-/** Rejects when `promise` has not settled within `ms` (HISS-02: every I/O is bounded). */
-export async function withTimeout(promise, ms, what) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${what} did not finish within ${ms} ms`)), ms);
-  });
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 /** Spec slugs under docs/figures, sorted, each a lowercase kebab-case name. */
 export function listSpecs(root = ROOT) {
@@ -57,6 +45,7 @@ export function listSpecs(root = ROOT) {
   return names.map((n) => n.slice(0, -3));
 }
 
+/** Import a figure spec by content hash under the load deadline. */
 async function loadSpec(root, slug) {
   const file = join(root, SPEC_DIR, `${slug}.ts`);
   const bytes = readFileSync(file);
@@ -114,12 +103,14 @@ export function compareOutputs(outputs, dir) {
   return problems;
 }
 
+/** Write current figure outputs and remove obsolete committed outputs. */
 function writeOutputs(outputs, dir) {
   mkdirSync(dir, { recursive: true });
   for (const name of committedOutputs(dir)) if (!(name in outputs)) rmSync(join(dir, name));
   for (const [name, text] of Object.entries(outputs)) writeFileSync(join(dir, name), text);
 }
 
+/** Render all figure specs and write their validated outputs. */
 async function runBuild(root) {
   const { slugs, outputs, errors } = await renderAll(root);
   if (errors.length) return errors;
@@ -128,6 +119,7 @@ async function runBuild(root) {
   return [];
 }
 
+/** Compare committed figure outputs with a fresh rendering. */
 async function runCheck(root) {
   if (!hasFigures(root)) return report([], NO_FIGURES);
   const { slugs, outputs, errors } = await renderAll(root);
@@ -157,12 +149,14 @@ function runSources(root, { values }) {
   return report(errors, `figure sources, hashes, markup and evidence are consistent; pages read: ${read.join(', ')}.`);
 }
 
+/** Check the configured built site for rendered diagrams. */
 function runSite(_root, { values }) {
   if (!values.config || !values.docs || !values.site) throw new UsageError('site needs --config, --docs and --site');
   const { errors, diagrams } = checkSite(values.config, values.docs, values.site, values.base);
   return report(errors, `${diagrams} diagram(s) under ${values.docs} render.`);
 }
 
+/** Validate portable figure output with the selected URL base. */
 function runPortable(root, { values, positionals }) {
   const modes = [values.base !== undefined, values.wiki, values.write].filter(Boolean);
   if (modes.length !== 1 || positionals.length === 0) throw new UsageError('portable needs one of --base, --wiki or --write, and a file');

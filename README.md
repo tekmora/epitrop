@@ -1,33 +1,5 @@
 # Epitrop
 
-<!-- praetor:readme-governance:start -->
-[![HISS Adopted][praetor-hiss-badge]][praetor-hiss-agents]
-[![Documentation Governance][praetor-docs-badge]][praetor-docs-runs]
-
-Praetor manages this repository's declared governance policy. This managed
-block records adoption state; it is not a verification certificate.
-
-**Verification**: `make verify-all` runs the repository's configured
-verification cascade.
-
-**HISS Audit**: `praetorctl audit` enforces policy, generated-surface
-integrity, and the debt ratchet.
-
-**Context Sync**: `praetorctl compile-context --verify` verifies every
-generated agent context against `AGENTS.md`.
-
-**Documentation**: `make docs-lint` enforces locked Markdown style and the
-private scratch-link policy.
-
-**Debt Baseline**: `.standards-baseline.json` anchors the debt ratchet at
-0 recorded infractions; audit forbids growth.
-
-[praetor-hiss-badge]: https://img.shields.io/badge/Standards-HISS%20Adopted-blue
-[praetor-hiss-agents]: https://github.com/tekmora/epitrop/blob/HEAD/AGENTS.md
-[praetor-docs-badge]: https://github.com/tekmora/epitrop/actions/workflows/praetor-docs.yml/badge.svg
-[praetor-docs-runs]: https://github.com/tekmora/epitrop/actions/workflows/praetor-docs.yml
-<!-- praetor:readme-governance:end -->
-
 Agent runtime and task-graph engine for the Tekmora ecosystem.
 
 Status: early. Today the repository holds the model catalog (`catalog/`, `cmd/epitropctl`, `internal/sources/`), moved from `cordanaLLM/praetor` with its history. The runtime is planned in milestones 0.1 to 0.6; see the [roadmap](docs/roadmap.md).
@@ -119,3 +91,31 @@ The tool names and config keys are fixed; the HTTP paths stay provisional until 
 EUPL-1.2, for code and documents alike. See `LICENSE` and `REUSE.toml`.
 Third-party code that `epitropctl` includes, with the notice each licence asks to carry, is listed in
 `NOTICE.md`.
+
+<!-- praetor:readme-governance:start -->
+[![HISS Adopted][praetor-hiss-badge]][praetor-hiss-agents]
+[![Documentation Governance][praetor-docs-badge]][praetor-docs-runs]
+
+Praetor manages this repository's declared governance policy. This managed
+block records adoption state; it is not a verification certificate.
+
+**Verification**: `make verify-all` runs the repository's configured
+verification cascade.
+
+**HISS Audit**: `praetorctl audit` enforces policy, generated-surface
+integrity, and the debt ratchet.
+
+**Context Sync**: `praetorctl compile-context --verify` verifies every
+generated agent context against `AGENTS.md`.
+
+**Documentation**: `make docs-lint` enforces locked Markdown style and the
+private scratch-link policy.
+
+**Debt Baseline**: `.standards-baseline.json` anchors the debt ratchet at
+4 recorded infractions; audit forbids growth.
+
+[praetor-hiss-badge]: https://img.shields.io/badge/Standards-HISS%20Adopted%20(4%20baselined)-yellow
+[praetor-hiss-agents]: https://github.com/tekmora/epitrop/blob/HEAD/AGENTS.md
+[praetor-docs-badge]: https://github.com/tekmora/epitrop/actions/workflows/praetor-docs.yml/badge.svg
+[praetor-docs-runs]: https://github.com/tekmora/epitrop/actions/workflows/praetor-docs.yml
+<!-- praetor:readme-governance:end -->

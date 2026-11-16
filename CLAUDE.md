@@ -1,6 +1,7 @@
 <!-- markdownlint-disable MD013 -->
 <!-- Compiled automatically by praetorctl compile-context from AGENTS.md. DO NOT EDIT DIRECTLY. -->
 
+<!-- markdownlint-capture -->
 <!-- markdownlint-disable MD013 -->
 # tekmora/epitrop Agent Operating Harness
 
@@ -15,7 +16,7 @@ Pass = exit 0. Signed Ed25519 Exit-0 receipt only from `praetorctl gate run`; re
 
 ## Core Directives & Invariants
 
-Adopted check = coverage state + mechanism; else audit scanner; else `unknown`. Gates = (none: no generated `make verify-all`, no praetor `lefthook.yml`); edits not reflected.
+Adopted check = coverage state + catalog path; else audit scanner; else `unknown`. Gates = (repository-owned `make verify-all` (unread) + repository-owned `lefthook.yml` (unread)); edits not reflected. Adopted-check cells credit generated gates only.
 
 | Invariant | Rule | Adopted check | On fail |
 | :--- | :--- | :--- | :--- |
@@ -57,7 +58,7 @@ Adopted check = coverage state + mechanism; else audit scanner; else `unknown`. 
 
 4. **SARIF diagnostic distillation.** Compiler/linter errors -> distill to $\le 1,500$ tokens ($< 60$ lines): top 3 root-cause failures with file/line pointers; full SARIF logs -> ephemeral storage.
 
-5. **No evasion.** Never attempt `--no-verify`, `LEFTHOOK=0`, or modifying `.git/hooks`. Adoption installed no hooks here (`lefthook.yml` not praetor-written, or `git-hooks` declined). Adoption adds no server-side `praetorctl` gate run. Scaffolded CI: `.github/workflows/praetor-docs.yml` runs step `Stop on a draft pull request`, `node tools/markdownlint/verify.mjs`, step `Verify figures`; `.github/workflows/praetor-api.yml` runs step `Stop on a draft pull request`, `go run tools/apicompat/gate/main.go -base="$BASE"`.
+5. **No evasion.** Never attempt `--no-verify`, `LEFTHOOK=0`, or modifying `.git/hooks`. Adoption installed no hooks here (`lefthook.yml` not praetor-written, or `git-hooks` declined). Adoption adds no server-side `praetorctl` gate run. Scaffolded CI: `.github/workflows/praetor-docs.yml` runs step `Stop on a draft pull request`, `node tools/markdownlint/verify.mjs ${BASE:+--changed-since "$BASE"}`, step `Verify figures`; `.github/workflows/praetor-api.yml` runs step `Stop on a draft pull request`, `go run tools/apicompat/gate/main.go -base="$BASE"`.
 
 6. **Anti-loop interception.** Same AST diff + error category repeats $\ge 3$ times -> halt immediately. Re-evaluate design; no micro-textual retries.
 
@@ -95,6 +96,6 @@ praetorctl audit
 make verify-all
 ```
 
-<!-- markdownlint-enable MD013 -->
+<!-- markdownlint-restore -->
 <!-- markdownlint-disable MD025 -->
 <!-- praetor:harness:end -->

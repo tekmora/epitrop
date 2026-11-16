@@ -55,9 +55,9 @@ RULES = [
     (r"SKIP=.*git", HISS_REFUSAL),
     (r"(?i:core\.hookspath)(\s*=|\s+[\x22\x27]?[/~.$A-Za-z_\\])", HISS_REFUSAL),
     (
-        r"\b(?i:rm|rmdir|unlink|mv|cp|ln|chmod|chown|chattr|truncate|shred|tee|del|era"
-        r"se|rd|ri|remove-item|move|move-item|ren|rename|rename-item|copy|copy-item|se"
-        r"t-content|add-content|out-file|icacls|attrib)\b[^\n]*(?i:\.git[/\\]hooks)",
+        r"\b(?i:rm|rmdir|unlink|mv|cp|ln|chmod|chown|chattr|truncate|shred|tee|del|"
+        r"erase|rd|ri|remove-item|move|move-item|ren|rename|rename-item|copy|copy-item"
+        r"|set-content|add-content|out-file|icacls|attrib)\b[^\n]*(?i:\.git[/\\]hooks)",
         HISS_REFUSAL,
     ),
     (
@@ -75,10 +75,10 @@ RULES = [
     (r">\s*[\x22\x27]?[^ \t\n\x22\x27]*(?i:\.git[/\\]hooks)", HISS_REFUSAL),
     (r"\blefthook\s+uninstall\b", HISS_REFUSAL),
     (
-        r"(?m)^(?:(?:[^\Wg]\w*|g(?:[^\Wh]\w*|h\w+)?)?[^\w\n])*(gh)\b[^\n]*(?:\bpr\s+me"
-        r"rge\b[^\n]*(?:\s|[\x22\x27])--admin(?:\s|$|[;&|\x22\x27]|=true\b)|(?:\s|[\x2"
-        r"2\x27])--admin(?:\s|$|[;&|\x22\x27]|=true\b)[^\n]*\bpr\s+merge\b|\bpr\s+--ad"
-        r"min(?:\s|$|[;&|\x22\x27]|=true\b)[^\n]*\bmerge\b)",
+        r"(?m)^(?:(?:[^\Wg]\w*|g(?:[^\Wh]\w*|h\w+)?)?[^\w\n])*(gh)\b[^\n]*(?:\bpr\s+"
+        r"merge\b[^\n]*(?:\s|[\x22\x27])--admin(?:\s|$|[;&|\x22\x27]|=true\b)|(?:\s|["
+        r"\x22\x27])--admin(?:\s|$|[;&|\x22\x27]|=true\b)[^\n]*\bpr\s+merge\b|\bpr\s+-"
+        r"-admin(?:\s|$|[;&|\x22\x27]|=true\b)[^\n]*\bmerge\b)",
         HISS_REFUSAL,
     ),
     (
@@ -87,8 +87,8 @@ RULES = [
         HISS_REFUSAL,
     ),
     (
-        r"(?m)^(?:(?:[^\Wg]\w*|g(?:[^\Wh]\w*|h\w+)?)?[^\w\n])*(gh)\b[^\n]*\bapi\s+grap"
-        r"hql\b[^\n]*\bmergePullRequest\b",
+        r"(?m)^(?:(?:[^\Wg]\w*|g(?:[^\Wh]\w*|h\w+)?)?[^\w\n])*(gh)\b[^\n]*\bapi\s+"
+        r"graphql\b[^\n]*\bmergePullRequest\b",
         HISS_REFUSAL,
     ),
     (
@@ -192,37 +192,37 @@ RULES = [
         r"&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x64][^ \t\n;&|()\x60\x22\x27]*"
         r")?|[^ \t\n;&|()\x60\x22\x27\x61][^ \t\n;&|()\x60\x22\x27]*)?|\x6e(?:[^ \t\n;"
         r"&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x2d\x6"
-        r"e][^ \t\n;&|()\x60\x22\x27]*)))*[ \t]+|(?:[^ \t\n;&|()\x60\x22\x27]*/)?(?:no"
-        r"hup)(?:[ \t]+(?:-(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)))*["
-        r" \t]+|(?:[^ \t\n;&|()\x60\x22\x27]*/)?(?:setsid)(?:[ \t]+(?:-(?:[^ \t\n;&|()"
-        r"\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)))*[ \t]+|(?:[^ \t\n;&|()\x60\x22\x2"
-        r"7]*/)?(?:stdbuf)(?:[ \t]+(?:(?:-i|-o|-e)[ \t]+(?:\x22[^\x22\n]*\x22|\x27[^\x"
-        r"27\n]*\x27|[^- \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*|-[0-9]+)|-(?"
-        r":\x65(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x69(?:[^ \t\n;"
-        r"&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x6f(?:[^ \t\n;&|()\x60\x22\x27"
-        r"][^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x65\x69\x6f][^ \t\n;&|"
-        r"()\x60\x22\x27]*)))*[ \t]+|(?:[^ \t\n;&|()\x60\x22\x27]*/)?(?:systemd-run)(?"
-        r":[ \t]+(?:(?:-p|--property|-u|--unit|-E|--setenv|--slice|-M|--machine|-H|--h"
-        r"ost|--uid|--gid|--nice|--working-directory|--description)[ \t]+(?:\x22[^\x22"
-        r"\n]*\x22|\x27[^\x27\n]*\x27|[^- \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x"
-        r"27]*|-[0-9]+)|-(?:\x2d(?:\x64(?:\x65(?:\x73(?:\x63(?:\x72(?:\x69(?:\x70(?:\x"
-        r"74(?:\x69(?:\x6f(?:\x6e(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]"
-        r"*)|[^ \t\n;&|()\x60\x22\x27\x6e][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x6"
-        r"0\x22\x27\x6f][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x69][^ "
-        r"\t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x74][^ \t\n;&|()\x60\x22"
-        r"\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x70][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&"
-        r"|()\x60\x22\x27\x69][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x7"
-        r"2][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x63][^ \t\n;&|()\x60"
-        r"\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x73][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t"
-        r"\n;&|()\x60\x22\x27\x65][^ \t\n;&|()\x60\x22\x27]*)?|\x67(?:\x69(?:\x64(?:[^"
-        r" \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27"
-        r"\x64][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x69][^ \t\n;&|()"
-        r"\x60\x22\x27]*)?|\x68(?:\x6f(?:\x73(?:\x74(?:[^ \t\n;&|()\x60\x22\x27][^ \t"
-        r"\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x74][^ \t\n;&|()\x60\x22\x27"
-        r"]*)?|[^ \t\n;&|()\x60\x22\x27\x73][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()"
-        r"\x60\x22\x27\x6f][^ \t\n;&|()\x60\x22\x27]*)?|\x6d(?:\x61(?:\x63(?:\x68(?:\x"
-        r"69(?:\x6e(?:\x65(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|[^ "
-        r"\t\n;&|()\x60\x22\x27\x65][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22"
+        r"e][^ \t\n;&|()\x60\x22\x27]*)))*[ \t]+|(?:[^ \t\n;&|()\x60\x22\x27]*/)?(?:"
+        r"nohup)(?:[ \t]+(?:-(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)))"
+        r"*[ \t]+|(?:[^ \t\n;&|()\x60\x22\x27]*/)?(?:setsid)(?:[ \t]+(?:-(?:[^ \t\n;&|"
+        r"()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)))*[ \t]+|(?:[^ \t\n;&|()\x60\x22"
+        r"\x27]*/)?(?:stdbuf)(?:[ \t]+(?:(?:-i|-o|-e)[ \t]+(?:\x22[^\x22\n]*\x22|\x27["
+        r"^\x27\n]*\x27|[^- \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*|-[0-9]+)|"
+        r"-(?:\x65(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x69(?:[^ \t"
+        r"\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x6f(?:[^ \t\n;&|()\x60\x22"
+        r"\x27][^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x65\x69\x6f][^ \t"
+        r"\n;&|()\x60\x22\x27]*)))*[ \t]+|(?:[^ \t\n;&|()\x60\x22\x27]*/)?(?:systemd-"
+        r"run)(?:[ \t]+(?:(?:-p|--property|-u|--unit|-E|--setenv|--slice|-M|--machine|"
+        r"-H|--host|--uid|--gid|--nice|--working-directory|--description)[ \t]+(?:\x22"
+        r"[^\x22\n]*\x22|\x27[^\x27\n]*\x27|[^- \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60"
+        r"\x22\x27]*|-[0-9]+)|-(?:\x2d(?:\x64(?:\x65(?:\x73(?:\x63(?:\x72(?:\x69(?:\x7"
+        r"0(?:\x74(?:\x69(?:\x6f(?:\x6e(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x2"
+        r"2\x27]*)|[^ \t\n;&|()\x60\x22\x27\x6e][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&"
+        r"|()\x60\x22\x27\x6f][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x6"
+        r"9][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x74][^ \t\n;&|()\x60"
+        r"\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x70][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t"
+        r"\n;&|()\x60\x22\x27\x69][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x2"
+        r"7\x72][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x63][^ \t\n;&|()"
+        r"\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x73][^ \t\n;&|()\x60\x22\x27]*)?|["
+        r"^ \t\n;&|()\x60\x22\x27\x65][^ \t\n;&|()\x60\x22\x27]*)?|\x67(?:\x69(?:\x64("
+        r"?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22"
+        r"\x27\x64][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x69][^ \t\n;&"
+        r"|()\x60\x22\x27]*)?|\x68(?:\x6f(?:\x73(?:\x74(?:[^ \t\n;&|()\x60\x22\x27][^ "
+        r"\t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x74][^ \t\n;&|()\x60\x22\x"
+        r"27]*)?|[^ \t\n;&|()\x60\x22\x27\x73][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|("
+        r")\x60\x22\x27\x6f][^ \t\n;&|()\x60\x22\x27]*)?|\x6d(?:\x61(?:\x63(?:\x68(?:"
+        r"\x69(?:\x6e(?:\x65(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|[^"
+        r" \t\n;&|()\x60\x22\x27\x65][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22"
         r"\x27\x6e][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x69][^ \t\n;&"
         r"|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x68][^ \t\n;&|()\x60\x22\x27]*)"
         r"?|[^ \t\n;&|()\x60\x22\x27\x63][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60"
@@ -310,60 +310,60 @@ RULES = [
         r"(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x73(?:[^ \t\n;&|()"
         r"\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x2d\x6b\x7"
         r"3][^ \t\n;&|()\x60\x22\x27]*)))*[ \t]+(?:\x22[^\x22\n]*\x22|\x27[^\x27\n]*\x"
-        r"27|[^ \t\n;&|()\x60\x22\x27]+)[ \t]+|(?:[^ \t\n;&|()\x60\x22\x27]*/)?(?:xarg"
-        r"s)(?:[ \t]+(?:(?:-a|--arg-file|-d|--delimiter|-E|-e|-I|-i|-L|-l|-n|--max-arg"
-        r"s|-P|--max-procs|-s|--max-chars)[ \t]+(?:\x22[^\x22\n]*\x22|\x27[^\x27\n]*\x"
-        r"27|[^- \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*|-[0-9]+)|-(?:\x2d(?:"
-        r"\x61(?:\x72(?:\x67(?:\x2d(?:\x66(?:\x69(?:\x6c(?:\x65(?:[^ \t\n;&|()\x60\x22"
-        r"\x27][^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x65][^ \t\n;&|()\x"
-        r"60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x6c][^ \t\n;&|()\x60\x22\x27]*)?|[^ "
-        r"\t\n;&|()\x60\x22\x27\x69][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22"
-        r"\x27\x66][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x2d][^ \t\n;&"
-        r"|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x67][^ \t\n;&|()\x60\x22\x27]*)"
-        r"?|[^ \t\n;&|()\x60\x22\x27\x72][^ \t\n;&|()\x60\x22\x27]*)?|\x64(?:\x65(?:\x"
-        r"6c(?:\x69(?:\x6d(?:\x69(?:\x74(?:\x65(?:\x72(?:[^ \t\n;&|()\x60\x22\x27][^ "
-        r"\t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x72][^ \t\n;&|()\x60\x22\x"
-        r"27]*)?|[^ \t\n;&|()\x60\x22\x27\x65][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|("
-        r")\x60\x22\x27\x74][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x69]"
-        r"[^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x6d][^ \t\n;&|()\x60\x"
-        r"22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x69][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n"
-        r";&|()\x60\x22\x27\x6c][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27"
-        r"\x65][^ \t\n;&|()\x60\x22\x27]*)?|\x6d(?:\x61(?:\x78(?:\x2d(?:\x61(?:\x72(?:"
-        r"\x67(?:\x73(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&"
-        r"|()\x60\x22\x27\x73][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x6"
-        r"7][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x72][^ \t\n;&|()\x60"
-        r"\x22\x27]*)?|\x63(?:\x68(?:\x61(?:\x72(?:\x73(?:[^ \t\n;&|()\x60\x22\x27][^ "
-        r"\t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x73][^ \t\n;&|()\x60\x22\x"
-        r"27]*)?|[^ \t\n;&|()\x60\x22\x27\x72][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|("
-        r")\x60\x22\x27\x61][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x68]"
-        r"[^ \t\n;&|()\x60\x22\x27]*)?|\x70(?:\x72(?:\x6f(?:\x63(?:\x73(?:[^ \t\n;&|()"
-        r"\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x73][^ \t"
-        r"\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x63][^ \t\n;&|()\x60\x22\x2"
-        r"7]*)?|[^ \t\n;&|()\x60\x22\x27\x6f][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()"
-        r"\x60\x22\x27\x72][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x61\x"
-        r"63\x70][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x2d][^ \t\n;&|("
-        r")\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x78][^ \t\n;&|()\x60\x22\x27]*)?|"
-        r"[^ \t\n;&|()\x60\x22\x27\x61][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x"
-        r"22\x27\x61\x64\x6d][^ \t\n;&|()\x60\x22\x27]*)?|\x45(?:[^ \t\n;&|()\x60\x22"
-        r"\x27][^ \t\n;&|()\x60\x22\x27]*)|\x49(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|("
-        r")\x60\x22\x27]*)|\x4c(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)"
-        r"|\x50(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x61(?:[^ \t\n;"
-        r"&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x64(?:[^ \t\n;&|()\x60\x22\x27"
-        r"][^ \t\n;&|()\x60\x22\x27]*)|\x65(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x6"
-        r"0\x22\x27]*)|\x69(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x6"
-        r"c(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x6e(?:[^ \t\n;&|()"
-        r"\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x73(?:[^ \t\n;&|()\x60\x22\x27][^ "
-        r"\t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x2d\x45\x49\x4c\x50\x61\x6"
-        r"4\x65\x69\x6c\x6e\x73][^ \t\n;&|()\x60\x22\x27]*)))*[ \t]+)*(?:[^ \t\n;&|()"
-        r"\x60\x22\x27]*/)?(?:(?:(?:sudo|doas|pkexec|run0)(?:[ \t\r\n;&|()\x60]|$)|su("
-        r"?:[ \t]+(?:\x22[^\x22\n]*\x22|\x27[^\x27\n]*\x27|[^ \t\n;&|()\x60\x22\x27]+)"
-        r")*[ \t]+(?:-c[^ \t\n;&|()\x60]*|--command(?:=[^ \t\n;&|()\x60]*)?)(?:[ \t\r"
-        r"\n;&|()\x60]|$)))",
+        r"27|[^ \t\n;&|()\x60\x22\x27]+)[ \t]+|(?:[^ \t\n;&|()\x60\x22\x27]*/)?(?:"
+        r"xargs)(?:[ \t]+(?:(?:-a|--arg-file|-d|--delimiter|-E|-e|-I|-i|-L|-l|-n|--max"
+        r"-args|-P|--max-procs|-s|--max-chars)[ \t]+(?:\x22[^\x22\n]*\x22|\x27[^\x27\n"
+        r"]*\x27|[^- \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*|-[0-9]+)|-(?:\x2"
+        r"d(?:\x61(?:\x72(?:\x67(?:\x2d(?:\x66(?:\x69(?:\x6c(?:\x65(?:[^ \t\n;&|()\x60"
+        r"\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x65][^ \t\n;&|"
+        r"()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x6c][^ \t\n;&|()\x60\x22\x27]*)?"
+        r"|[^ \t\n;&|()\x60\x22\x27\x69][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60"
+        r"\x22\x27\x66][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x2d][^ \t"
+        r"\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x67][^ \t\n;&|()\x60\x22\x2"
+        r"7]*)?|[^ \t\n;&|()\x60\x22\x27\x72][^ \t\n;&|()\x60\x22\x27]*)?|\x64(?:\x65("
+        r"?:\x6c(?:\x69(?:\x6d(?:\x69(?:\x74(?:\x65(?:\x72(?:[^ \t\n;&|()\x60\x22\x27]"
+        r"[^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x72][^ \t\n;&|()\x60\x2"
+        r"2\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x65][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;"
+        r"&|()\x60\x22\x27\x74][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x"
+        r"69][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x6d][^ \t\n;&|()\x6"
+        r"0\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x69][^ \t\n;&|()\x60\x22\x27]*)?|[^ "
+        r"\t\n;&|()\x60\x22\x27\x6c][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22"
+        r"\x27\x65][^ \t\n;&|()\x60\x22\x27]*)?|\x6d(?:\x61(?:\x78(?:\x2d(?:\x61(?:\x7"
+        r"2(?:\x67(?:\x73(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|[^ \t"
+        r"\n;&|()\x60\x22\x27\x73][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x2"
+        r"7\x67][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x72][^ \t\n;&|()"
+        r"\x60\x22\x27]*)?|\x63(?:\x68(?:\x61(?:\x72(?:\x73(?:[^ \t\n;&|()\x60\x22\x27"
+        r"][^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x73][^ \t\n;&|()\x60\x"
+        r"22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x72][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n"
+        r";&|()\x60\x22\x27\x61][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27"
+        r"\x68][^ \t\n;&|()\x60\x22\x27]*)?|\x70(?:\x72(?:\x6f(?:\x63(?:\x73(?:[^ \t\n"
+        r";&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x73]["
+        r"^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x63][^ \t\n;&|()\x60\x2"
+        r"2\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x6f][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;"
+        r"&|()\x60\x22\x27\x72][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x"
+        r"61\x63\x70][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x2d][^ \t\n"
+        r";&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x60\x22\x27\x78][^ \t\n;&|()\x60\x22\x27]"
+        r"*)?|[^ \t\n;&|()\x60\x22\x27\x61][^ \t\n;&|()\x60\x22\x27]*)?|[^ \t\n;&|()\x"
+        r"60\x22\x27\x61\x64\x6d][^ \t\n;&|()\x60\x22\x27]*)?|\x45(?:[^ \t\n;&|()\x60"
+        r"\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x49(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n"
+        r";&|()\x60\x22\x27]*)|\x4c(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x2"
+        r"7]*)|\x50(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x61(?:[^ "
+        r"\t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x64(?:[^ \t\n;&|()\x60\x2"
+        r"2\x27][^ \t\n;&|()\x60\x22\x27]*)|\x65(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|"
+        r"()\x60\x22\x27]*)|\x69(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*"
+        r")|\x6c(?:[^ \t\n;&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x6e(?:[^ \t\n"
+        r";&|()\x60\x22\x27][^ \t\n;&|()\x60\x22\x27]*)|\x73(?:[^ \t\n;&|()\x60\x22\x2"
+        r"7][^ \t\n;&|()\x60\x22\x27]*)|[^ \t\n;&|()\x60\x22\x27\x2d\x45\x49\x4c\x50\x"
+        r"61\x64\x65\x69\x6c\x6e\x73][^ \t\n;&|()\x60\x22\x27]*)))*[ \t]+)*(?:[^ \t\n;"
+        r"&|()\x60\x22\x27]*/)?(?:(?:(?:sudo|doas|pkexec|run0)(?:[ \t\r\n;&|()\x60]|$)"
+        r"|su(?:[ \t]+(?:\x22[^\x22\n]*\x22|\x27[^\x27\n]*\x27|[^ \t\n;&|()\x60\x22\x2"
+        r"7]+))*[ \t]+(?:-c[^ \t\n;&|()\x60]*|--command(?:=[^ \t\n;&|()\x60]*)?)(?:[ "
+        r"\t\r\n;&|()\x60]|$)))",
         HISS_REFUSAL,
     ),
     (
-        r"(?i)(standardsctl|praetorctl)\s+(adopt|conform|bootstrap|needs\s+(scan|repor"
-        r"t|migrate|epic))\b.*\bdev[/\\]?(\s|$)",
+        r"(?i)(standardsctl|praetorctl)\s+(adopt|conform|bootstrap|needs\s+(scan|"
+        r"report|migrate|epic))\b.*\bdev[/\\]?(\s|$)",
         DEV_01_REFUSAL,
     ),
 ]
@@ -392,9 +392,9 @@ READ_ONLY_WORDS = (
     r"\t]*sed)[ \t]+-n\b(?:[ \t]+[-A-Za-z0-9_./:=@,+~*?]+)*"
 )
 READ_ONLY_VETO = (
-    r"[^\t\x20-\x7e]|[\\\x60$(){}<>^!]|--%|%[;&|]|(?i:(?:\A|[^-A-Za-z0-9_])(?:export|de"
-    r"clare|typeset|set|setenv|alias|function|sal|nal|set-alias|new-alias|doskey|hash)("
-    r"?:[^-A-Za-z0-9_]|$))"
+    r"[^\t\x20-\x7e]|[\\\x60$(){}<>^!]|--%|%[;&|]|(?i:(?:\A|[^-A-Za-z0-9_])(?:export|"
+    r"declare|typeset|set|setenv|alias|function|sal|nal|set-alias|new-alias|doskey|hash"
+    r")(?:[^-A-Za-z0-9_]|$))"
 )
 
 LEFTHOOK_DISABLED = [
@@ -412,6 +412,7 @@ class Blocked(Exception):
 
 
 def read_payload_command(stream):
+    """Read one bounded tool-call payload and require a shell command."""
     raw = stream.read(MAX_INPUT_BYTES + 1)
     if len(raw) > MAX_INPUT_BYTES:
         raise ValueError("hook input exceeds " + str(MAX_INPUT_BYTES) + " bytes")
@@ -428,6 +429,7 @@ def read_payload_command(stream):
 
 
 def pending_command():
+    """Select the pending command from arguments or standard input."""
     if len(sys.argv) > 1:
         return " ".join(sys.argv[1:])
     if sys.stdin.isatty():
@@ -439,6 +441,7 @@ def pending_command():
 
 
 def check_environment(environ):
+    """Reject environment settings that bypass the configured checks."""
     value = environ.get("LEFTHOOK")
     for disabled, refusal in LEFTHOOK_DISABLED:
         if value == disabled:
@@ -449,6 +452,7 @@ def check_environment(environ):
 
 
 def without_read_only_words(command):
+    """Remove read-only command words before judging exempt policy rules."""
     # The words of git log, head, sed -n and the other read-only commands READ_ONLY_WORDS
     # names, chained after ;, &&, || or |, belong to that command and are dropped, its name
     # kept. A command holding a construct READ_ONLY_VETO names keeps every word.
@@ -458,6 +462,7 @@ def without_read_only_words(command):
 
 
 def join_line_continuations(command):
+    """Normalize shell line continuations before matching policy rules."""
     # A backslash followed by a newline (LF or CRLF) joins lines without regex backtracking.
     return re.sub(r"\\\r?\n", " ", command)
 
@@ -501,6 +506,7 @@ def search(pattern, text):
 
 
 def check_command(command):
+    """Reject oversized commands and commands matching the evasion policy."""
     command = join_line_continuations(command)
     # re backtracks, so a longer command or line could stall this script past the harness's
     # hook timeout. Such a command is refused, never truncated.
@@ -519,6 +525,7 @@ def check_command(command):
 
 
 def main():
+    """Validate the pending tool call and exit with the harness refusal status."""
     try:
         check_environment(os.environ)
         check_command(pending_command())

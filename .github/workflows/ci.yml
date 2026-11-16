@@ -13,7 +13,7 @@ env:
   # The Praetor engine this repository runs: the Git hooks install exactly this commit, and
   # tools/go/go.mod pins the same commit for the gates below. Move both together, with a
   # re-adopt (praetorctl adopt).
-  PRAETOR_REF: 18c50fc7476aeb92011a409bc6b71351a9ded3cf
+  PRAETOR_REF: 8684218e78b89d81585d2a482eebb48da18180f0
 
 jobs:
   # The required check. Every gate here runs offline; the tools come from

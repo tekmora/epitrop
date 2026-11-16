@@ -80,3 +80,6 @@ docs_surfaces:
       - "docs/agent-onboarding.md"
       - "docs/architecture-v2.md"
       - "docs/data-sync.md"
+release:
+  e2e:
+    since: 011ac7d867c2a67e57bfe69355f6717b737af8e7
