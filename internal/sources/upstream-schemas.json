@@ -34,13 +34,13 @@
       "url_template": "https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties.md",
       "pinned_revision": "OpenAPI info.version 1.0.0",
       "pin_description": "OpenRouter does not publish a stable commit pin for this document; this fragment is pinned by the embedded OpenAPI info.version plus full-document sha256.",
-      "full_document_sha256": "e34bf4a4e01c917f7c1e39d2592b2b1f108982e34edfc5c18501d4e05c77180c",
+      "full_document_sha256": "1da924d0a4f2eb6f3df9866b03517ad5937eae9e4e026b25335b8443a8fd9930",
       "spdx_license": "MIT",
       "copyright_holder": "OpenRouter",
       "fragments": [
         {
           "path": "internal/sources/publiccatalog/testdata/upstream/openrouter-models-openapi.yaml",
-          "body_sha256": "608177fe9fd6311e367c7513ce77a0fd6bcb8b0b4fdc2e46771d1655e795f2ba"
+          "body_sha256": "a504f4bc5c6e118bddeb4babe1652c96446b10f5cef254ba7b3350fc838b5585"
         }
       ]
     },
