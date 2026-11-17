@@ -67,6 +67,7 @@ case "$tool" in
       "$plant/real" \
       "$plant/xclaude" \
       "$plant/notes.claude" \
+      "$plant/dots...mid" \
       "$plant/.claude/worktrees/w" \
       "$plant/.standards/worktrees/gate-1" \
       "$plant/.hidden/probe"
@@ -88,7 +89,14 @@ case "$tool" in
     # F: dot state folder with no go.mod holding a stray .go file -> must be excluded (G108).
     printf '%s\n' 'package probe' '' 'import _ "net/http/pprof"' \
       > "$plant/.hidden/probe/probe.go"
-    expected=(G501 G502 G503)
+    # G: module-root package -> must stay scanned (G404).
+    printf '%s\n' 'package planted' '' 'import "math/rand"' '' \
+      'func weakRandom() int { return rand.Int() }' > "$plant/g.go"
+    # H: three dots inside a folder name -> must stay scanned as itself (G306).
+    printf '%s\n' 'package dotsmid' '' 'import "os"' '' \
+      'func weakPermissions() error { return os.WriteFile("plant", nil, 0o777) }' \
+      > "$plant/dots...mid/h.go"
+    expected=(G501 G502 G503 G404 G306)
     rc=0
     run_make_gosec "$log" || rc="$?"
     ;;
@@ -165,6 +173,14 @@ esac
 require_findings "$tool" "$rc" "$log" "${expected[@]}"
 
 if [[ "$tool" == "gosec" ]]; then
+  if ! grep -F -- "$plant/g.go:" "$log" | grep -F -- ' - G404 ('; then
+    echo "$tool: G (module root) finding G404 not reported in $plant/g.go" >&2
+    exit 1
+  fi
+  if ! grep -F -- "$plant/dots...mid/h.go:" "$log" | grep -F -- ' - G306 ('; then
+    echo "$tool: H (mid-name dots) finding G306 not reported in $plant/dots...mid/h.go" >&2
+    exit 1
+  fi
   unexpected=0
   for forbidden in G504 G505 G108 .claude/worktrees .standards/worktrees .hidden/probe; do
     if grep -qF -- "$forbidden" "$log"; then
@@ -181,7 +197,22 @@ if [[ "$tool" == "gosec" ]]; then
   run_make_gosec "$neg_log" "GOSEC_PACKAGES=echo ./..." || neg_rc="$?"
   require_findings "$tool (GOSEC_PACKAGES='echo ./...')" "$neg_rc" "$neg_log" G504 G505 G108
 
-  rm -r "$plant/real" "$plant/xclaude" "$plant/notes.claude"
+  # I: folder name ending in a dot -> go list must fail before gosec runs.
+  mkdir "$plant/trail..."
+  printf '%s\n' 'package trail' > "$plant/trail.../i.go"
+  trailing_log="$plant/trailing-scan.log"
+  trailing_rc=0
+  run_make_gosec "$trailing_log" || trailing_rc="$?"
+  if [[ "$trailing_rc" -ne 2 ]] || grep -q '^Results:' "$trailing_log" || \
+    ! grep -qF 'malformed import path' "$trailing_log"; then
+    echo "$tool: I (trailing-dot folder) gave exit $trailing_rc, want 2, malformed import path, no Results:" >&2
+    cat "$trailing_log" >&2
+    exit 1
+  fi
+  rm -r "$plant/trail..."
+
+  rm -r "$plant/real" "$plant/xclaude" "$plant/notes.claude" "$plant/dots...mid"
+  rm "$plant/g.go"
   mkdir -p "$plant/clean"
   printf '%s\n' 'package clean' > "$plant/clean/clean.go"
   clean_log="$plant/clean-scan.log"
@@ -193,7 +224,7 @@ if [[ "$tool" == "gosec" ]]; then
     exit 1
   fi
 
-  echo "$tool: ${#expected[@]} planted findings reported (exit 1), nested worktrees and dot folders excluded, negative control reported excluded findings (exit 1), clean tree passed (exit 0)"
+  echo "$tool: ${#expected[@]} planted findings reported (exit 1), G module root and H mid-name dots scanned, nested worktrees and dot folders excluded, negative control reported excluded findings (exit 1), I trailing-dot folder rejected before scan (exit 2), clean tree passed (exit 0)"
 else
   echo "$tool: ${#expected[@]} planted findings reported, exit 1 as required"
 fi

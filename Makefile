@@ -108,9 +108,11 @@ govulncheck:
 
 # gosec walks every folder under ./... itself, nested worktrees and dot folders included; the
 # go command's package list is the allow-list (skips dot and underscore folders, testdata,
-# nested modules, and go.mod ignore directives). Relative package folders are import-path
-# suffixes, which hold no blank or glob character, so the unquoted expansion cannot split or
-# glob a path.
+# nested modules, and go.mod ignore directives). The literal . prefix keeps the module root
+# as . rather than an empty word the shell drops. Import-path rules forbid blanks and glob
+# characters, so the unquoted expansion cannot split or glob. gosec treats only trailing ...
+# as a pattern; folders holding ... mid-name are scanned as themselves. go list refuses folder
+# names ending in a dot, failing the target before gosec runs.
 GOSEC_PACKAGES = go list -f '.{{slice .Dir (len .Root)}}' ./...
 
 gosec-selftest:
