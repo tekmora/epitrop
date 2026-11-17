@@ -75,9 +75,9 @@ commit-messages:
 # vulnerability database online, as in CI. docs-drift compares this branch with origin/main;
 # when the pull request body will carry a 'no docs needed: <reason>' line, put that text in a
 # file and pass it as PR_BODY_FILE=<file>.
-.PHONY: ci-parity gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec docs-drift
+.PHONY: ci-parity gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec docs-drift
 verify-all: ci-parity
-ci-parity: commit-messages gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec docs-drift
+ci-parity: commit-messages gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec docs-drift
 
 GOTOOL := go tool -modfile=tools/go/go.mod
 
@@ -106,8 +106,20 @@ gitleaks:
 govulncheck:
 	@$(GOTOOL) standardsctl security govuln --path=. -- $(GOTOOL) govulncheck
 
+# gosec walks every folder under ./... itself, nested worktrees and dot folders included; the
+# go command's package list is the allow-list (skips dot and underscore folders, testdata,
+# nested modules, and go.mod ignore directives). The literal . prefix keeps the module root
+# as . rather than an empty word the shell drops. Import-path rules forbid blanks and glob
+# characters, so the unquoted expansion cannot split or glob. gosec treats only trailing ...
+# as a pattern; folders holding ... mid-name are scanned as themselves. go list refuses folder
+# names ending in a dot, failing the target before gosec runs.
+GOSEC_PACKAGES = go list -f '.{{slice .Dir (len .Root)}}' ./...
+
+gosec-selftest:
+	@bash tools/linterselftest/selftest.sh gosec
+
 gosec:
-	@$(GOTOOL) gosec -conf .gosec.json ./...
+	@pkgs="$$($(GOSEC_PACKAGES))" && $(GOTOOL) gosec -conf .gosec.json $$pkgs
 
 docs-drift:
 	@$(GOTOOL) standardsctl docs references --path=. --base=$$(git merge-base origin/main HEAD) \

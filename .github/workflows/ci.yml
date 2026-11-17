@@ -104,8 +104,13 @@ jobs:
         run: >-
           go tool -modfile=tools/go/go.mod standardsctl security govuln --path=.
           -- go tool -modfile=tools/go/go.mod govulncheck
+      # HISS-21: gosec and its self-test run on this Linux job only (platforms.yml runs
+      # go test only); the self-test drives bash and GNU make, and gosec loads only the
+      # packages the runner's GOOS builds.
+      - name: gosec self-test (planted findings must fail)
+        run: make gosec-selftest
       - name: gosec
-        run: go tool -modfile=tools/go/go.mod gosec -conf .gosec.json ./...
+        run: make gosec
       # semgrep, declared by the framework profile and the agent:sandboxed facet, with the
       # repository's own HISS rules (.config/semgrep/hiss.yml). The self-test plants one finding
       # per rule and must see each reported before the tree scan is trusted. Every package,

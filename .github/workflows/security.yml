@@ -60,4 +60,4 @@ jobs:
           go tool -modfile=tools/go/go.mod standardsctl security govuln --path=.
           -- go tool -modfile=tools/go/go.mod govulncheck
       - name: Run gosec
-        run: go tool -modfile=tools/go/go.mod gosec -conf .gosec.json ./...
+        run: make gosec

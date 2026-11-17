@@ -1,0 +1,2 @@
+type: fixed
+title: '`make gosec`, and the CI steps that now call it, scan the packages the `go` command builds: nested worktrees under `.claude/` and `.standards/` and other dot folders are no longer scanned, and a self-test proves a planted finding in the tree still fails the scan'
