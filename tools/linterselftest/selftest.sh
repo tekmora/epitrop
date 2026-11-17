@@ -6,8 +6,10 @@
 # .config/semgrep/hiss.yml, spectral reads .spectral.yaml and needs tools/spectral installed)
 set -euo pipefail
 tool="${1:?usage: selftest.sh gosec|semgrep|spectral|trivy}"
-plant="$(mktemp -d)"
-trap 'rm -r "$plant"' EXIT
+scratch="$(mktemp -d)"
+trap 'rm -r "$scratch"' EXIT
+plant="$scratch/plant"
+mkdir "$plant"
 log="$plant/scan.log"
 
 require_findings() {
@@ -34,8 +36,11 @@ run_make_gosec() {
   local out="$1"
   shift
   local make_rc=0
-  LC_ALL=C MAKEFLAGS="" make -s -C "$plant" -f "$repo/Makefile" gosec \
-    GOTOOL="go tool -modfile=$repo/tools/go/go.mod" "$@" > "$out" 2>&1 || make_rc="$?"
+  # make pastes $(GOTOOL) unquoted; pass the modfile path via env so blanks do not split.
+  # shellcheck disable=SC2016 # $$ expands in make and the recipe shell, not here.
+  LC_ALL=C MAKEFLAGS="" GOSEC_SELFTEST_MODFILE="$modfile" \
+    make -s -C "$plant" -f "$repo/Makefile" gosec \
+    GOTOOL='go tool -modfile="$$GOSEC_SELFTEST_MODFILE"' "$@" > "$out" 2>&1 || make_rc="$?"
   # GNU make exits 2 whenever a target fails; map recipe exit 1 ("Error 1") back to 1 only when
   # gosec printed Results: (not when go list failed or zero args printed usage), so 1 = findings.
   if [[ "$make_rc" -eq 2 ]] && grep -qE '(\[|: )gosec\] Error 1$' "$out" && grep -q '^Results:' "$out"; then
@@ -54,6 +59,9 @@ init_module() {
 case "$tool" in
   gosec)
     repo="$PWD"
+    moddir="$(mktemp -d "$scratch/go tools.XXXXXX")"
+    cp "$repo/tools/go/go.mod" "$repo/tools/go/go.sum" "$moddir/"
+    modfile="$moddir/go.mod"
     cp "$repo/.gosec.json" "$plant/.gosec.json"
     mkdir -p \
       "$plant/real" \
