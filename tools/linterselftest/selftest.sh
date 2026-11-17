@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Plants findings in a temporary directory and requires the named scanner to fail on each,
 # so the tree scan that follows it in ci.yml is proven to catch them.
-# Usage: selftest.sh gosec|semgrep|spectral|trivy   (run from the repository root; gosec runs
-# Makefile's gosec target with .gosec.json and tools/go/go.mod, semgrep reads
-# .config/semgrep/hiss.yml, spectral reads .spectral.yaml and needs tools/spectral installed)
+# Usage: selftest.sh gosec|semgrep|spectral|trivy|osv-scanner   (run from the repository root; gosec
+# runs Makefile's gosec target with .gosec.json and tools/go/go.mod, semgrep reads
+# .config/semgrep/hiss.yml, spectral reads .spectral.yaml and needs tools/spectral installed,
+# osv-scanner reads osv.dev online with tools/osvscanner/go.mod and osv-scanner.toml)
 set -euo pipefail
-tool="${1:?usage: selftest.sh gosec|semgrep|spectral|trivy}"
+tool="${1:?usage: selftest.sh gosec|semgrep|spectral|trivy|osv-scanner}"
 scratch="$(mktemp -d)"
 trap 'rm -r "$scratch"' EXIT
 plant="$scratch/plant"
@@ -163,6 +164,57 @@ YAML
       --skip-version-check --disable-telemetry --format json "$plant" > "$log" 2>&1
     rc=$?
     set -e
+    ;;
+  osv-scanner)
+    # A: the real lock with fast-uri set back to 3.1.8 (GHSA-w74x-v6f9-j3xg, fixed in 3.1.9)
+    # must fail the scan under the repository's osv-scanner.toml. B: the real lock under a copy
+    # of osv-scanner.toml whose effectiveUntil lies in the past must report the picomatch advisory
+    # again. Exit 1 means advisories found; 0 or 2 and above (scanner error) fails the self-test.
+    repo="$PWD"
+    modfile="$repo/tools/osvscanner/go.mod"
+    old_version="3.1.8"
+    old_integrity="sha512-GZMtZUTNRpOVIECoXwLNZS5xUGE+mVNbTB8h/7Rwh2TFWcBQiPzTgyZi05BF9UMZKkLJv8XBRJTlU7zg8+ZfMg=="
+    python3 - "$repo/tools/spectral/package-lock.json" "$plant/package-lock.json" \
+      "$old_version" "$old_integrity" <<'PY'
+import json
+import sys
+
+src, dst, version, integrity = sys.argv[1:5]
+with open(src, encoding="utf-8") as fh:
+    lock = json.load(fh)
+entry = lock["packages"]["node_modules/fast-uri"]
+entry["version"] = version
+entry["resolved"] = "https://registry.npmjs.org/fast-uri/-/fast-uri-" + version + ".tgz"
+entry["integrity"] = integrity
+with open(dst, "w", encoding="utf-8") as fh:
+    json.dump(lock, fh, indent=2)
+    fh.write("\n")
+PY
+    expected=(GHSA-w74x-v6f9-j3xg)
+    set +e
+    go tool -modfile="$modfile" osv-scanner scan --lockfile "$plant/package-lock.json" \
+      --config "$repo/osv-scanner.toml" > "$log" 2>&1
+    rc=$?
+    set -e
+    require_findings "$tool (fast-uri $old_version planted)" "$rc" "$log" "${expected[@]}"
+    rm "$plant/package-lock.json"
+
+    expired_log="$plant/expired-scan.log"
+    expired_config="$plant/osv-scanner.toml"
+    sed 's/^effectiveUntil = .*/effectiveUntil = 2020-01-01/' "$repo/osv-scanner.toml" > "$expired_config"
+    if ! grep -q '^effectiveUntil = 2020-01-01$' "$expired_config"; then
+      echo "$tool: could not rewrite effectiveUntil in osv-scanner.toml" >&2
+      exit 1
+    fi
+    expected=(GHSA-fc5q-39xc-vjpf)
+    set +e
+    go tool -modfile="$modfile" osv-scanner scan --lockfile "$repo/tools/spectral/package-lock.json" \
+      --config "$expired_config" > "$expired_log" 2>&1
+    rc=$?
+    set -e
+    require_findings "$tool (expired exemption)" "$rc" "$expired_log" "${expected[@]}"
+    echo "$tool: planted fast-uri $old_version reported (GHSA-w74x-v6f9-j3xg, exit 1), expired exemption reported (GHSA-fc5q-39xc-vjpf, exit 1)"
+    exit 0
     ;;
   *)
     echo "unknown tool: $tool" >&2

@@ -83,3 +83,14 @@ docs_surfaces:
 release:
   e2e:
     since: 011ac7d867c2a67e57bfe69355f6717b737af8e7
+
+# HISS-11 exception: GHSA-fc5q-39xc-vjpf in picomatch (tools/spectral/package-lock.json) has no
+# fixed release; it ends when a patched picomatch is released. The osv-scanner gate
+# (make lock-advisories) reads the same entry and date through osv-scanner.toml.
+exceptions:
+  - rule: backlog.caps.forge_alerts
+    tool: backlog
+    reason: "category C: GHSA-fc5q-39xc-vjpf in picomatch 2.3.2 (tools/spectral/package-lock.json) has no fixed release; ends when a patched picomatch is released"
+    category: C
+    entered: "2026-11-17"
+    expires: "2026-11-27"

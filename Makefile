@@ -75,9 +75,9 @@ commit-messages:
 # vulnerability database online, as in CI. docs-drift compares this branch with origin/main;
 # when the pull request body will carry a 'no docs needed: <reason>' line, put that text in a
 # file and pass it as PR_BODY_FILE=<file>.
-.PHONY: ci-parity gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec docs-drift
+.PHONY: ci-parity gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec docs-drift lock-advisories-selftest lock-advisories
 verify-all: ci-parity
-ci-parity: commit-messages gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec docs-drift
+ci-parity: commit-messages gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec lock-advisories-selftest lock-advisories docs-drift
 
 GOTOOL := go tool -modfile=tools/go/go.mod
 
@@ -120,6 +120,20 @@ gosec-selftest:
 
 gosec:
 	@pkgs="$$($(GOSEC_PACKAGES))" && $(GOTOOL) gosec -conf .gosec.json $$pkgs
+
+# lock-advisories scans the locked spectral CLI (tools/spectral/package-lock.json) for known
+# advisories with osv-scanner, pinned in its own tool module (tools/osvscanner) because its
+# dependencies conflict with the root module's. It reads osv.dev online, like govulncheck, and
+# every severity fails: exit 1 on any advisory osv-scanner.toml does not exempt, and the one
+# exemption it holds expires by itself. The self-test plants an old fast-uri and an expired
+# exemption and must see both reported before the scan is trusted.
+OSVSCANNER := go tool -modfile=tools/osvscanner/go.mod osv-scanner
+
+lock-advisories-selftest:
+	@bash tools/linterselftest/selftest.sh osv-scanner
+
+lock-advisories:
+	@$(OSVSCANNER) scan --lockfile tools/spectral/package-lock.json --config osv-scanner.toml
 
 docs-drift:
 	@$(GOTOOL) standardsctl docs references --path=. --base=$$(git merge-base origin/main HEAD) \

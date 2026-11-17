@@ -144,6 +144,14 @@ jobs:
         run: >-
           tools/spectral/node_modules/.bin/spectral lint -F warn --ruleset .spectral.yaml
           'internal/sources/*/testdata/upstream/*-openapi.yaml'
+      # HISS-11: the locked spectral CLI against osv.dev, every severity failing. osv-scanner is
+      # pinned in tools/osvscanner; osv-scanner.toml holds the one dated exemption, the same one
+      # .standards.yaml records. The self-test plants an old fast-uri and an expired exemption
+      # and must see both reported.
+      - name: lock advisories self-test (planted findings must fail)
+        run: make lock-advisories-selftest
+      - name: lock advisories (osv-scanner)
+        run: make lock-advisories
       # trivy, declared by the framework profile: misconfiguration and secret scans of the tree.
       # The release tarball is pinned by its sha256 from the upstream checksums file; the
       # self-test plants a HIGH Dockerfile finding and a CRITICAL token and must see both.
