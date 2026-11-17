@@ -57,6 +57,67 @@ init_module() {
   fi
 }
 
+# Reads the shared end date of the one osv-scanner.toml exemption and of the .standards.yaml
+# exceptions entry for rule backlog.caps.forge_alerts; prints it, or exits 1 naming both values.
+# The scan is not trusted when the dates differ, another advisory is exempt, or an entry is missing.
+shared_exemption_date() {
+  python3 - "$1" "$2" <<'PY'
+import datetime
+import re
+import sys
+import tomllib
+
+toml_path, yaml_path = sys.argv[1:3]
+want_id = "GHSA-fc5q-39xc-vjpf"
+rule = "backlog.caps.forge_alerts"
+seen = {"effectiveUntil": "<unread>", "expires": "<unread>"}
+
+
+def fail(why):
+    print(f"osv-scanner: exemption dates: {why}: osv-scanner.toml effectiveUntil="
+          f"{seen['effectiveUntil']} .standards.yaml expires={seen['expires']}", file=sys.stderr)
+    sys.exit(1)
+
+
+def read_toml():
+    with open(toml_path, "rb") as fh:
+        ignored = tomllib.load(fh).get("IgnoredVulns", [])
+    if len(ignored) != 1 or ignored[0].get("id") != want_id:
+        fail(f"osv-scanner.toml must hold exactly one IgnoredVulns entry, {want_id}; got "
+             f"{[e.get('id') for e in ignored]}")
+    seen["effectiveUntil"] = str(ignored[0].get("effectiveUntil", "<missing>"))
+
+
+def read_yaml():
+    with open(yaml_path, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    hits = [i for i, ln in enumerate(lines) if rule in ln and not ln.lstrip().startswith("#")]
+    if len(hits) != 1 or lines[hits[0]].rstrip() != f"  - rule: {rule}":
+        fail(f"want exactly one '  - rule: {rule}' entry in .standards.yaml, got {len(hits)}")
+    found = []
+    for ln in lines[hits[0] + 1:]:
+        if re.match(r"  - |\S", ln):
+            break
+        match = re.fullmatch(r'    expires: "?(\d{4}-\d{2}-\d{2})"?\s*(#.*)?', ln)
+        if match:
+            found.append(match.group(1))
+    if len(found) != 1:
+        fail(f"want exactly one expires line in the {rule} entry, got {len(found)}")
+    seen["expires"] = found[0]
+
+
+try:
+    read_toml()
+    read_yaml()
+    dates = {k: datetime.date.fromisoformat(v) for k, v in seen.items()}
+except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+    fail(f"unreadable ({exc})")
+if dates["effectiveUntil"] != dates["expires"]:
+    fail("dates differ")
+print(dates["expires"].isoformat())
+PY
+}
+
 case "$tool" in
   gosec)
     repo="$PWD"
@@ -169,9 +230,14 @@ YAML
     # A: the real lock with fast-uri set back to 3.1.8 (GHSA-w74x-v6f9-j3xg, fixed in 3.1.9)
     # must fail the scan under the repository's osv-scanner.toml. B: the real lock under a copy
     # of osv-scanner.toml whose effectiveUntil lies in the past must report the picomatch advisory
-    # again. Exit 1 means advisories found; 0 or 2 and above (scanner error) fails the self-test.
+    # again. C: osv-scanner.toml effectiveUntil equals the .standards.yaml forge_alerts expires and
+    # no other advisory is exempt (checked first, offline). Exit 1 means advisories found; 0 or
+    # 2 and above (scanner error) fails the self-test.
     repo="$PWD"
     modfile="$repo/tools/osvscanner/go.mod"
+    if ! shared_date="$(shared_exemption_date "$repo/osv-scanner.toml" "$repo/.standards.yaml")"; then
+      exit 1
+    fi
     old_version="3.1.8"
     old_integrity="sha512-GZMtZUTNRpOVIECoXwLNZS5xUGE+mVNbTB8h/7Rwh2TFWcBQiPzTgyZi05BF9UMZKkLJv8XBRJTlU7zg8+ZfMg=="
     python3 - "$repo/tools/spectral/package-lock.json" "$plant/package-lock.json" \
@@ -213,7 +279,7 @@ PY
     rc=$?
     set -e
     require_findings "$tool (expired exemption)" "$rc" "$expired_log" "${expected[@]}"
-    echo "$tool: planted fast-uri $old_version reported (GHSA-w74x-v6f9-j3xg, exit 1), expired exemption reported (GHSA-fc5q-39xc-vjpf, exit 1)"
+    echo "$tool: planted fast-uri $old_version reported (GHSA-w74x-v6f9-j3xg, exit 1), expired exemption reported (GHSA-fc5q-39xc-vjpf, exit 1), exemption dates agree on $shared_date"
     exit 0
     ;;
   *)
