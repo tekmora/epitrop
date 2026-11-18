@@ -19,6 +19,82 @@ import (
 	"github.com/tekmora/epitrop/internal/eventlog"
 )
 
+// TestShimAllowsStopMarker checks which shim ends allow a supervisor stop marker: a collected
+// end for the run's shim decides by its SIGTERM flag, and without one a spawned shim that has
+// exited allows no marker, because its end cannot be told apart from a crash.
+func TestShimAllowsStopMarker(t *testing.T) {
+	exitedPID := exitedShimPID(t)
+	cmd := exec.CommandContext(t.Context(), "sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start(sleep) = %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if err := cmd.Process.Kill(); err != nil {
+			t.Errorf("Kill(sleep) = %v, want nil", err)
+		}
+		var exitErr *exec.ExitError
+		if err := cmd.Wait(); !errors.As(err, &exitErr) {
+			t.Errorf("Wait(sleep) = %v, want exit error", err)
+		}
+	})
+	livePID := cmd.Process.Pid
+	tests := []struct {
+		name    string
+		shimPID int
+		spawned spawnedShim
+		end     collectedShim
+		hasEnd  bool
+		want    bool
+	}{
+		{"collected SIGTERM", exitedPID, spawnedShim{pid: exitedPID}, collectedShim{pid: exitedPID, sigterm: true}, true, true},
+		{"collected other exit", exitedPID, spawnedShim{pid: exitedPID}, collectedShim{pid: exitedPID}, true, false},
+		{"other collected pid", exitedPID, spawnedShim{pid: exitedPID}, collectedShim{pid: livePID, sigterm: true}, true, false},
+		{"no end exited spawned shim", exitedPID, spawnedShim{pid: exitedPID}, collectedShim{}, false, false},
+		{"no end live spawned shim", livePID, spawnedShim{pid: livePID}, collectedShim{}, false, true},
+		{"no end other spawned pid", exitedPID, spawnedShim{pid: livePID}, collectedShim{}, false, true},
+		{"end ignored when absent", exitedPID, spawnedShim{pid: exitedPID}, collectedShim{pid: exitedPID, sigterm: true}, false, false},
+	}
+	for i := 0; i < len(tests); i++ {
+		tc := tests[i]
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shimAllowsStopMarker(tc.shimPID, tc.spawned, tc.end, tc.hasEnd); got != tc.want {
+				t.Errorf("shimAllowsStopMarker() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+// exitedShimPID returns the pid of a child that has exited and been waited for.
+func exitedShimPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "true")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Run(true) = %v, want nil", err)
+	}
+	return cmd.Process.Pid
+}
+
+// TestSupervisorStopSkipsExitedShimWithoutStatus checks that an exited spawned
+// shim with no collected status does not receive a supervisor stop marker.
+func TestSupervisorStopSkipsExitedShimWithoutStatus(t *testing.T) {
+	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
+	shimPID := exitedShimPID(t)
+	const since = "2026-11-18T08:00:00Z"
+	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "pid": shimPID + 1, "shim_pid": shimPID, "since": since})
+	sup.observeRunning("daemon", since)
+	sup.recordSpawnedShim("daemon", shimPID)
+	sup.mu.Lock()
+	sup.spawnedShim["daemon"] = spawnedShim{pid: shimPID}
+	delete(sup.collectedShim, "daemon")
+	sup.mu.Unlock()
+	if err := sup.markSupervisorStopped(); err != nil {
+		t.Fatalf("markSupervisorStopped() = %v, want nil", err)
+	}
+	if got := historyOne(t, sup, "daemon").SupervisorStops; got != 0 {
+		t.Fatalf("supervisor stop markers without collected status = %d, want 0", got)
+	}
+}
+
 // TestAdoptClearsStopMarkerOnNonAlwaysSchedules: once and cron jobs marked
 // running while their lock is held record job.adopted, clear SupervisorStopped without a new
 // job.started and keep the cron next-fire unchanged; releasing the lock without an exit
