@@ -180,7 +180,11 @@ func assertCanceledWriteHoldsSlotUntilRelease(t *testing.T, sink *lineSink, w *b
 		nextDone <- err
 	}()
 	release <- struct{}{}
-	release <- struct{}{}
+	select {
+	case release <- struct{}{}:
+	case err := <-nextDone:
+		t.Fatalf("write ended before admission: %v", err)
+	}
 	if err := <-nextDone; err != nil {
 		t.Fatalf("write after release = %v, want nil", err)
 	}
@@ -190,6 +194,7 @@ func TestRecoverableFindingPendingWrite(t *testing.T) {
 	t.Run("admitted timeout then late success", testPendingWriteLateSuccess)
 	t.Run("admitted timeout then late failure retries", testPendingWriteLateFailure)
 	t.Run("slot never acquired retries", testPendingWriteSlotNeverAcquired)
+	t.Run("partial write retry stands alone", testPartialWriteRetry)
 }
 
 func newPendingWriteSupervisor(t *testing.T, w *blockedLineWriter) (*Supervisor, eventlog.State) {
@@ -299,6 +304,9 @@ func TestNoJobAliveLostOnce(t *testing.T) {
 	t.Run("held lock once stays alive", testHeldLockOnceAlive)
 	t.Run("new start before confirm replay cancels finding", testLostOnceNewStartBeforeConfirm)
 	t.Run("exit recorded before confirm", testLostOnceExitBeforeConfirm)
+	t.Run("other job starts before confirm", testOtherJobStartsBeforeConfirm)
+	t.Run("changed exit preserves reported episode", testChangedExitPreservesEpisode)
+	t.Run("confirm replay names its own down jobs", testConfirmReplayNamesItsDownJobs)
 }
 
 func testLostOnceFinding(t *testing.T) {
@@ -349,8 +357,8 @@ func testLostOnceNewStartBeforeConfirm(t *testing.T) {
 		plantRunningOnce(t, sup, "manual", "2026-11-18T08:00:01Z")
 	}
 	episode := findingEpisode{reported: true, pending: make(chan error)}
-	if err := sup.checkNoJobAlive(testContext(t), state, &episode); err != nil || stderr.String() != "" || episode.reported || episode.pending != nil {
-		t.Fatalf("checkNoJobAlive = %v, stderr = %q, episode = %+v; want no finding and cleared episode", err, stderr.String(), episode)
+	if err := sup.checkNoJobAlive(testContext(t), state, &episode); err != nil || stderr.String() != "" || !episode.reported || episode.pending == nil {
+		t.Fatalf("checkNoJobAlive = %v, stderr = %q, episode = %+v; want no finding and preserved episode", err, stderr.String(), episode)
 	}
 }
 
@@ -365,8 +373,8 @@ func testLostOnceExitBeforeConfirm(t *testing.T) {
 		plantExit(t, sup, "manual", intPtr(1), "")
 	}
 	episode := findingEpisode{reported: true, pending: make(chan error)}
-	if err := sup.checkNoJobAlive(testContext(t), state, &episode); err != nil || stderr.String() != "" || episode.reported || episode.pending != nil {
-		t.Fatalf("tick 1 (exit before confirm): err = %v, stderr = %q, episode = %+v; want nil, empty, reset", err, stderr.String(), episode)
+	if err := sup.checkNoJobAlive(testContext(t), state, &episode); err != nil || stderr.String() != "" || !episode.reported || episode.pending == nil {
+		t.Fatalf("tick 1 (exit before confirm): err = %v, stderr = %q, episode = %+v; want nil, empty, preserved", err, stderr.String(), episode)
 	}
 	sup.beforeConfirmReplay = nil
 	fresh, err := sup.replayState(testContext(t))
@@ -379,5 +387,104 @@ func testLostOnceExitBeforeConfirm(t *testing.T) {
 	want := "epitrop supervisor: finding: no job alive: manual dead (exit 1, restarts 0/0 in 0s), broken dead (exit 1, restarts 1/1 in 0s); supervise exits 3\n"
 	if got := stderr.String(); got != want {
 		t.Fatalf("tick 2 stderr = %q, want %q", got, want)
+	}
+}
+
+type partialLineWriter struct {
+	buf   strings.Builder
+	calls int
+}
+
+func (w *partialLineWriter) Write(p []byte) (int, error) {
+	w.calls++
+	if w.calls == 1 {
+		n, err := w.buf.Write(p[:8])
+		if err != nil {
+			return n, err
+		}
+		return n, errors.New("partial write")
+	}
+	return w.buf.Write(p)
+}
+
+func testPartialWriteRetry(t *testing.T) {
+	w := &partialLineWriter{}
+	sink := newLineSink(w)
+	line := "epitrop supervisor: finding: no job alive: example"
+	if _, err := writeLine(testContext(t), sink, line, time.Second); err == nil {
+		t.Fatal("first write succeeded")
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := writeLine(testContext(t), sink, line, time.Second); err != nil {
+			t.Fatalf("write %d after the partial write = %v", i+2, err)
+		}
+	}
+	want := line[:8] + "\n" + line + "\n" + line + "\n"
+	if got := w.buf.String(); got != want {
+		t.Fatalf("sink output = %q, want %q (retry on its own line, no blank line after it)", got, want)
+	}
+}
+
+func testOtherJobStartsBeforeConfirm(t *testing.T) {
+	once := testJob("manual", []string{"/bin/true"})
+	once.Schedule = "once"
+	sup := testSupervisor(t, once, budgetJob("broken", 1, []string{"/bin/true"}))
+	stderr := captureSupervisorStderr(sup)
+	plantSpentBudget(t, sup, "broken", 1, intPtr(1), "")
+	state := plantRunningOnce(t, sup, "manual", "2026-11-18T08:00:00Z")
+	sup.beforeConfirmReplay = func() {
+		if err := sup.appendJobEvent(testContext(t), "job.started", "broken", map[string]any{"state": "running"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	episode := findingEpisode{reported: true}
+	err := sup.checkNoJobAlive(testContext(t), state, &episode)
+	if err != nil || stderr.String() != "" || episode.reported {
+		t.Fatalf("finding = %v, stderr = %q, reported = %t; want no finding and reset", err, stderr.String(), episode.reported)
+	}
+}
+
+func testChangedExitPreservesEpisode(t *testing.T) {
+	once := testJob("manual", []string{"/bin/true"})
+	once.Schedule = "once"
+	window := budgetJob("window", 1, []string{"/bin/false"})
+	window.Restart.WindowSeconds = 3600
+	sup := testSupervisor(t, once, window)
+	sup.clk = clockwork.NewFakeClockAt(time.Date(2026, 11, 18, 8, 0, 0, 0, time.UTC))
+	stderr := captureSupervisorStderr(sup)
+	plantSpentBudget(t, sup, "window", 1, intPtr(1), "")
+	state := plantRunningOnce(t, sup, "manual", "2026-11-18T08:00:00Z")
+	var episode findingEpisode
+	checkFindingEpisode(t, sup, state, &episode)
+	sup.beforeConfirmReplay = func() { plantExit(t, sup, "manual", intPtr(1), "") }
+	checkFindingEpisode(t, sup, state, &episode)
+	sup.beforeConfirmReplay = nil
+	fresh, err := sup.replayState(testContext(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkFindingEpisode(t, sup, fresh, &episode)
+	if got := strings.Count(stderr.String(), "\n"); got != 1 {
+		t.Fatalf("recoverable lines = %d, want 1: %q", got, stderr.String())
+	}
+}
+
+// testConfirmReplayNamesItsDownJobs: a job stopped between the two replays leaves the
+// finding, so the line names only the jobs the confirm replay still counts down.
+func testConfirmReplayNamesItsDownJobs(t *testing.T) {
+	once := testJob("manual", []string{"/bin/true"})
+	once.Schedule = "once"
+	sup := testSupervisor(t, once, budgetJob("broken", 1, []string{"/bin/true"}))
+	stderr := captureSupervisorStderr(sup)
+	plantSpentBudget(t, sup, "broken", 1, intPtr(1), "")
+	state := plantRunningOnce(t, sup, "manual", "2026-11-18T08:00:00Z")
+	sup.beforeConfirmReplay = func() { plantStopped(t, sup, "broken") }
+	var episode findingEpisode
+	if err := sup.checkNoJobAlive(testContext(t), state, &episode); !errors.Is(err, ErrNoJobAlive) {
+		t.Fatalf("checkNoJobAlive = %v, want ErrNoJobAlive", err)
+	}
+	want := "epitrop supervisor: finding: no job alive: manual dead (exit lost, restarts 0/0 in 0s); supervise exits 3\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 }

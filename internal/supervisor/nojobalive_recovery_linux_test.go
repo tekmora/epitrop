@@ -138,17 +138,28 @@ func TestFindingWriteDeadline(t *testing.T) {
 	select {
 	case <-entered:
 	case err := <-done:
-		t.Fatalf("Supervise ended before Write entry: %v", err)
+		select {
+		case <-entered:
+			assertFindingTimeout(t, err)
+			return
+		default:
+			t.Fatalf("Supervise ended before Write entry: %v", err)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Supervise did not reach finding Write within 10s")
 	}
 	select {
 	case err := <-done:
-		if !errors.Is(err, ErrNoJobAlive) || !errors.Is(err, ErrFindingLineNotWritten) || !errors.Is(err, ErrWriteTimedOut) {
-			t.Fatalf("Supervise = %v, want both sentinels and timeout", err)
-		}
+		assertFindingTimeout(t, err)
 	case <-time.After(time.Second):
 		t.Fatal("finding write exceeded 1s, want configured 20ms timeout")
+	}
+}
+
+func assertFindingTimeout(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, ErrNoJobAlive) || !errors.Is(err, ErrFindingLineNotWritten) || !errors.Is(err, ErrWriteTimedOut) {
+		t.Fatalf("Supervise = %v, want both sentinels and timeout", err)
 	}
 }
 

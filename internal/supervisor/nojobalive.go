@@ -143,11 +143,14 @@ func (s *Supervisor) checkNoJobAlive(ctx context.Context, state eventlog.State, 
 		episode.reset()
 		return nil
 	}
-	confirmed, err := s.confirmLostOnce(ctx, down)
+	down, confirmed, err := s.confirmLostOnce(ctx, down)
 	if err != nil {
 		return err
 	}
 	if !confirmed {
+		return nil
+	}
+	if len(down) == 0 {
 		episode.reset()
 		return nil
 	}
@@ -156,26 +159,30 @@ func (s *Supervisor) checkNoJobAlive(ctx context.Context, state eventlog.State, 
 
 // confirmLostOnce replays once more after a lock-free once candidate was seen, so a shim
 // that recorded its exit just before releasing its lock is not reported as lost.
-func (s *Supervisor) confirmLostOnce(ctx context.Context, down []downJob) (bool, error) {
+func (s *Supervisor) confirmLostOnce(ctx context.Context, down []downJob) ([]downJob, bool, error) {
 	if !hasLostOnce(down) {
-		return true, nil
+		return down, true, nil
 	}
 	if s.beforeConfirmReplay != nil {
 		s.beforeConfirmReplay()
 	}
 	confirmed, err := s.replayState(ctx)
 	if err != nil {
-		return false, err
+		return nil, false, err
+	}
+	confirmedDown := s.downJobsIfNoneAlive(confirmed, s.clk.Now())
+	if len(confirmedDown) == 0 {
+		return nil, true, nil
 	}
 	for i := 0; i < len(down); i++ {
 		if down[i].lostOnce {
 			st := confirmed.Jobs[down[i].job.Name]
 			if st.State != string(StateRunning) || st.Since != down[i].st.Since {
-				return false, nil
+				return nil, false, nil
 			}
 		}
 	}
-	return true, nil
+	return confirmedDown, true, nil
 }
 
 func hasLostOnce(down []downJob) bool {

@@ -15,8 +15,9 @@ var ErrWriteTimedOut = errors.New("supervisor: stderr write timeout")
 
 // lineSink permits at most one outstanding write, including a write whose caller timed out.
 type lineSink struct {
-	writer io.Writer
-	slot   chan struct{}
+	writer  io.Writer
+	slot    chan struct{}
+	partial bool
 }
 
 var defaultStderrSink = newLineSink(os.Stderr)
@@ -57,11 +58,7 @@ func writeLine(ctx context.Context, sink *lineSink, line string, timeout time.Du
 		return nil, fmt.Errorf("%w after %s", ErrWriteTimedOut, timeout)
 	}
 	done := make(chan error, 1)
-	go func() {
-		_, err := fmt.Fprintln(sink.writer, line)
-		<-sink.slot
-		done <- err
-	}()
+	go sink.writeAdmitted(line, done)
 	select {
 	case err := <-done:
 		return nil, err
@@ -70,4 +67,20 @@ func writeLine(ctx context.Context, sink *lineSink, line string, timeout time.Du
 	case <-timer.C:
 		return done, fmt.Errorf("%w after %s", ErrWriteTimedOut, timeout)
 	}
+}
+
+// writeAdmitted owns the slot until the output and partial-line state are complete.
+func (sink *lineSink) writeAdmitted(line string, done chan<- error) {
+	output := line
+	if sink.partial {
+		output = "\n" + output
+	}
+	n, err := fmt.Fprintln(sink.writer, output)
+	if n == len(output)+1 {
+		sink.partial = false
+	} else if n > 0 && err != nil {
+		sink.partial = true
+	}
+	<-sink.slot
+	done <- err
 }
