@@ -53,6 +53,9 @@ var (
 	ErrNotSupported = errors.New("supervisor: not-supported")
 	// ErrRunning marks a StartOnce of a job that runs already.
 	ErrRunning = errors.New("supervisor: job is running")
+	// ErrStoppedBeforeStart marks an automatic start whose job record turned stopped before the
+	// shim started the job. Reconcile treats it as no error.
+	ErrStoppedBeforeStart = errors.New("supervisor: job stopped before start")
 	// ErrStopMarkersNotWritten marks a Supervise return whose stop markers could not all be
 	// written to the event log.
 	ErrStopMarkersNotWritten = errors.New("supervisor: stop markers not written")
@@ -91,6 +94,11 @@ type Options struct {
 	PollInterval time.Duration
 }
 
+type spawnedShim struct {
+	pid  int
+	done chan struct{}
+}
+
 type collectedShim struct {
 	pid     int
 	sigterm bool
@@ -105,8 +113,13 @@ type Supervisor struct {
 	shimWaiters   atomic.Int32
 	mu            sync.Mutex
 	observedSince map[string]string
+	spawnedShim   map[string]spawnedShim
 	collectedShim map[string]collectedShim
 }
+
+// beforeRecordCollectedShim is a test seam called in collectShim after cmd.Wait returns and
+// before the collected status is recorded.
+var beforeRecordCollectedShim = func(string, int) {}
 
 // reportShimError tells the operator about a shim that could not be collected. Nothing
 // returns to a caller from the waiter, so it goes to stderr like the shim's own errors.
@@ -218,10 +231,22 @@ func (s *Supervisor) Preflight(name string) error {
 	return sandboxPreflight(job.Sandbox)
 }
 
-func (s *Supervisor) startOne(ctx context.Context, name string) (err error) {
+func (s *Supervisor) startOne(ctx context.Context, name string) error {
+	return s.startJob(ctx, name, eventlog.Job{}, false)
+}
+
+func (s *Supervisor) startUnlessStopped(ctx context.Context, name string, before eventlog.Job) error {
+	err := s.startJob(ctx, name, before, true)
+	if errors.Is(err, ErrStoppedBeforeStart) {
+		return nil
+	}
+	return err
+}
+
+func (s *Supervisor) startJob(ctx context.Context, name string, before eventlog.Job, unlessStopped bool) (err error) {
 	ctx, span := telemetry.Default().StartSpan(ctx, "supervisor.job.start", attribute.String("epitrop.job", name))
 	defer func() {
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrStoppedBeforeStart) {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		}
@@ -239,8 +264,10 @@ func (s *Supervisor) startOne(ctx context.Context, name string) (err error) {
 		}
 		return err
 	}
-	err = s.spawnAndAwait(ctx, job)
-	s.recordJobRun(ctx, err)
+	err = s.spawnAndAwait(ctx, job, before, unlessStopped)
+	if !errors.Is(err, ErrStoppedBeforeStart) {
+		s.recordJobRun(ctx, err)
+	}
 	return err
 }
 
@@ -256,26 +283,38 @@ func (s *Supervisor) recordJobRun(ctx context.Context, err error) {
 	telemetry.Default().JobRun(ctx, "failed")
 }
 
-func (s *Supervisor) spawnAndAwait(ctx context.Context, job config.JobConfig) error {
-	before, err := s.replayState(ctx)
+func (s *Supervisor) spawnAndAwait(ctx context.Context, job config.JobConfig, before eventlog.Job, unlessStopped bool) error {
+	state, err := s.replayState(ctx)
 	if err != nil {
 		return err
+	}
+	prior := state.Jobs[job.Name]
+	if unlessStopped {
+		prior.State = before.State
 	}
 	if s.shimWaiters.Add(1) > maxShimWaiters {
 		s.shimWaiters.Add(-1)
 		return fmt.Errorf("supervisor: start shim for %s: %d shims are still uncollected", job.Name, maxShimWaiters)
 	}
-	cmd := s.shimCmd(ctx, job)
+	cmd := s.shimCmdFor(ctx, job, unlessStopped)
 	if err = cmd.Start(); err != nil {
 		s.shimWaiters.Add(-1)
 		return fmt.Errorf("supervisor: start shim for %s: %w", job.Name, err)
 	}
 	shimPID := cmd.Process.Pid
-	s.mu.Lock()
-	delete(s.collectedShim, job.Name)
-	s.mu.Unlock()
+	s.recordSpawnedShim(job.Name, shimPID)
 	go s.collectShim(cmd, job.Name)
-	return s.waitStarted(ctx, job.Name, before.Jobs[job.Name], shimPID)
+	return s.waitStarted(ctx, job.Name, prior, shimPID)
+}
+
+func (s *Supervisor) recordSpawnedShim(name string, pid int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.spawnedShim == nil {
+		s.spawnedShim = make(map[string]spawnedShim, len(s.cfg.Jobs))
+	}
+	s.spawnedShim[name] = spawnedShim{pid: pid, done: make(chan struct{})}
+	delete(s.collectedShim, name)
 }
 
 // collectShim waits for a started shim and takes its exit status. Without this the shim
@@ -284,14 +323,32 @@ func (s *Supervisor) spawnAndAwait(ctx context.Context, job config.JobConfig) er
 // exit status other than 0 is no error here, the shim reports its own failures through the
 // event log and the job's log.
 func (s *Supervisor) collectShim(cmd *exec.Cmd, name string) {
-	defer s.shimWaiters.Add(-1)
+	var pid int
+	if cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
+	defer s.finishShimCollector(name, pid)
 	err := cmd.Wait()
 	var exit *exec.ExitError
 	if err != nil && !errors.As(err, &exit) {
 		reportShimError(name, err)
 		return
 	}
+	if cmd.ProcessState != nil {
+		beforeRecordCollectedShim(name, cmd.ProcessState.Pid())
+	}
 	s.recordCollectedShim(name, cmd.ProcessState)
+}
+
+func (s *Supervisor) finishShimCollector(name string, pid int) {
+	s.mu.Lock()
+	if cur, ok := s.spawnedShim[name]; ok && cur.pid == pid && cur.done != nil {
+		close(cur.done)
+		cur.done = nil
+		s.spawnedShim[name] = cur
+	}
+	s.mu.Unlock()
+	s.shimWaiters.Add(-1)
 }
 
 func (s *Supervisor) recordCollectedShim(name string, state *os.ProcessState) {
@@ -300,6 +357,9 @@ func (s *Supervisor) recordCollectedShim(name string, state *os.ProcessState) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.spawnedShim[name].pid != state.Pid() {
+		return
+	}
 	if s.collectedShim == nil {
 		s.collectedShim = make(map[string]collectedShim, len(s.cfg.Jobs))
 	}
@@ -350,10 +410,29 @@ func (s *Supervisor) stopOne(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if s.statusFor(job, eventlog.Job{}).State == StateRunning {
-		if err = s.terminate(ctx, job); err != nil {
-			return err
-		}
+	if s.statusFor(job, eventlog.Job{}).State != StateRunning {
+		return s.stopNotRunning(ctx, job)
+	}
+	if err = s.terminate(ctx, job); err != nil {
+		return err
+	}
+	return s.appendJobEvent(ctx, "job.stopped", job.Name, map[string]any{"state": string(StateStopped)})
+}
+
+func (s *Supervisor) stopNotRunning(ctx context.Context, job config.JobConfig) error {
+	lock, err := holdLock(s.lockPath(job.Name))
+	if err == nil {
+		appendErr := s.appendJobEvent(ctx, "job.stopped", job.Name, map[string]any{"state": string(StateStopped)})
+		return errors.Join(appendErr, lock.Close())
+	}
+	if !errors.Is(err, errLockBusy) {
+		return err
+	}
+	if !s.waitJobRecord(ctx, job) {
+		return fmt.Errorf("supervisor: stop %s: job lock is held without a record", job.Name)
+	}
+	if err = s.terminate(ctx, job); err != nil {
+		return err
 	}
 	return s.appendJobEvent(ctx, "job.stopped", job.Name, map[string]any{"state": string(StateStopped)})
 }
@@ -517,15 +596,34 @@ func (s *Supervisor) observeReconciled(state eventlog.State) {
 func (s *Supervisor) markOneJobStopped(job config.JobConfig, pid int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), stopMarkTimeout)
 	defer cancel()
-	payload := map[string]any{"supervisor_pid": pid}
-	_, err := s.appendJobEventIf(ctx, eventSupervisorStopped, job.Name, payload, func(st eventlog.Job) bool {
-		if !s.canMarkJobStopped(job.Name, st) {
-			return false
+	_, err := s.appendCheckedJobEvent(ctx, eventSupervisorStopped, job.Name, func(st eventlog.Job) map[string]any {
+		return map[string]any{"supervisor_pid": pid, "since": st.Since}
+	}, func(cctx context.Context, st eventlog.Job) (bool, error) {
+		if err := s.waitPendingShimCollector(cctx, job.Name, st); err != nil {
+			return false, err
 		}
-		payload["since"] = st.Since
-		return true
+		return s.canMarkJobStopped(job.Name, st), nil
 	})
 	return err
+}
+
+func (s *Supervisor) waitPendingShimCollector(ctx context.Context, name string, st eventlog.Job) error {
+	if st.State != string(StateRunning) || st.Since == "" {
+		return nil
+	}
+	s.mu.Lock()
+	since := s.observedSince[name]
+	spawned, hasSpawned := s.spawnedShim[name]
+	s.mu.Unlock()
+	if !hasSpawned || spawned.done == nil || st.Since != since || st.ShimPID != spawned.pid || !shimExited(spawned.pid) {
+		return nil
+	}
+	select {
+	case <-spawned.done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("wait shim collector: %w", ctx.Err())
+	}
 }
 
 func (s *Supervisor) canMarkJobStopped(name string, st eventlog.Job) bool {
@@ -534,9 +632,13 @@ func (s *Supervisor) canMarkJobStopped(name string, st eventlog.Job) bool {
 	}
 	s.mu.Lock()
 	since := s.observedSince[name]
+	spawned := s.spawnedShim[name]
 	end, hasEnd := s.collectedShim[name]
 	s.mu.Unlock()
 	if st.Since != since {
+		return false
+	}
+	if spawned.pid == st.ShimPID && shimExited(spawned.pid) && (!hasEnd || end.pid != st.ShimPID) {
 		return false
 	}
 	if hasEnd && end.pid == st.ShimPID && !end.sigterm {
@@ -581,13 +683,12 @@ func (s *Supervisor) waitStarted(ctx context.Context, name string, before eventl
 	for i := 0; i < maxStartPolls; i++ {
 		state, err := s.replayState(ctx)
 		if err == nil {
-			if settled, startErr := s.settleStart(name, state.Jobs[name], before, shimPID); settled {
+			if settled, startErr := s.settleStart(name, state.Jobs[name], before, shimPID, shimGone); settled {
 				return startErr
 			}
 		}
 		if ctx.Err() != nil {
-			s.observeStartedOnCancel(name, before, shimPID)
-			return startWaitEnded(name, ctx.Err(), lastErr)
+			return startWaitEnded(name, ctx.Err(), errors.Join(lastErr, s.observeStartedOnCancel(name, before, shimPID)))
 		}
 		lastErr = lastReplayError(lastErr, err, ctx.Err())
 		if shimGone {
@@ -595,8 +696,7 @@ func (s *Supervisor) waitStarted(ctx context.Context, name string, before eventl
 		}
 		shimGone = shimExited(shimPID)
 		if !shimGone && !sleepContext(ctx, startPollInterval) {
-			s.observeStartedOnCancel(name, before, shimPID)
-			return startWaitEnded(name, ctx.Err(), lastErr)
+			return startWaitEnded(name, ctx.Err(), errors.Join(lastErr, s.observeStartedOnCancel(name, before, shimPID)))
 		}
 	}
 	if lastErr != nil {
@@ -633,8 +733,11 @@ func shimExited(pid int) bool {
 	return err == nil && gone
 }
 
-func (s *Supervisor) settleStart(name string, job eventlog.Job, before eventlog.Job, shimPID int) (bool, error) {
+func (s *Supervisor) settleStart(name string, job eventlog.Job, before eventlog.Job, shimPID int, shimGone bool) (bool, error) {
 	settled, err := startOutcome(name, job, before, shimPID)
+	if settled && errors.Is(err, ErrStoppedBeforeStart) && !shimGone {
+		return false, nil
+	}
 	if settled && err == nil {
 		s.observeRunning(name, job.Since)
 	}
@@ -643,21 +746,22 @@ func (s *Supervisor) settleStart(name string, job eventlog.Job, before eventlog.
 
 // observeStartedOnCancel replays once more when a stop ends the start wait, so a start the
 // shim recorded just before the stop is observed and can still get its stop marker.
-func (s *Supervisor) observeStartedOnCancel(name string, before eventlog.Job, shimPID int) {
+func (s *Supervisor) observeStartedOnCancel(name string, before eventlog.Job, shimPID int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), stopMarkTimeout)
 	defer cancel()
 	state, err := s.replayState(ctx)
 	if err != nil {
-		return
+		return err
 	}
 	job := state.Jobs[name]
 	if settled, startErr := startOutcome(name, job, before, shimPID); settled && startErr == nil {
 		s.observeRunning(name, job.Since)
 	}
+	return nil
 }
 
-// startOutcome reports whether the shim has settled this start, by recording it or by
-// refusing it, and the error of a refusal.
+// startOutcome reports whether the shim has settled this start, by recording it, refusing
+// it, or leaving a job record that turned stopped after before.
 func startOutcome(name string, job eventlog.Job, before eventlog.Job, shimPID int) (bool, error) {
 	if startedBy(job, before, shimPID) {
 		return true, nil
@@ -665,7 +769,14 @@ func startOutcome(name string, job eventlog.Job, before eventlog.Job, shimPID in
 	if refusedBy(job, before, shimPID) {
 		return true, fmt.Errorf("%w: %s: %s", ErrRefused, name, job.LastReason)
 	}
+	if stoppedAfter(job, before) {
+		return true, fmt.Errorf("%w: %s", ErrStoppedBeforeStart, name)
+	}
 	return false, nil
+}
+
+func stoppedAfter(job eventlog.Job, before eventlog.Job) bool {
+	return job.State == string(StateStopped) && before.State != string(StateStopped)
 }
 
 // refusedBy reports whether job's last event is a refusal by shimPID recorded after before

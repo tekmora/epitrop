@@ -494,6 +494,8 @@ func TestSuperviseUntilStoppedKeepsMarkerWriteFailure(t *testing.T) {
 	}{
 		{"plain canceled", context.Canceled, nil},
 		{"wrapped canceled", fmt.Errorf("replay: %w", context.Canceled), nil},
+		{"joined canceled and canceled", errors.Join(context.Canceled, context.Canceled), nil},
+		{"chain at bound", wrapCanceledDepth(maxCancelErrorNodes - 1), nil},
 		{"canceled with replay error", fmt.Errorf("supervisor: x did not start: %w; last replay: %w", context.Canceled, replayBoom), []error{context.Canceled, replayBoom}},
 		{"joined canceled and error", errors.Join(context.Canceled, boom), []error{context.Canceled, boom}},
 		{"chain deeper than bound", wrapCanceledDepth(maxCancelErrorNodes), []error{context.Canceled}},

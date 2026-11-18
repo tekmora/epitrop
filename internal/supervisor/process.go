@@ -10,7 +10,11 @@ import (
 )
 
 func (s *Supervisor) shimCmd(ctx context.Context, job config.JobConfig) *exec.Cmd {
-	args := make([]string, 0, len(s.shimCommand)+len(job.Command)+18)
+	return s.shimCmdFor(ctx, job, false)
+}
+
+func (s *Supervisor) shimCmdFor(ctx context.Context, job config.JobConfig, unlessStopped bool) *exec.Cmd {
+	args := make([]string, 0, len(s.shimCommand)+len(job.Command)+19)
 	args = append(args, s.shimCommand[1:]...)
 	args = append(args,
 		"__job-shim",
@@ -25,6 +29,9 @@ func (s *Supervisor) shimCmd(ctx context.Context, job config.JobConfig) *exec.Cm
 		"--stop-signal", job.Stop.Signal,
 		"--stop-grace-seconds", strconv.Itoa(job.Stop.GraceSeconds),
 	)
+	if unlessStopped {
+		args = append(args, "--unless-stopped")
+	}
 	args = append(args, sandboxFlagArgs(job.Sandbox)...)
 	args = append(args, "--")
 	args = append(args, job.Command...)
@@ -33,6 +40,20 @@ func (s *Supervisor) shimCmd(ctx context.Context, job config.JobConfig) *exec.Cm
 	cmd := exec.CommandContext(ctx, s.shimCommand[0], args...)
 	cmd.Cancel = nil
 	return cmd
+}
+
+func (s *Supervisor) waitJobRecord(ctx context.Context, job config.JobConfig) bool {
+	path := s.recordPath(job.Name)
+	for i := 0; i < maxStatusPolls; i++ {
+		if _, ok := readJobRecord(path); ok {
+			return true
+		}
+		if !sleepContext(ctx, startPollInterval) {
+			return false
+		}
+	}
+	_, ok := readJobRecord(path)
+	return ok
 }
 
 func (s *Supervisor) isRunning(job config.JobConfig) (bool, error) {

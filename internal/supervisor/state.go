@@ -350,19 +350,24 @@ func (s *Supervisor) appendJobEvent(ctx context.Context, typ string, name string
 }
 
 func (s *Supervisor) appendJobEventIf(ctx context.Context, typ string, name string, payload map[string]any, want func(eventlog.Job) bool) (bool, error) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return false, fmt.Errorf("supervisor: marshal %s: %w", typ, err)
+	var check func(context.Context, eventlog.Job) (bool, error)
+	if want != nil {
+		check = func(_ context.Context, st eventlog.Job) (bool, error) { return want(st), nil }
 	}
+	return s.appendCheckedJobEvent(ctx, typ, name, func(eventlog.Job) map[string]any { return payload }, check)
+}
+
+func (s *Supervisor) appendCheckedJobEvent(ctx context.Context, typ string, name string, payload func(eventlog.Job) map[string]any, check func(context.Context, eventlog.Job) (bool, error)) (bool, error) {
 	writer, err := eventlog.Open(s.cfg.EventLog.Dir, s.signer, s.eventLogLimits())
 	if err != nil {
 		return false, fmt.Errorf("supervisor: record %s for job %s in event log %s: %w", typ, name, s.cfg.EventLog.Dir, err)
 	}
 	_, err = appendEvent(writer, ctx, func(cctx context.Context) (eventlog.Event, error) {
-		if err := s.checkJobEvent(cctx, name, want); err != nil {
+		st, err := s.checkJobEvent(cctx, name, check)
+		if err != nil {
 			return eventlog.Event{}, err
 		}
-		body, err = json.Marshal(payload)
+		body, err := json.Marshal(payload(st))
 		if err != nil {
 			return eventlog.Event{}, fmt.Errorf("supervisor: marshal %s: %w", typ, err)
 		}
@@ -377,23 +382,34 @@ func (s *Supervisor) appendJobEventIf(ctx context.Context, typ string, name stri
 	return true, nil
 }
 
-func (s *Supervisor) checkJobEvent(ctx context.Context, name string, want func(eventlog.Job) bool) error {
-	if want == nil {
-		return nil
+func (s *Supervisor) checkJobEvent(ctx context.Context, name string, check func(context.Context, eventlog.Job) (bool, error)) (eventlog.Job, error) {
+	if check == nil {
+		return eventlog.Job{}, nil
 	}
 	st, err := s.replayState(ctx)
 	if err != nil {
-		return err
+		return eventlog.Job{}, err
 	}
-	if !want(st.Jobs[name]) {
-		return errSkipJobEvent
+	job := st.Jobs[name]
+	ok, err := check(ctx, job)
+	if err != nil {
+		return eventlog.Job{}, err
 	}
-	return nil
+	if !ok {
+		return eventlog.Job{}, errSkipJobEvent
+	}
+	return job, nil
 }
 
 func (s *Supervisor) reconcileJob(ctx context.Context, job config.JobConfig, st eventlog.Job, matches []uint64, replayHead uint64) error {
-	if st.State == string(StateRunning) && st.SupervisorStopped && s.statusFor(job, st).State != StateRunning {
-		return s.recordInterrupted(ctx, job, st)
+	if st.State == string(StateRunning) && st.SupervisorStopped {
+		status := s.statusFor(job, st)
+		if status.State != StateRunning {
+			return s.recordInterrupted(ctx, job, st)
+		}
+		if job.Schedule != "always" {
+			return s.adoptIfFreshStart(ctx, job, st, status)
+		}
 	}
 	switch job.Schedule {
 	case "always":
@@ -421,11 +437,11 @@ func (s *Supervisor) reconcileAlwaysJob(ctx context.Context, job config.JobConfi
 		return s.recordExit(ctx, job, st, "lost")
 	}
 	if st.LastEvent == "" {
-		return s.Start(ctx, job.Name)
+		return s.startUnlessStopped(ctx, job.Name, st)
 	}
 	if shouldRestart(job, st, s.clk.Now()) {
 		if endedBySupervisorStop(st) {
-			return s.Start(ctx, job.Name)
+			return s.startUnlessStopped(ctx, job.Name, st)
 		}
 		return s.restartJob(ctx, job)
 	}
@@ -434,7 +450,8 @@ func (s *Supervisor) reconcileAlwaysJob(ctx context.Context, job config.JobConfi
 
 func (s *Supervisor) adoptIfFreshStart(ctx context.Context, job config.JobConfig, st eventlog.Job, status JobStatus) error {
 	// A job the stopping supervisor marked survived the stop (a supervisor run without its own
-	// pid namespace): its adoption clears the marker, so a later loss records lost.
+	// pid namespace): its adoption clears the marker, so a later end is not read as a
+	// supervisor stop.
 	markedRunning := st.State == string(StateRunning) && st.SupervisorStopped
 	if st.LastEvent != "job.started" && !markedRunning {
 		return nil
@@ -473,14 +490,18 @@ func endedBySupervisorStop(st eventlog.Job) bool {
 }
 
 func (s *Supervisor) restartJob(ctx context.Context, job config.JobConfig) error {
+	before, err := s.replayState(ctx)
+	if err != nil {
+		return err
+	}
 	payload := map[string]any{"state": string(StateDead)}
-	if err := s.appendJobEvent(ctx, "job.restarted", job.Name, payload); err != nil {
+	if err = s.appendJobEvent(ctx, "job.restarted", job.Name, payload); err != nil {
 		return err
 	}
 	if job.Restart.BackoffSeconds > 0 && !sleepContext(ctx, time.Duration(job.Restart.BackoffSeconds)*time.Second) {
 		return ctx.Err()
 	}
-	return s.Start(ctx, job.Name)
+	return s.startUnlessStopped(ctx, job.Name, before.Jobs[job.Name])
 }
 
 // restartsInWindow counts the restarts the cap bounds: those newer than now minus the

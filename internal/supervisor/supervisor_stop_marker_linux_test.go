@@ -380,6 +380,7 @@ func startStubShimUntilCancel(t *testing.T, sup *Supervisor, name string) (conte
 		t.Fatalf("Start(sleep) = %v, want nil", err)
 	}
 	pid := cmd.Process.Pid
+	sup.recordSpawnedShim(name, pid)
 	sup.shimWaiters.Add(1)
 	cancel()
 	sup.collectShim(cmd, name)
@@ -393,6 +394,7 @@ func startAndCollectStubShim(t *testing.T, sup *Supervisor, name string) int {
 		t.Fatalf("Start(exit 1) = %v, want nil", err)
 	}
 	pid := cmd.Process.Pid
+	sup.recordSpawnedShim(name, pid)
 	sup.shimWaiters.Add(1)
 	sup.collectShim(cmd, name)
 	return pid

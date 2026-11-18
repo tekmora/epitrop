@@ -13,12 +13,14 @@ import (
 // cutover's "supervision holds" check reads (docs/cutover-1.md). A compacted log holds no
 // records up to its base, so the counts start after the base.
 type JobHistory struct {
-	Name        string
-	Started     int // job.started and job.adopted
-	Exited      int
-	Unclean     int // exits without code 0: a stop's signal, a lost job and a deadline included
-	Restarted   int
-	Interrupted int // job.interrupted: ended by the stop of the supervisor, no failure
+	Name      string
+	Started   int // job.started and job.adopted
+	Exited    int
+	Unclean   int // exits without code 0: a stop's signal, a lost job and a deadline included
+	Restarted int
+	// Interrupted counts job.interrupted records: a recorded classification, not a confirmed
+	// cause; not counted as failures.
+	Interrupted int
 	Stale       int
 	Refused     int
 	Stopped     int

@@ -38,7 +38,14 @@ type shimConfig struct {
 	MaxRuntimeSeconds int
 	StopSignal        string
 	StopGraceSeconds  int
+	UnlessStopped     bool
 }
+
+// shimExitStopped is the exit status of a shim started with --unless-stopped that found the
+// job recorded stopped under the job lock and exited without starting it.
+const shimExitStopped = 3
+
+var errShimStopped = errors.New("job-shim: job is stopped")
 
 func RunShim(args []string) int {
 	cfg, err := parseShimArgs(args)
@@ -46,7 +53,11 @@ func RunShim(args []string) int {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 2
 	}
-	if err = runShim(cfg); err != nil {
+	err = runShim(cfg)
+	if errors.Is(err, errShimStopped) {
+		return shimExitStopped
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
@@ -70,6 +81,7 @@ func parseShimArgs(args []string) (shimConfig, error) {
 	fs.IntVar(&cfg.MaxRuntimeSeconds, "max-runtime-seconds", 0, "")
 	fs.StringVar(&cfg.StopSignal, "stop-signal", "TERM", "")
 	fs.IntVar(&cfg.StopGraceSeconds, "stop-grace-seconds", 0, "")
+	fs.BoolVar(&cfg.UnlessStopped, "unless-stopped", false, "")
 	fs.StringVar(&cfg.Sandbox.Mode, "sandbox-mode", "", "")
 	fs.StringVar(&cfg.Sandbox.Reason, "sandbox-reason", "", "")
 	fs.StringVar(&cfg.Sandbox.Workspace, "sandbox-workspace", "", "")
@@ -139,11 +151,14 @@ func checkShimLimits(cfg shimConfig) error {
 }
 
 func runShim(cfg shimConfig) error {
-	lock, err := holdLock(cfg.LockPath)
+	lock, err := holdShimLock(cfg)
 	if err != nil {
 		return err
 	}
 	defer closeLockForShim(lock)
+	if err = checkShimNotStopped(cfg); err != nil {
+		return err
+	}
 	logFile, err := openAppendLog(cfg.LogPath)
 	if err != nil {
 		return err
@@ -177,6 +192,51 @@ func runShim(cfg shimConfig) error {
 		return killAndCollect(cmd, err)
 	}
 	return waitAndRecordExit(runCtx, writer, cfg, cmd)
+}
+
+// holdShimLock takes the job lock. With --unless-stopped, a concurrent stopOne may hold the
+// lock briefly while appending job.stopped; waiting boundedly lets the shim acquire the lock
+// after that append and read the stopped record.
+func holdShimLock(cfg shimConfig) (*heldLock, error) {
+	lock, err := holdLock(cfg.LockPath)
+	if !cfg.UnlessStopped || !errors.Is(err, errLockBusy) {
+		return lock, err
+	}
+	for i := 0; i < maxStatusPolls; i++ {
+		time.Sleep(startPollInterval)
+		lock, err = holdLock(cfg.LockPath)
+		if !errors.Is(err, errLockBusy) {
+			return lock, err
+		}
+	}
+	return nil, err
+}
+
+func checkShimNotStopped(cfg shimConfig) error {
+	if !cfg.UnlessStopped {
+		return nil
+	}
+	events := filepath.Join(cfg.EventLogDir, "events")
+	if _, err := os.Stat(events); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("job-shim: stat %s: %w", events, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	clk := clockwork.NewRealClock()
+	signer, err := eventlog.NewSignerFromKeyFile(ctx, cfg.SigningKey, cfg.EventLogDir, clk)
+	if err != nil {
+		return err
+	}
+	st, err := eventlog.ReplayFoldStable(ctx, cfg.EventLogDir, signer.PublicKey(), shimEventLogLimits(cfg, clk), FoldName, JobReducer)
+	if err != nil {
+		return err
+	}
+	if st.Jobs[cfg.Name].State == string(StateStopped) {
+		return errShimStopped
+	}
+	return nil
 }
 
 // jobDeadline is how long the job may run: its own deadline, or the longest any job may.

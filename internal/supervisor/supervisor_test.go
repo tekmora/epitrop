@@ -839,11 +839,11 @@ func TestReadRecordAndAppendErrors(t *testing.T) {
 	if _, ok := readJobRecord(bad); ok {
 		t.Fatal("readJobRecord(invalid) ok = true, want false")
 	}
-	sup := &Supervisor{cfg: config.Config{EventLog: config.EventLogConfig{Dir: t.TempDir()}}}
-	err := sup.appendJobEvent(testContext(t), "job.bad", "daemon", map[string]any{"bad": make(chan int)})
+	err := testSupervisor(t).appendJobEvent(testContext(t), "job.bad", "daemon", map[string]any{"bad": make(chan int)})
 	if err == nil || !strings.Contains(err.Error(), "marshal") {
 		t.Fatalf("appendJobEvent(unmarshalable) = %v, want marshal error", err)
 	}
+	sup := &Supervisor{cfg: config.Config{EventLog: config.EventLogConfig{Dir: t.TempDir()}}}
 	err = sup.appendJobEvent(testContext(t), "job.bad", "daemon", map[string]any{"state": "dead"})
 	if err == nil || !strings.Contains(err.Error(), "signer is required") {
 		t.Fatalf("appendJobEvent(no signer) = %v, want signer error", err)
