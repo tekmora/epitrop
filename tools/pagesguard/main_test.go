@@ -293,6 +293,12 @@ func TestDecideOrderingAndStatuses(t *testing.T) {
 			wantStatusesCall:    1,
 			wantCompareCall:     1,
 		},
+	}
+	runDecideCases(t, cases)
+}
+
+func TestDecideSortsShuffledDeployments(t *testing.T) {
+	cases := []decideCase{
 		{
 			name: "response order shuffled is sorted by created_at desc then id desc",
 			fk: &fakeGitHub{
@@ -439,6 +445,31 @@ func TestDecideNegativeErrors(t *testing.T) {
 			wantCompareCall:     1,
 		},
 		{
+			name: "successful deployment with empty sha returns error",
+			fk: &fakeGitHub{
+				deployments:  []deployment{{ID: 1, SHA: " ", CreatedAt: "2026-11-18T12:00:00Z"}},
+				statusesByID: liveSuccess,
+			},
+			wantErr:             "deployment 1 has an empty sha",
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    1,
+		},
+		{
+			name:    "missing GITHUB_SHA returns error",
+			sha:     " ",
+			fk:      &fakeGitHub{},
+			wantErr: "GITHUB_SHA is required",
+		},
+	}
+	runDecideCases(t, cases)
+}
+
+func TestDecideDecodeErrors(t *testing.T) {
+	liveDep := []deployment{{ID: 1, SHA: testLiveSHA, CreatedAt: "2026-11-18T12:00:00Z"}}
+	liveSuccess := map[int64][]deploymentStatus{1: {{State: "success"}}}
+	deps150, stat150 := makeFailedDeployments(150)
+	cases := []decideCase{
+		{
 			name:                "malformed JSON on deployments returns error",
 			fk:                  &fakeGitHub{deploymentsBadJSON: true},
 			wantErr:             "decode deployments page 1",
@@ -469,22 +500,6 @@ func TestDecideNegativeErrors(t *testing.T) {
 			wantDeploymentsCall: 1,
 			wantStatusesCall:    1,
 			wantCompareCall:     1,
-		},
-		{
-			name: "successful deployment with empty sha returns error",
-			fk: &fakeGitHub{
-				deployments:  []deployment{{ID: 1, SHA: " ", CreatedAt: "2026-11-18T12:00:00Z"}},
-				statusesByID: liveSuccess,
-			},
-			wantErr:             "deployment 1 has an empty sha",
-			wantDeploymentsCall: 1,
-			wantStatusesCall:    1,
-		},
-		{
-			name:    "missing GITHUB_SHA returns error",
-			sha:     " ",
-			fk:      &fakeGitHub{},
-			wantErr: "GITHUB_SHA is required",
 		},
 	}
 	runDecideCases(t, cases)
