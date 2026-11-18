@@ -7,6 +7,10 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -279,5 +283,72 @@ func TestDocumentHeadTakesOnlyTheModelsTag(t *testing.T) {
 	}
 	if _, err := documentHead(strings.Replace(referencingDocument, "name: Models", "name: Other", 1)); err == nil {
 		t.Fatal("documentHead accepted a document without a Models tag")
+	}
+}
+
+func TestValidateSourceURL(t *testing.T) {
+	valid := schemaSource{ID: "valid-https", URLTemplate: "https://example.invalid/{revision}/schema.json", PinnedRevision: "v1"}
+	if err := validateSourceURL(valid); err != nil {
+		t.Fatalf("validateSourceURL(https) = %v, want nil", err)
+	}
+	upper := schemaSource{ID: "upper-https", URLTemplate: "HTTPS://example.invalid/{revision}/schema.json", PinnedRevision: "v1"}
+	if err := validateSourceURL(upper); err != nil {
+		t.Fatalf("validateSourceURL(HTTPS) = %v, want nil", err)
+	}
+	requireSourceURLRefused(t, schemaSource{ID: "plain-http", URLTemplate: "http://example.invalid/{revision}/schema.json", PinnedRevision: "v1"}, "http://example.invalid/v1/schema.json")
+	requireSourceURLRefused(t, schemaSource{ID: "no-scheme", URLTemplate: "//example.invalid/{revision}/schema.json", PinnedRevision: "v1"}, "//example.invalid/v1/schema.json")
+	requireSourceURLRefused(t, schemaSource{ID: "empty-host", URLTemplate: "https:///path/{revision}/schema.json", PinnedRevision: "v1"}, "https:///path/v1/schema.json")
+}
+
+func requireSourceURLRefused(t *testing.T, source schemaSource, wantURL string) {
+	t.Helper()
+	err := validateSourceURL(source)
+	if err == nil {
+		t.Fatalf("validateSourceURL(%s) = nil, want refusal of %s", source.ID, wantURL)
+	}
+	if !strings.Contains(err.Error(), source.ID) || !strings.Contains(err.Error(), wantURL) {
+		t.Fatalf("validateSourceURL(%s) = %v, want error naming %q and %q", source.ID, err, source.ID, wantURL)
+	}
+}
+
+func TestReadManifestValidatesSourceURLs(t *testing.T) {
+	if _, err := readManifest(filepath.Join("..", "..")); err != nil {
+		t.Fatalf("readManifest(repo root) = %v, want nil", err)
+	}
+	tmp := t.TempDir()
+	manifestPath := filepath.Join(tmp, filepath.FromSlash(manifestRel))
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"sources":[{"id":"insecure-src","url_template":"http://example.invalid/{revision}/doc.json","pinned_revision":"r1","full_document_sha256":"00","spdx_license":"MIT","copyright_holder":"X","fragments":[]}]}`
+	if err := os.WriteFile(manifestPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := readManifest(tmp)
+	if err == nil || !strings.Contains(err.Error(), "insecure-src") || !strings.Contains(err.Error(), "http://example.invalid/r1/doc.json") {
+		t.Fatalf("readManifest(http source) = %v, want error naming source id and url", err)
+	}
+}
+
+func TestCheckHTTPSRedirect(t *testing.T) {
+	httpsReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.invalid/next", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkHTTPSRedirect(httpsReq, nil); err != nil {
+		t.Fatalf("checkHTTPSRedirect(https) = %v, want nil", err)
+	}
+	httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.invalid/downgrade", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkHTTPSRedirect(httpReq, nil); err == nil {
+		t.Fatal("checkHTTPSRedirect(http) = nil, want error")
+	}
+	if err := checkHTTPSRedirect(httpsReq, make([]*http.Request, 9)); err != nil {
+		t.Fatalf("checkHTTPSRedirect(9 hops) = %v, want nil: the cap is Go's default of 10", err)
+	}
+	if err := checkHTTPSRedirect(httpsReq, make([]*http.Request, 10)); err == nil {
+		t.Fatal("checkHTTPSRedirect(10 hops) = nil, want error")
 	}
 }
