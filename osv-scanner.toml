@@ -1,12 +1,6 @@
 # Read by the lock-advisories gate (make lock-advisories, ci.yml, lefthook pre-push) through
-# osv-scanner --config. It covers one advisory and no other; every other advisory in
-# tools/spectral/package-lock.json fails the gate. effectiveUntil equals the expires date of the
-# matching .standards.yaml exceptions entry (rule backlog.caps.forge_alerts, category C); the
-# osv-scanner self-test fails when the two differ. The exemption is fixed-date: osv-scanner stops
-# honouring the entry on that date, so the advisory fails the gate again. A patched picomatch
-# released before then does not end it; remove the entry by hand in the Renovate pull request
-# that takes the patched release.
-[[IgnoredVulns]]
-id = "GHSA-fc5q-39xc-vjpf"
-effectiveUntil = 2026-11-27
-reason = "picomatch 2.3.2 under tools/spectral: no fixed release (advisory range <=4.0.7); the glob it reads is fixed text in ci.yml. Fixed-date exemption until 2026-11-27; a patched picomatch released before then is handled by removing this entry by hand in the Renovate pull request that takes it. Record: .standards.yaml exceptions, rule backlog.caps.forge_alerts, category C."
+# osv-scanner --config. It holds no exemption: every advisory in tools/spectral/package-lock.json
+# fails the gate. An exemption added here is one [[IgnoredVulns]] table (id, effectiveUntil,
+# reason) whose effectiveUntil equals the expires date of a matching .standards.yaml exceptions
+# entry (rule backlog.caps.forge_alerts); the osv-scanner self-test fails when only one file
+# holds an entry or the two dates differ.

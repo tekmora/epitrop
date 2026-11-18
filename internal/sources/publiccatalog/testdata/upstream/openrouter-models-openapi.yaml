@@ -1,7 +1,7 @@
 # Provenance:
 # Source URL: https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties.md
 # Pinned revision: OpenAPI info.version 1.0.0
-# Full document sha256: 7fe476bee6a321a2abd505079ecfd53848033fda83f4bd8482c896320ace552d
+# Full document sha256: c216ca5b34dadb02c0bef9bd48f089216536905ac830bc457bf8cfd43bdca840
 # Extraction date: 2026-10-09
 # SPDX licence: MIT
 # Copyright holder: OpenRouter
@@ -114,11 +114,12 @@ paths:
             top-weekly (tokens processed in the last week), newest (creation
             date), <index>-high-to-low for each Artificial Analysis index (the
             coding and agentic sorts are deprecated: Artificial Analysis has
-            retired those indexes), design-arena-elo-high-to-low (best Design
-            Arena ELO across arenas). Models without a score for the chosen
-            benchmark are placed last. The decision sort ranks decision models,
-            so pass output_modalities=decisions or all with it. When omitted,
-            the existing default ordering is preserved.
+            retired those indexes, so they order by canonical slug and variant
+            alone), design-arena-elo-high-to-low (best Design Arena ELO across
+            arenas). Models without a score for the chosen benchmark are placed
+            last. The decision sort ranks decision models, so pass
+            output_modalities=decisions or all with it. When omitted, the
+            existing default ordering is preserved.
           in: query
           name: sort
           required: false
@@ -132,7 +133,8 @@ paths:
               performance), most-popular, top-weekly (tokens processed in the
               last week), newest (creation date), <index>-high-to-low for each
               Artificial Analysis index (the coding and agentic sorts are
-              deprecated: Artificial Analysis has retired those indexes),
+              deprecated: Artificial Analysis has retired those indexes, so they
+              order by canonical slug and variant alone),
               design-arena-elo-high-to-low (best Design Arena ELO across
               arenas). Models without a score for the chosen benchmark are
               placed last. The decision sort ranks decision models, so pass
@@ -397,60 +399,60 @@ paths:
               - 'null'
         - deprecated: true
           description: >-
-            Deprecated: Artificial Analysis has retired its Coding Index.
-            Minimum score (0-100); unscored models are excluded.
+            Deprecated: Artificial Analysis has retired its Coding Index; no
+            model has a score, so this matches no model.
           in: query
           name: min_coding_index
           required: false
           schema:
             description: >-
-              Deprecated: Artificial Analysis has retired its Coding Index.
-              Minimum score (0-100); unscored models are excluded.
+              Deprecated: Artificial Analysis has retired its Coding Index; no
+              model has a score, so this matches no model.
             minimum: 0
             type:
               - number
               - 'null'
         - deprecated: true
           description: >-
-            Deprecated: Artificial Analysis has retired its Coding Index.
-            Maximum score (0-100); unscored models are excluded.
+            Deprecated: Artificial Analysis has retired its Coding Index; no
+            model has a score, so this matches no model.
           in: query
           name: max_coding_index
           required: false
           schema:
             description: >-
-              Deprecated: Artificial Analysis has retired its Coding Index.
-              Maximum score (0-100); unscored models are excluded.
+              Deprecated: Artificial Analysis has retired its Coding Index; no
+              model has a score, so this matches no model.
             minimum: 0
             type:
               - number
               - 'null'
         - deprecated: true
           description: >-
-            Deprecated: Artificial Analysis has retired its Agentic Index.
-            Minimum score (0-100); unscored models are excluded.
+            Deprecated: Artificial Analysis has retired its Agentic Index; no
+            model has a score, so this matches no model.
           in: query
           name: min_agentic_index
           required: false
           schema:
             description: >-
-              Deprecated: Artificial Analysis has retired its Agentic Index.
-              Minimum score (0-100); unscored models are excluded.
+              Deprecated: Artificial Analysis has retired its Agentic Index; no
+              model has a score, so this matches no model.
             minimum: 0
             type:
               - number
               - 'null'
         - deprecated: true
           description: >-
-            Deprecated: Artificial Analysis has retired its Agentic Index.
-            Maximum score (0-100); unscored models are excluded.
+            Deprecated: Artificial Analysis has retired its Agentic Index; no
+            model has a score, so this matches no model.
           in: query
           name: max_agentic_index
           required: false
           schema:
             description: >-
-              Deprecated: Artificial Analysis has retired its Agentic Index.
-              Maximum score (0-100); unscored models are excluded.
+              Deprecated: Artificial Analysis has retired its Agentic Index; no
+              model has a score, so this matches no model.
             minimum: 0
             type:
               - number
@@ -1543,20 +1545,17 @@ components:
         (artificialanalysis.ai), one field per index. Each score is the model's
         best on that index across the configurations Artificial Analysis
         evaluated (for example reasoning levels), so two indexes of one model
-        can come from different configurations. The deprecated Coding and
-        Agentic Index scores are the exception: both come from one
-        configuration, the model's strongest by Intelligence Index, then Coding
-        Index, then Agentic Index. Attribute Artificial Analysis when you
-        republish them. Omitted when Artificial Analysis has scored the model on
-        none of them.
+        can come from different configurations. The deprecated Coding Index and
+        Agentic Index fields are null for every model: Artificial Analysis has
+        retired those indexes. Attribute Artificial Analysis when you republish
+        them. Omitted when Artificial Analysis has scored the model on none of
+        them.
       properties:
         agentic_index:
           deprecated: true
           description: >-
             Deprecated: Artificial Analysis has retired its Agentic Index and no
-            longer publishes it. Holds the last score Artificial Analysis
-            published for the model, on a 0-100 scale, or null; it will be null
-            for every model once those stored scores are removed.
+            longer publishes it. Always null.
           format: double
           type:
             - number
@@ -1565,9 +1564,7 @@ components:
           deprecated: true
           description: >-
             Deprecated: Artificial Analysis has retired its Coding Index and no
-            longer publishes it. Holds the last score Artificial Analysis
-            published for the model, on a 0-100 scale, or null; it will be null
-            for every model once those stored scores are removed.
+            longer publishes it. Always null.
           format: double
           type:
             - number
