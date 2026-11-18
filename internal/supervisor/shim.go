@@ -194,6 +194,10 @@ func runShim(cfg shimConfig) error {
 	return waitAndRecordExit(runCtx, writer, cfg, cmd)
 }
 
+// errLockBusy marks a lock another process holds. holdLock on Linux wraps it; the
+// unsupported platforms never return it.
+var errLockBusy = errors.New("lock is held")
+
 // holdShimLock takes the job lock. With --unless-stopped, a concurrent stopOne may hold the
 // lock briefly while appending job.stopped; waiting boundedly lets the shim acquire the lock
 // after that append and read the stopped record.

@@ -22,9 +22,6 @@ type heldLock struct {
 	lock *flock.Flock
 }
 
-// errLockBusy marks a lock another process holds.
-var errLockBusy = errors.New("lock is held")
-
 var (
 	processSignaller    = unix.Kill
 	processGroupID      = unix.Getpgid
