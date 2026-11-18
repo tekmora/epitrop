@@ -11,6 +11,9 @@ catalog/testdata/claude-local.snapshot.json text eol=lf
 # v0.1.0 state as that release wrote it: signed canonical JSON, so the bytes stay as written.
 testdata/v0.1.0/** -text
 
+# pre-push runs this script through bash; a CRLF checkout (core.autocrlf) would break it.
+tools/linterselftest/selftest.sh text eol=lf
+
 # BEGIN praetor managed attributes (praetorctl adopt)
 # praetorctl audit hashes these files; keep their checkout bytes the same on every platform.
 .devcontainer/Dockerfile.praetor text eol=lf

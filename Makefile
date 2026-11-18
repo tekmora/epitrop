@@ -75,9 +75,9 @@ commit-messages:
 # vulnerability database online, as in CI. docs-drift compares this branch with origin/main;
 # when the pull request body will carry a 'no docs needed: <reason>' line, put that text in a
 # file and pass it as PR_BODY_FILE=<file>.
-.PHONY: ci-parity gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec docs-drift lock-advisories-selftest lock-advisories
+.PHONY: ci-parity gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec docs-drift lock-advisories-selftest lock-advisories selftest-interpreter
 verify-all: ci-parity
-ci-parity: commit-messages gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec lock-advisories-selftest lock-advisories docs-drift
+ci-parity: commit-messages gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec lock-advisories-selftest lock-advisories selftest-interpreter docs-drift
 
 GOTOOL := go tool -modfile=tools/go/go.mod
 
@@ -134,6 +134,21 @@ lock-advisories-selftest:
 
 lock-advisories:
 	@$(OSVSCANNER) scan --lockfile tools/spectral/package-lock.json --config osv-scanner.toml
+
+# The self-test script reads Python through the repository launcher (.config/lefthook/python.sh,
+# 3.10 floor, proven before use). A command word python or python3, or tomllib (3.11 and up),
+# skips that proof. grep exit 0 = a hit = fail, 1 = no hit = pass, 2 and above = error = fail.
+# INTERPRETER_SCRIPT lets the planted case point the check at a copy.
+INTERPRETER_SCRIPT ?= tools/linterselftest/selftest.sh
+
+selftest-interpreter:
+	@rc=0; grep -nE -e '^[^#]*([[:space:];&|(`]|^)python3?([[:space:]]|$$)' -e '^[^#]*tomllib' \
+		"$(INTERPRETER_SCRIPT)" || rc=$$?; \
+	case "$$rc" in \
+		1) ;; \
+		0) echo "$(INTERPRETER_SCRIPT): bare python or tomllib; run Python through .config/lefthook/python.sh" >&2; exit 1 ;; \
+		*) echo "$(INTERPRETER_SCRIPT): grep exit $$rc" >&2; exit 1 ;; \
+	esac
 
 docs-drift:
 	@$(GOTOOL) standardsctl docs references --path=. --base=$$(git merge-base origin/main HEAD) \

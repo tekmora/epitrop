@@ -152,6 +152,10 @@ jobs:
         run: make lock-advisories-selftest
       - name: lock advisories (osv-scanner)
         run: make lock-advisories
+      # The self-test script runs Python through .config/lefthook/python.sh (3.10 floor); a bare
+      # python or python3 command, or tomllib, would skip that proof on a runner or a CRLF host.
+      - name: self-test script interpreter (no bare python)
+        run: make selftest-interpreter
       # trivy, declared by the framework profile: misconfiguration and secret scans of the tree.
       # The release tarball is pinned by its sha256 from the upstream checksums file; the
       # self-test plants a HIGH Dockerfile finding and a CRITICAL token and must see both.

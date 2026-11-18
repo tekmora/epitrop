@@ -6,6 +6,8 @@
 # .config/semgrep/hiss.yml, spectral reads .spectral.yaml and needs tools/spectral installed,
 # osv-scanner reads osv.dev online with tools/osvscanner/go.mod and osv-scanner.toml)
 set -euo pipefail
+# Repository Python launcher (3.10 floor); absolute, because a mode may change directory.
+launcher="$PWD/.config/lefthook/python.sh"
 tool="${1:?usage: selftest.sh gosec|semgrep|spectral|trivy|osv-scanner}"
 scratch="$(mktemp -d)"
 trap 'rm -r "$scratch"' EXIT
@@ -57,65 +59,130 @@ init_module() {
   fi
 }
 
-# Reads the shared end date of the one osv-scanner.toml exemption and of the .standards.yaml
-# exceptions entry for rule backlog.caps.forge_alerts; prints it, or exits 1 naming both values.
-# The scan is not trusted when the dates differ, another advisory is exempt, or an entry is missing.
-shared_exemption_date() {
-  python3 - "$1" "$2" <<'PY'
+# Reads the end date of the one osv-scanner.toml exemption. Prints the raw value read on line 1
+# ("<unread>" before any read); on a refusal exits 1 and prints the reason on line 2. Python comes
+# from the repository launcher (3.10 floor, so no TOML library): a narrow line reader, not a TOML parser.
+toml_exemption_date() {
+  sh "$launcher" - "$1" <<'PY'
 import datetime
 import re
 import sys
-import tomllib
 
-toml_path, yaml_path = sys.argv[1:3]
 want_id = "GHSA-fc5q-39xc-vjpf"
-rule = "backlog.caps.forge_alerts"
-seen = {"effectiveUntil": "<unread>", "expires": "<unread>"}
+allowed = ("id", "effectiveUntil", "reason")
+tables, ids, untils = [], [], []
 
 
 def fail(why):
-    print(f"osv-scanner: exemption dates: {why}: osv-scanner.toml effectiveUntil="
-          f"{seen['effectiveUntil']} .standards.yaml expires={seen['expires']}", file=sys.stderr)
+    shown = untils[0] if untils else "<unread>"
+    print(f"{shown}\n{why}")
     sys.exit(1)
 
 
-def read_toml():
-    with open(toml_path, "rb") as fh:
-        ignored = tomllib.load(fh).get("IgnoredVulns", [])
-    if len(ignored) != 1 or ignored[0].get("id") != want_id:
-        fail(f"osv-scanner.toml must hold exactly one IgnoredVulns entry, {want_id}; got "
-             f"{[e.get('id') for e in ignored]}")
-    seen["effectiveUntil"] = str(ignored[0].get("effectiveUntil", "<missing>"))
-
-
-def read_yaml():
-    with open(yaml_path, encoding="utf-8") as fh:
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
         lines = fh.read().splitlines()
-    hits = [i for i, ln in enumerate(lines) if rule in ln and not ln.lstrip().startswith("#")]
-    if len(hits) != 1 or lines[hits[0]].rstrip() != f"  - rule: {rule}":
-        fail(f"want exactly one '  - rule: {rule}' entry in .standards.yaml, got {len(hits)}")
-    found = []
-    for ln in lines[hits[0] + 1:]:
-        if re.match(r"  - |\S", ln):
-            break
-        match = re.fullmatch(r'    expires: "?(\d{4}-\d{2}-\d{2})"?\s*(#.*)?', ln)
-        if match:
-            found.append(match.group(1))
-    if len(found) != 1:
-        fail(f"want exactly one expires line in the {rule} entry, got {len(found)}")
-    seen["expires"] = found[0]
+except (OSError, ValueError) as exc:
+    fail(f"osv-scanner.toml unreadable ({exc})")
+for raw in lines:
+    ln = raw.strip()
+    if not ln or ln.startswith("#"):
+        continue
+    if '"""' in ln or "'''" in ln:
+        fail("osv-scanner.toml: multi-line strings are not read; keep each value on one line")
+    if ln.startswith("["):
+        tables.append(re.sub(r"\s+#.*$", "", ln))
+        continue
+    key, _, value = ln.partition("=")
+    key, value = key.strip(), value.strip()
+    if not tables:
+        fail(f"osv-scanner.toml: key {key} before the [[IgnoredVulns]] table")
+    if key not in allowed:
+        fail(f"osv-scanner.toml: key {key} not allowed (only effectiveUntil ends the exemption)")
+    if key == "id":
+        ids.append(value.split("#")[0].strip().strip('"'))
+    if key == "effectiveUntil":
+        untils.append(value.split("#")[0].strip().strip('"'))
+if tables != ["[[IgnoredVulns]]"]:
+    fail(f"osv-scanner.toml must hold exactly one [[IgnoredVulns]] table and no other; got {tables}")
+if ids != [want_id]:
+    fail(f"osv-scanner.toml must hold exactly one id line, {want_id}; got {ids}")
+if len(untils) != 1:
+    fail(f"osv-scanner.toml must hold exactly one effectiveUntil line, got {len(untils)}")
+if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", untils[0]):
+    fail("osv-scanner.toml effectiveUntil is not a YYYY-MM-DD date")
+try:
+    datetime.date.fromisoformat(untils[0])
+except ValueError as exc:
+    fail(f"osv-scanner.toml effectiveUntil is not a date ({exc})")
+print(untils[0])
+PY
+}
+
+# Reads the expires date of the .standards.yaml exceptions entry for rule backlog.caps.forge_alerts,
+# with the same output contract as toml_exemption_date.
+yaml_exemption_date() {
+  sh "$launcher" - "$1" <<'PY'
+import datetime
+import re
+import sys
+
+rule = "backlog.caps.forge_alerts"
+found = []
+
+
+def fail(why):
+    shown = found[0] if found else "<unread>"
+    print(f"{shown}\n{why}")
+    sys.exit(1)
 
 
 try:
-    read_toml()
-    read_yaml()
-    dates = {k: datetime.date.fromisoformat(v) for k, v in seen.items()}
-except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-    fail(f"unreadable ({exc})")
-if dates["effectiveUntil"] != dates["expires"]:
-    fail("dates differ")
-print(dates["expires"].isoformat())
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+except (OSError, ValueError) as exc:
+    fail(f".standards.yaml unreadable ({exc})")
+hits = [i for i, ln in enumerate(lines) if rule in ln and not ln.lstrip().startswith("#")]
+if len(hits) != 1 or lines[hits[0]].rstrip() != f"  - rule: {rule}":
+    fail(f"want exactly one '  - rule: {rule}' entry in .standards.yaml, got {len(hits)}")
+for ln in lines[hits[0] + 1:]:
+    if re.match(r"  - |\S", ln):
+        break
+    match = re.fullmatch(r'    expires: "?(\d{4}-\d{2}-\d{2})"?\s*(#.*)?', ln)
+    if match:
+        found.append(match.group(1))
+if len(found) != 1:
+    fail(f"want exactly one expires line in the {rule} entry, got {len(found)}")
+try:
+    datetime.date.fromisoformat(found[0])
+except ValueError as exc:
+    fail(f".standards.yaml expires is not a date ({exc})")
+print(found[0])
 PY
+}
+
+# Prints the date both exemption files share, or exits 1 naming both values. The scan is not
+# trusted when the dates differ, another advisory is exempt, or an entry is missing.
+shared_exemption_date() {
+  local toml_out yaml_out toml_rc=0 yaml_rc=0 why=""
+  toml_out="$(toml_exemption_date "$1")" || toml_rc="$?"
+  yaml_out="$(yaml_exemption_date "$2")" || yaml_rc="$?"
+  local toml_val="${toml_out%%$'\n'*}" yaml_val="${yaml_out%%$'\n'*}"
+  if [[ "$toml_rc" -ne 0 ]]; then
+    why="${toml_out#*$'\n'}"
+    [[ "$toml_out" == *$'\n'* ]] || { toml_val="<unread>"; why="osv-scanner.toml reader exit $toml_rc"; }
+  elif [[ "$yaml_rc" -ne 0 ]]; then
+    why="${yaml_out#*$'\n'}"
+    [[ "$yaml_out" == *$'\n'* ]] || { yaml_val="<unread>"; why=".standards.yaml reader exit $yaml_rc"; }
+  elif [[ "$toml_val" != "$yaml_val" ]]; then
+    why="dates differ"
+  fi
+  if [[ -n "$why" ]]; then
+    echo "osv-scanner: exemption dates: $why: osv-scanner.toml effectiveUntil=${toml_val:-<unread>}" \
+      ".standards.yaml expires=${yaml_val:-<unread>}" >&2
+    exit 1
+  fi
+  echo "$yaml_val"
 }
 
 case "$tool" in
@@ -240,7 +307,7 @@ YAML
     fi
     old_version="3.1.8"
     old_integrity="sha512-GZMtZUTNRpOVIECoXwLNZS5xUGE+mVNbTB8h/7Rwh2TFWcBQiPzTgyZi05BF9UMZKkLJv8XBRJTlU7zg8+ZfMg=="
-    python3 - "$repo/tools/spectral/package-lock.json" "$plant/package-lock.json" \
+    sh "$launcher" - "$repo/tools/spectral/package-lock.json" "$plant/package-lock.json" \
       "$old_version" "$old_integrity" <<'PY'
 import json
 import sys
