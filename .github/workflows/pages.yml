@@ -10,6 +10,10 @@ on:
       - 'overrides/**'
       - 'tools/figures/**'
       - '.github/workflows/pages.yml'
+      - '.node-version'
+      - 'go.mod'
+      - 'tools/go/go.mod'
+      - 'tools/go/go.sum'
   # The hosted gate shape: a pull request runs on every activity that can change
   # what merges, and the build job fails a draft in its first step and runs once
   # the draft is marked ready (ready_for_review). The deploying push to main and
@@ -24,6 +28,10 @@ on:
       - 'overrides/**'
       - 'tools/figures/**'
       - '.github/workflows/pages.yml'
+      - '.node-version'
+      - 'go.mod'
+      - 'tools/go/go.mod'
+      - 'tools/go/go.sum'
   workflow_dispatch:
 
 concurrency:
