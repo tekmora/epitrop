@@ -60,8 +60,9 @@ init_module() {
 }
 
 # Reads the end date of the one osv-scanner.toml exemption. Prints the raw value read on line 1
-# ("<unread>" before any read); on a refusal exits 1 and prints the reason on line 2. Python comes
-# from the repository launcher (3.10 floor, so no TOML library): a narrow line reader, not a TOML parser.
+# ("<unread>" before any read); on a refusal exits 1 and prints the reason on line 2. A file with no
+# [[IgnoredVulns]] table (no exemption) prints "absent" and exits 3. Python comes from the repository
+# launcher (3.10 floor, so no TOML library): a narrow line reader, not a TOML parser.
 toml_exemption_date() {
   sh "$launcher" - "$1" <<'PY'
 import datetime
@@ -103,6 +104,9 @@ for raw in lines:
         ids.append(value.split("#")[0].strip().strip('"'))
     if key == "effectiveUntil":
         untils.append(value.split("#")[0].strip().strip('"'))
+if not tables:
+    print("absent")
+    sys.exit(3)
 if tables != ["[[IgnoredVulns]]"]:
     fail(f"osv-scanner.toml must hold exactly one [[IgnoredVulns]] table and no other; got {tables}")
 if ids != [want_id]:
@@ -120,7 +124,7 @@ PY
 }
 
 # Reads the expires date of the .standards.yaml exceptions entry for rule backlog.caps.forge_alerts,
-# with the same output contract as toml_exemption_date.
+# with the same output contract as toml_exemption_date ("absent", exit 3: no such entry).
 yaml_exemption_date() {
   sh "$launcher" - "$1" <<'PY'
 import datetime
@@ -143,6 +147,9 @@ try:
 except (OSError, ValueError) as exc:
     fail(f".standards.yaml unreadable ({exc})")
 hits = [i for i, ln in enumerate(lines) if rule in ln and not ln.lstrip().startswith("#")]
+if not hits:
+    print("absent")
+    sys.exit(3)
 if len(hits) != 1 or lines[hits[0]].rstrip() != f"  - rule: {rule}":
     fail(f"want exactly one '  - rule: {rule}' entry in .standards.yaml, got {len(hits)}")
 for ln in lines[hits[0] + 1:]:
@@ -161,19 +168,28 @@ print(found[0])
 PY
 }
 
-# Prints the date both exemption files share, or exits 1 naming both values. The scan is not
-# trusted when the dates differ, another advisory is exempt, or an entry is missing.
+# Decides the production exemption state offline. Both files hold the entry: prints the shared date,
+# exit 0, or exits 1 naming both values when the dates differ. Neither holds one: prints nothing,
+# returns 3. Exactly one holds one, or a reader refuses: exits 1 naming the file.
 shared_exemption_date() {
-  local toml_out yaml_out toml_rc=0 yaml_rc=0 why=""
+  local toml_out yaml_out toml_rc=0 yaml_rc=0 why="" gone=""
   toml_out="$(toml_exemption_date "$1")" || toml_rc="$?"
   yaml_out="$(yaml_exemption_date "$2")" || yaml_rc="$?"
   local toml_val="${toml_out%%$'\n'*}" yaml_val="${yaml_out%%$'\n'*}"
+  if [[ "$toml_rc" -eq 3 && "$toml_out" == absent ]]; then toml_val="<absent>"; gone+="t"; toml_rc=0; fi
+  if [[ "$yaml_rc" -eq 3 && "$yaml_out" == absent ]]; then yaml_val="<absent>"; gone+="y"; yaml_rc=0; fi
   if [[ "$toml_rc" -ne 0 ]]; then
     why="${toml_out#*$'\n'}"
     [[ "$toml_out" == *$'\n'* ]] || { toml_val="<unread>"; why="osv-scanner.toml reader exit $toml_rc"; }
   elif [[ "$yaml_rc" -ne 0 ]]; then
     why="${yaml_out#*$'\n'}"
     [[ "$yaml_out" == *$'\n'* ]] || { yaml_val="<unread>"; why=".standards.yaml reader exit $yaml_rc"; }
+  elif [[ "$gone" == ty || "$gone" == yt ]]; then
+    return 3
+  elif [[ "$gone" == t ]]; then
+    why="osv-scanner.toml has no exemption entry but .standards.yaml has one"
+  elif [[ "$gone" == y ]]; then
+    why=".standards.yaml has no exceptions entry but osv-scanner.toml has an exemption"
   elif [[ "$toml_val" != "$yaml_val" ]]; then
     why="dates differ"
   fi
@@ -183,6 +199,40 @@ shared_exemption_date() {
     exit 1
   fi
   echo "$yaml_val"
+}
+
+# Writes an osv-scanner config exempting the picomatch advisory until the given date.
+# Args: file, date (YYYY-MM-DD).
+osv_write_config() {
+  printf '%s\n' '[[IgnoredVulns]]' 'id = "GHSA-fc5q-39xc-vjpf"' "effectiveUntil = $2" \
+    'reason = "self-test plant"' > "$1"
+}
+
+# Copies a lockfile with one package forced to a version. Args: source lock, destination lock,
+# package name, version, integrity. Adds the entry when the source lock has none.
+osv_plant_lock() {
+  sh "$launcher" - "$@" <<'PY'
+import json
+import sys
+
+src, dst, name, version, integrity = sys.argv[1:6]
+with open(src, encoding="utf-8") as fh:
+    lock = json.load(fh)
+entry = lock["packages"].setdefault("node_modules/" + name, {})
+entry["version"] = version
+entry["resolved"] = "https://registry.npmjs.org/" + name + "/-/" + name + "-" + version + ".tgz"
+entry["integrity"] = integrity
+with open(dst, "w", encoding="utf-8") as fh:
+    json.dump(lock, fh, indent=2)
+    fh.write("\n")
+PY
+}
+
+# Runs osv-scanner on a lockfile under a config and returns its exit code. Args: lock, config, log.
+osv_scan() {
+  local scan_rc=0
+  go tool -modfile="$modfile" osv-scanner scan --lockfile "$1" --config "$2" > "$3" 2>&1 || scan_rc="$?"
+  return "$scan_rc"
 }
 
 case "$tool" in
@@ -294,75 +344,65 @@ YAML
     set -e
     ;;
   osv-scanner)
-    # A: the real lock with fast-uri set back to 3.1.8 (GHSA-w74x-v6f9-j3xg, fixed in 3.1.9)
-    # must fail the scan under the repository's osv-scanner.toml. B: the real lock under the real
-    # osv-scanner.toml must exit 0 without the picomatch advisory (the valid exemption works; any
-    # other advisory fails this case). B2: the real lock under a copy of osv-scanner.toml whose
-    # effectiveUntil lies in the past must report the picomatch advisory again. C:
-    # osv-scanner.toml effectiveUntil equals the .standards.yaml forge_alerts expires and no
-    # other advisory is exempt (checked first, offline). Exit 1 means advisories found in A and
-    # B2; B needs exit 0; any other exit (scanner error) fails the self-test.
+    # C (offline, first): the production exemption state. Both osv-scanner.toml and .standards.yaml
+    # hold the picomatch entry: effectiveUntil equals the forge_alerts expires and no other advisory
+    # is exempt. Neither holds one (remediated): skipped. Exactly one: fail. A: the real lock with
+    # fast-uri set back to 3.1.8 (GHSA-w74x-v6f9-j3xg, fixed in 3.1.9) must fail the scan under the
+    # repository's osv-scanner.toml. B and B2 read no production exemption: both scan the real lock
+    # with picomatch planted at 2.3.2 (GHSA-fc5q-39xc-vjpf). B: under a planted config valid until
+    # 2099-01-01 it must exit 0 without the advisory (any other advisory fails this case). B2: under
+    # a planted config that ended 2020-01-01 it must report the advisory. Exit 1 means advisories
+    # found in A and B2; B needs exit 0; any other exit (scanner error) fails the self-test.
     repo="$PWD"
     modfile="$repo/tools/osvscanner/go.mod"
-    if ! shared_date="$(shared_exemption_date "$repo/osv-scanner.toml" "$repo/.standards.yaml")"; then
-      exit 1
-    fi
+    shared_rc=0
+    shared_date="$(shared_exemption_date "$repo/osv-scanner.toml" "$repo/.standards.yaml")" || shared_rc="$?"
+    case "$shared_rc" in
+      0) date_note="exemption dates agree on $shared_date" ;;
+      3) date_note="no production exemption; date check skipped" ;;
+      *) exit 1 ;;
+    esac
+    echo "$tool: $date_note"
+    lock="$repo/tools/spectral/package-lock.json"
+    mkdir "$plant/a" "$plant/b"
     old_version="3.1.8"
     old_integrity="sha512-GZMtZUTNRpOVIECoXwLNZS5xUGE+mVNbTB8h/7Rwh2TFWcBQiPzTgyZi05BF9UMZKkLJv8XBRJTlU7zg8+ZfMg=="
-    sh "$launcher" - "$repo/tools/spectral/package-lock.json" "$plant/package-lock.json" \
-      "$old_version" "$old_integrity" <<'PY'
-import json
-import sys
-
-src, dst, version, integrity = sys.argv[1:5]
-with open(src, encoding="utf-8") as fh:
-    lock = json.load(fh)
-entry = lock["packages"]["node_modules/fast-uri"]
-entry["version"] = version
-entry["resolved"] = "https://registry.npmjs.org/fast-uri/-/fast-uri-" + version + ".tgz"
-entry["integrity"] = integrity
-with open(dst, "w", encoding="utf-8") as fh:
-    json.dump(lock, fh, indent=2)
-    fh.write("\n")
-PY
+    # picomatch 2.3.2 (GHSA-fc5q-39xc-vjpf): integrity of that npm tarball, fixed here so the plant
+    # still works after the real lock moves to another picomatch version.
+    pm_version="2.3.2"
+    pm_integrity="sha512-V7+vQEJ06Z+c5tSye8S+nHUfI51xoXIXjHQ99cQtKUkQqqO1kO/KCJUfZXuB47h/YBlDhah2H3hdUGXn8ie0oA=="
+    osv_plant_lock "$lock" "$plant/a/package-lock.json" fast-uri "$old_version" "$old_integrity" || {
+      echo "$tool: could not plant fast-uri $old_version" >&2
+      exit 1
+    }
+    osv_plant_lock "$lock" "$plant/b/package-lock.json" picomatch "$pm_version" "$pm_integrity" || {
+      echo "$tool: could not plant picomatch $pm_version" >&2
+      exit 1
+    }
     expected=(GHSA-w74x-v6f9-j3xg)
-    set +e
-    go tool -modfile="$modfile" osv-scanner scan --lockfile "$plant/package-lock.json" \
-      --config "$repo/osv-scanner.toml" > "$log" 2>&1
-    rc=$?
-    set -e
+    rc=0
+    osv_scan "$plant/a/package-lock.json" "$repo/osv-scanner.toml" "$log" || rc="$?"
     require_findings "$tool (fast-uri $old_version planted)" "$rc" "$log" "${expected[@]}"
-    rm "$plant/package-lock.json"
 
     valid_log="$plant/valid-scan.log"
-    set +e
-    go tool -modfile="$modfile" osv-scanner scan --lockfile "$repo/tools/spectral/package-lock.json" \
-      --config "$repo/osv-scanner.toml" > "$valid_log" 2>&1
-    rc=$?
-    set -e
+    osv_write_config "$plant/valid.toml" 2099-01-01
+    rc=0
+    osv_scan "$plant/b/package-lock.json" "$plant/valid.toml" "$valid_log" || rc="$?"
     # osv-scanner names a filtered advisory on its "have been filtered out" line; any other line
     # naming it is a report.
     if [[ "$rc" -ne 0 ]] || grep -F -- GHSA-fc5q-39xc-vjpf "$valid_log" | grep -qvF -- 'have been filtered out'; then
-      echo "$tool (valid exemption): exit $rc; the real lock under the real osv-scanner.toml must exit 0 without GHSA-fc5q-39xc-vjpf" >&2
+      echo "$tool (valid exemption): exit $rc; the planted picomatch $pm_version lock under a valid exemption must exit 0 without GHSA-fc5q-39xc-vjpf" >&2
       cat "$valid_log" >&2
       exit 1
     fi
 
     expired_log="$plant/expired-scan.log"
-    expired_config="$plant/osv-scanner.toml"
-    sed 's/^effectiveUntil = .*/effectiveUntil = 2020-01-01/' "$repo/osv-scanner.toml" > "$expired_config"
-    if ! grep -q '^effectiveUntil = 2020-01-01$' "$expired_config"; then
-      echo "$tool: could not rewrite effectiveUntil in osv-scanner.toml" >&2
-      exit 1
-    fi
+    osv_write_config "$plant/expired.toml" 2020-01-01
     expected=(GHSA-fc5q-39xc-vjpf)
-    set +e
-    go tool -modfile="$modfile" osv-scanner scan --lockfile "$repo/tools/spectral/package-lock.json" \
-      --config "$expired_config" > "$expired_log" 2>&1
-    rc=$?
-    set -e
+    rc=0
+    osv_scan "$plant/b/package-lock.json" "$plant/expired.toml" "$expired_log" || rc="$?"
     require_findings "$tool (expired exemption)" "$rc" "$expired_log" "${expected[@]}"
-    echo "$tool: planted fast-uri $old_version reported (GHSA-w74x-v6f9-j3xg, exit 1), valid exemption honoured (GHSA-fc5q-39xc-vjpf absent, exit 0), expired exemption reported (GHSA-fc5q-39xc-vjpf, exit 1), exemption dates agree on $shared_date"
+    echo "$tool: planted fast-uri $old_version reported (GHSA-w74x-v6f9-j3xg, exit 1), valid exemption honoured on planted picomatch $pm_version (GHSA-fc5q-39xc-vjpf absent, exit 0), expired exemption reported (GHSA-fc5q-39xc-vjpf, exit 1), $date_note"
     exit 0
     ;;
   *)
