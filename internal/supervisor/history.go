@@ -13,15 +13,15 @@ import (
 // cutover's "supervision holds" check reads (docs/cutover-1.md). A compacted log holds no
 // records up to its base, so the counts start after the base.
 type JobHistory struct {
-	Name      string
-	Started   int // job.started and job.adopted
-	Exited    int
-	Unclean   int // exits without code 0: a stop's signal, a lost job and a deadline included
-	Restarted int // job.restarted that count against the cap
-	Resumed   int // job.restarted of reason supervisor-stop: no failure, outside the cap
-	Stale     int
-	Refused   int
-	Stopped   int
+	Name        string
+	Started     int // job.started and job.adopted
+	Exited      int
+	Unclean     int // exits without code 0: a stop's signal, a lost job and a deadline included
+	Restarted   int
+	Interrupted int // job.interrupted: ended by the stop of the supervisor, no failure
+	Stale       int
+	Refused     int
+	Stopped     int
 	// SupervisorStops counts job.supervisor_stopped: each is one stop of a supervisor that
 	// left this job recorded running, so it matches one restart of the supervisor's own unit.
 	SupervisorStops int
@@ -110,10 +110,9 @@ func (h *JobHistory) counterFor(rec eventlog.Record) *int {
 	case "job.exited":
 		return &h.Exited
 	case "job.restarted":
-		if restartIsResume(rec.Payload) {
-			return &h.Resumed
-		}
 		return &h.Restarted
+	case eventInterrupted:
+		return &h.Interrupted
 	case eventSupervisorStopped:
 		return &h.SupervisorStops
 	case "job.stale":

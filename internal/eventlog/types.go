@@ -119,9 +119,9 @@ type Job struct {
 	LastDue        string `json:"last_due,omitempty"`
 	LastTriggerSeq uint64 `json:"last_trigger_seq,omitempty"`
 	// SupervisorStopped is set by a job.supervisor_stopped record: the supervisor that ran the
-	// job ended while the job was recorded running. A start or an adoption clears it. It
-	// decides how the next reconcile reads a running job whose lock is free: the stop ended
-	// it (reason supervisor-stop), nothing failed.
+	// job ended while the job was recorded running. A start, an adoption or a job.interrupted
+	// record clears it. It decides how the next reconcile reads a running job whose lock is
+	// free: the stop ended it (job.interrupted, reason supervisor-stop), nothing failed.
 	SupervisorStopped bool `json:"supervisor_stopped,omitempty"`
 }
 

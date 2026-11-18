@@ -66,10 +66,12 @@ func TestSpentBudgetIsFreedWhenTheOldestRestartAgesOut(t *testing.T) {
 func TestShouldRestartResumesAfterASupervisorStop(t *testing.T) {
 	now := time.Date(2026, 11, 18, 8, 0, 0, 0, time.UTC)
 	recent := now.Add(-time.Minute).Format(time.RFC3339Nano)
-	spent := eventlog.Job{State: string(StateDead), LastReason: reasonSupervisorStop, Restarts: 1, RestartTimes: []string{recent}}
+	spent := eventlog.Job{State: string(StateDead), LastEvent: eventInterrupted, LastReason: reasonSupervisorStop, Restarts: 1, RestartTimes: []string{recent}}
 	stopped := spent
 	stopped.State = string(StateStopped)
-	other := spent
+	exited := spent
+	exited.LastEvent = "job.exited"
+	other := exited
 	other.LastReason = "lost"
 	tests := []struct {
 		name string
@@ -81,6 +83,7 @@ func TestShouldRestartResumesAfterASupervisorStop(t *testing.T) {
 		{"always resumes with the budget spent", withRestartPolicy(boundedJob("daemon", 1, 0, 0), "always"), spent, true},
 		{"never does not resume", withRestartPolicy(boundedJob("daemon", 1, 0, 0), "never"), spent, false},
 		{"a job stopped on purpose is not resumed", withRestartPolicy(boundedJob("daemon", 1, 0, 0), "always"), stopped, false},
+		{"job.exited does not resume with the budget spent", withRestartPolicy(boundedJob("daemon", 1, 0, 0), "on-failure"), exited, false},
 		{"a lost job with the budget spent is not restarted", withRestartPolicy(boundedJob("daemon", 1, 0, 0), "on-failure"), other, false},
 	}
 	for i := 0; i < len(tests); i++ {
@@ -114,46 +117,40 @@ func TestJobReducerSupervisorStoppedMarker(t *testing.T) {
 	}
 }
 
-func TestJobReducerSupervisorStopExitKeepsTheMarkerUntilTheNextStart(t *testing.T) {
-	st := eventlog.State{Jobs: map[string]eventlog.Job{}}
-	st = reduceMarkerStep(t, st, "job.started", `{"state":"running","pid":4}`)
-	st = reduceMarkerStep(t, st, eventSupervisorStopped, `{"supervisor_pid":9}`)
-	st = reduceMarkerStep(t, st, "job.exited", `{"state":"dead","reason":"supervisor-stop"}`)
-	if got := st.Jobs["daemon"]; got.State != "dead" || got.LastReason != reasonSupervisorStop || got.LastExitCode != nil {
-		t.Fatalf("job after the supervisor-stop exit = %+v, want dead, that reason, no code", got)
+func assertInterruptedState(t *testing.T, got eventlog.Job) {
+	t.Helper()
+	if got.State != string(StateDead) || got.LastEvent != eventInterrupted || got.LastReason != reasonSupervisorStop {
+		t.Fatalf("job after job.interrupted = %+v, want dead, last event job.interrupted, reason supervisor-stop", got)
 	}
-	st = reduceMarkerStep(t, st, "job.started", `{"state":"running","pid":5}`)
-	if got := st.Jobs["daemon"]; got.SupervisorStopped {
-		t.Fatalf("job after job.started = %+v, want the marker cleared", got)
+	if got.LastExitCode != nil || got.SupervisorStopped {
+		t.Fatalf("job after job.interrupted = %+v, want no exit code and marker cleared", got)
 	}
 }
 
-func TestJobReducerResumeIsNotACountedRestart(t *testing.T) {
+func TestJobReducerInterruptedClearsTheMarkerAndKeepsRestarts(t *testing.T) {
 	st := eventlog.State{Jobs: map[string]eventlog.Job{}}
-	apply := func(payload string) {
-		t.Helper()
-		var err error
-		st, err = JobReducer(st, eventlog.Record{Seq: 1, Type: "job.restarted", TaskID: "daemon", Time: "2026-11-18T08:00:00Z", Payload: json.RawMessage(payload)})
-		if err != nil {
-			t.Fatalf("JobReducer(job.restarted %q) = %v, want nil", payload, err)
-		}
+	st = reduceMarkerStep(t, st, "job.started", `{"state":"running","pid":4}`)
+	st = reduceMarkerStep(t, st, "job.exited", `{"state":"dead","code":1}`)
+	st = reduceMarkerStep(t, st, "job.restarted", `{"state":"dead"}`)
+	st = reduceMarkerStep(t, st, "job.started", `{"state":"running","pid":5}`)
+	st = reduceMarkerStep(t, st, eventSupervisorStopped, `{"supervisor_pid":9}`)
+	st = reduceMarkerStep(t, st, eventInterrupted, `{"state":"dead","reason":"supervisor-stop"}`)
+	got := st.Jobs["daemon"]
+	assertInterruptedState(t, got)
+	if got.Restarts != 1 || len(got.RestartTimes) != 1 {
+		t.Fatalf("restarts after job.interrupted = %d (%v), want 1 and 1 time unchanged", got.Restarts, got.RestartTimes)
 	}
-	steps := []struct {
-		payload       string
-		restarts, len int
-	}{
-		{``, 1, 1},         // no payload: counted, as before the reason existed
-		{`not json`, 2, 2}, // unreadable payload: counted, never a fold error
-		{`{"state":"dead","reason":"supervisor-stop"}`, 2, 2}, // a resume: not counted
-		{`{"state":"dead","reason":"something else"}`, 3, 3},  // any other reason: counted
-		{`{"state":"dead"}`, 4, 4},                            // no reason: counted
-		{`{"state":"dead","reason":"supervisor-stop"}`, 4, 4}, // a second resume: still not counted
-	}
-	for i := 0; i < len(steps); i++ {
-		apply(steps[i].payload)
+}
+
+func TestJobReducerCountsEveryRestart(t *testing.T) {
+	st := eventlog.State{Jobs: map[string]eventlog.Job{}}
+	payloads := []string{``, `{"state":"dead"}`, `{"state":"dead","reason":"supervisor-stop"}`}
+	for i := 0; i < len(payloads); i++ {
+		st = reduceMarkerStep(t, st, "job.restarted", payloads[i])
 		got := st.Jobs["daemon"]
-		if got.Restarts != steps[i].restarts || len(got.RestartTimes) != steps[i].len || got.LastEvent != "job.restarted" {
-			t.Fatalf("after job.restarted %q: restarts %d, times %d, last event %q; want %d, %d, job.restarted", steps[i].payload, got.Restarts, len(got.RestartTimes), got.LastEvent, steps[i].restarts, steps[i].len)
+		want := i + 1
+		if got.Restarts != want || len(got.RestartTimes) != want || got.LastEvent != "job.restarted" {
+			t.Fatalf("after job.restarted %q: restarts %d, times %d, last event %q; want %d, %d, job.restarted", payloads[i], got.Restarts, len(got.RestartTimes), got.LastEvent, want, want)
 		}
 	}
 }
@@ -194,8 +191,9 @@ func TestSupervisorStopMarksOnlyRunningJobs(t *testing.T) {
 	}
 }
 
-// The next reconcile with the lock free records a supervisor-stop exit, then resumes the job
-// outside the budget: no counted restart, no backoff, even with the cap already reached.
+// The next reconcile with the lock free records job.interrupted, then resumes the job with a
+// plain start outside the budget: no job.exited, no job.restarted, no backoff, even with the
+// cap already reached.
 func TestSupervisorStopExitResumesOutsideTheBudget(t *testing.T) {
 	tests := []struct {
 		policy  string
@@ -209,14 +207,37 @@ func TestSupervisorStopExitResumesOutsideTheBudget(t *testing.T) {
 			appendHistory(t, sup, "job.restarted", "daemon", map[string]any{"state": "dead"})
 			appendHistory(t, sup, "job.started", "daemon", running)
 			appendHistory(t, sup, eventSupervisorStopped, "daemon", map[string]any{"supervisor_pid": 1})
-			reconcileOnce(t, sup, "record the exit")
-			got := eventlogJob(t, sup, "daemon")
-			if got.State != string(StateDead) || got.LastReason != reasonSupervisorStop || got.LastExitCode != nil {
-				t.Fatalf("job after the first reconcile = %+v, want dead, reason supervisor-stop, no code", got)
-			}
+			reconcileOnce(t, sup, "record the interruption")
+			assertInterruptedState(t, eventlogJob(t, sup, "daemon"))
 			reconcileOnce(t, sup, "resume")
 			assertResume(t, sup, tests[i].resumes)
 		})
+	}
+}
+
+func recordsAfterSeq(t *testing.T, sup *Supervisor, after uint64) []eventlog.Record {
+	t.Helper()
+	recs, err := eventlog.ReplayAfter(testContext(t), sup.cfg.EventLog.Dir, sup.PublicKey(), sup.eventLogLimits(), after)
+	if err != nil {
+		t.Fatalf("ReplayAfter(%d) = %v, want nil", after, err)
+	}
+	return recs
+}
+
+func assertInterruptedRecord(t *testing.T, rec eventlog.Record) {
+	t.Helper()
+	if rec.Type != eventInterrupted || rec.TaskID != "daemon" {
+		t.Fatalf("first record after the marker = %+v, want job.interrupted for daemon", rec)
+	}
+	var payload struct {
+		State  string `json:"state"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal job.interrupted payload = %v, want nil", err)
+	}
+	if payload.State != string(StateDead) || payload.Reason != reasonSupervisorStop {
+		t.Fatalf("job.interrupted payload = %+v, want state dead and reason supervisor-stop", payload)
 	}
 }
 
@@ -229,33 +250,48 @@ func assertResume(t *testing.T, sup *Supervisor, resumes bool) {
 	if !waitUntil(func() bool { return eventlogJob(t, sup, "daemon").State == string(StateRunning) }) {
 		t.Fatalf("job was not running again within %s", testWaitBound)
 	}
+	after := recordsAfterSeq(t, sup, 4)
+	if len(after) != 2 || after[1].Type != "job.started" {
+		t.Fatalf("records after the marker = %+v, want [job.interrupted, job.started] with no job.exited and no job.restarted", after)
+	}
+	assertInterruptedRecord(t, after[0])
 	got := eventlogJob(t, sup, "daemon")
 	if got.Restarts != 1 || len(got.RestartTimes) != 1 || got.SupervisorStopped {
 		t.Fatalf("job after the resume = %+v, want 1 counted restart as before, no new one, the marker cleared", got)
 	}
-	if hist := historyOne(t, sup, "daemon"); hist.Resumed != 1 || hist.Restarted != 1 || hist.SupervisorStops != 1 {
-		t.Fatalf("history after the resume = %+v, want 1 resume apart from 1 restart, and 1 supervisor stop", hist)
+	hist := historyOne(t, sup, "daemon")
+	want := JobHistory{Name: "daemon", Started: 3, Restarted: 1, Interrupted: 1, SupervisorStops: 1, First: hist.First, Last: hist.Last}
+	if hist != want {
+		t.Fatalf("history after the resume = %+v, want %+v", hist, want)
 	}
 }
 
 func assertNotResumed(t *testing.T, sup *Supervisor) {
 	t.Helper()
+	after := recordsAfterSeq(t, sup, 4)
+	if len(after) != 1 {
+		t.Fatalf("records after the marker under policy never = %+v, want only [job.interrupted]", after)
+	}
+	assertInterruptedRecord(t, after[0])
 	got, hist := eventlogJob(t, sup, "daemon"), historyOne(t, sup, "daemon")
-	if got.LastEvent != "job.exited" || hist.Resumed != 0 {
-		t.Fatalf("job under policy never = %+v, history %+v, want it left dead and not resumed", got, hist)
+	want := JobHistory{Name: "daemon", Started: 2, Restarted: 1, Interrupted: 1, SupervisorStops: 1, First: hist.First, Last: hist.Last}
+	if got.LastEvent != eventInterrupted || hist != want {
+		t.Fatalf("job under policy never = %+v, history %+v, want it left dead after job.interrupted (%+v)", got, hist, want)
 	}
 }
 
-// A job the operator stopped between the supervisor-stop exit and the resume stays stopped.
+// A job the operator stopped between the interruption and the resume stays stopped.
 func TestSupervisorStopExitIsNotResumedAfterAStopOnPurpose(t *testing.T) {
 	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
 	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running"})
 	appendHistory(t, sup, eventSupervisorStopped, "daemon", map[string]any{"supervisor_pid": 1})
-	reconcileOnce(t, sup, "record the exit")
+	reconcileOnce(t, sup, "record the interruption")
 	appendHistory(t, sup, "job.stopped", "daemon", map[string]any{"state": "stopped"})
 	reconcileOnce(t, sup, "after the stop")
-	if got, hist := eventlogJob(t, sup, "daemon"), historyOne(t, sup, "daemon"); got.LastEvent != "job.stopped" || hist.Resumed != 0 {
-		t.Fatalf("job after a stop on purpose = %+v, history %+v, want it left stopped", got, hist)
+	got, hist := eventlogJob(t, sup, "daemon"), historyOne(t, sup, "daemon")
+	want := JobHistory{Name: "daemon", Started: 1, Interrupted: 1, Stopped: 1, SupervisorStops: 1, First: hist.First, Last: hist.Last}
+	if got.LastEvent != "job.stopped" || hist != want {
+		t.Fatalf("job after a stop on purpose = %+v, history %+v, want it left stopped (%+v)", got, hist, want)
 	}
 }
 
@@ -277,18 +313,23 @@ func TestLostJobWithoutMarkerIsStillCounted(t *testing.T) {
 			}
 			appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running"})
 			reconcileOnce(t, sup, "record the exit")
-			if got := eventlogJob(t, sup, "daemon"); got.LastReason != "lost" || got.State != string(StateDead) {
-				t.Fatalf("job without a marker = %+v, want dead with reason lost", got)
+			if got := eventlogJob(t, sup, "daemon"); got.LastEvent != "job.exited" || got.LastReason != "lost" || got.State != string(StateDead) {
+				t.Fatalf("job without a marker = %+v, want job.exited with reason lost", got)
 			}
 			reconcileOnce(t, sup, "restart")
-			got := eventlogJob(t, sup, "daemon")
-			if got.Restarts != 1 || historyOne(t, sup, "daemon").Resumed != 0 {
-				t.Fatalf("job after a lost job = %+v, want exactly 1 counted restart and no resume", got)
-			}
-			if tests[i].restarted != (got.LastEvent != "job.exited") {
-				t.Fatalf("job after a lost job = %+v, want restarted = %v", got, tests[i].restarted)
-			}
+			assertLostJobOutcome(t, sup, tests[i].restarted)
 		})
+	}
+}
+
+func assertLostJobOutcome(t *testing.T, sup *Supervisor, restarted bool) {
+	t.Helper()
+	got, hist := eventlogJob(t, sup, "daemon"), historyOne(t, sup, "daemon")
+	if got.Restarts != 1 || hist.Interrupted != 0 || hist.Exited != 1 || hist.Unclean != 1 {
+		t.Fatalf("job after a lost job = %+v, history %+v, want 1 exited, 1 unclean, 1 restart and 0 interrupted", got, hist)
+	}
+	if restarted != (got.LastEvent != "job.exited") {
+		t.Fatalf("job after a lost job = %+v, want restarted = %v", got, restarted)
 	}
 }
 
@@ -352,20 +393,24 @@ func TestSuperviseReturnsAMarkerWriteFailureWithItsOwnError(t *testing.T) {
 	}
 }
 
-func TestHistoryCountsResumesApartFromRestarts(t *testing.T) {
+func TestHistoryCountsInterruptionsApartFromExitsAndRestarts(t *testing.T) {
 	sup, _ := historySupervisor(t)
+	appendHistory(t, sup, "job.exited", "daemon", map[string]any{"state": "dead", "code": 0})
+	appendHistory(t, sup, "job.exited", "daemon", map[string]any{"state": "dead", "code": 1})
+	appendHistory(t, sup, "job.exited", "daemon", map[string]any{"state": "dead", "reason": "lost"})
 	appendHistory(t, sup, "job.restarted", "daemon", map[string]any{"state": "dead"})
-	appendHistory(t, sup, "job.restarted", "daemon", map[string]any{"restarts": 1})
-	appendHistory(t, sup, "job.restarted", "daemon", map[string]any{"state": "dead", "reason": reasonSupervisorStop})
-	appendHistory(t, sup, "job.restarted", "daemon", map[string]any{"state": "dead", "reason": reasonSupervisorStop})
-	appendHistory(t, sup, "job.restarted", "daemon", map[string]any{"state": "dead", "reason": "other"})
+	appendHistory(t, sup, eventInterrupted, "daemon", map[string]any{"state": "dead", "reason": reasonSupervisorStop})
+	appendHistory(t, sup, eventInterrupted, "daemon", map[string]any{"state": "dead", "reason": reasonSupervisorStop})
 	appendHistory(t, sup, eventSupervisorStopped, "daemon", map[string]any{"supervisor_pid": 1})
 	appendHistory(t, sup, eventSupervisorStopped, "other", map[string]any{"supervisor_pid": 1})
 	got := historyOne(t, sup, "daemon")
-	if got.Restarted != 3 || got.Resumed != 2 || got.SupervisorStops != 1 {
-		t.Fatalf("History(daemon) = %+v, want 3 restarted, 2 resumed, 1 supervisor stop", got)
+	wantDaemon := JobHistory{Name: "daemon", Exited: 3, Unclean: 2, Restarted: 1, Interrupted: 2, SupervisorStops: 1, First: got.First, Last: got.Last}
+	if got != wantDaemon {
+		t.Fatalf("History(daemon) = %+v, want %+v", got, wantDaemon)
 	}
-	if other := historyOne(t, sup, "other"); other.SupervisorStops != 1 || other.Restarted != 0 || other.Resumed != 0 {
-		t.Fatalf("History(other) = %+v, want only its own supervisor stop", other)
+	other := historyOne(t, sup, "other")
+	wantOther := JobHistory{Name: "other", SupervisorStops: 1, First: other.First, Last: other.Last}
+	if other != wantOther {
+		t.Fatalf("History(other) = %+v, want %+v", other, wantOther)
 	}
 }

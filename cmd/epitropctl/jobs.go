@@ -177,10 +177,10 @@ func printJobsHistory(ctx context.Context, sup *supervisor.Supervisor, name stri
 }
 
 // jobsHistoryLine is one job's history row: name, then the started, exited, unclean,
-// restarted, resumed, stale, refused, stopped and supervisor-stops counts, then the first
+// restarted, interrupted, stale, refused, stopped and supervisor-stops counts, then the first
 // and last counted times.
 func jobsHistoryLine(h supervisor.JobHistory) string {
-	counts := []int{h.Started, h.Exited, h.Unclean, h.Restarted, h.Resumed, h.Stale, h.Refused, h.Stopped, h.SupervisorStops}
+	counts := []int{h.Started, h.Exited, h.Unclean, h.Restarted, h.Interrupted, h.Stale, h.Refused, h.Stopped, h.SupervisorStops}
 	fields := make([]string, 0, len(counts)+3)
 	fields = append(fields, h.Name)
 	for i := 0; i < len(counts); i++ {

@@ -1,3 +1,3 @@
 type: fixed
-title: 'A job restarts again once its oldest restart is older than the default one-hour window, and a supervisor stop is recorded as a resume that spends no restart budget'
+title: 'A job restarts again once its oldest restart is older than the default one-hour window, and a job ended by a supervisor stop is recorded as `job.interrupted` and resumed without spending restart budget'
 issue: "36"

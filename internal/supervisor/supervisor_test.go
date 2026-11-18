@@ -854,7 +854,7 @@ func TestRestartAndShouldRestartBoundaries(t *testing.T) {
 	job := testJob("daemon", []string{"/bin/true"})
 	job.Restart = config.JobRestartConfig{Policy: "always", MaxRestarts: 2, BackoffSeconds: 1}
 	sup := &Supervisor{cfg: config.Config{EventLog: config.EventLogConfig{Dir: t.TempDir()}}}
-	err := sup.restartJob(canceledContext(t), job, false)
+	err := sup.restartJob(canceledContext(t), job)
 	if err == nil || !strings.Contains(err.Error(), "signer is required") {
 		t.Fatalf("restartJob(canceled) = %v, want append signer error", err)
 	}
@@ -863,7 +863,7 @@ func TestRestartAndShouldRestartBoundaries(t *testing.T) {
 	sup = testSupervisorAt(t, rt, withRestartCommand(job, []string{os.Args[0], "-test.run=TestHelperProcessJob"}))
 	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	defer cancel()
-	err = sup.restartJob(ctx, sup.cfg.Jobs[0], false)
+	err = sup.restartJob(ctx, sup.cfg.Jobs[0])
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("restartJob(backoff canceled) = %v, want deadline before restart", err)
 	}

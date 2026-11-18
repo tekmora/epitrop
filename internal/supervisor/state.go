@@ -14,12 +14,14 @@ import (
 )
 
 const (
-	// reasonSupervisorStop is the exit reason of a job whose supervisor stopped while the job
-	// was recorded running, and the reason of the restart that resumes it.
+	// reasonSupervisorStop is the reason of a job.interrupted record: the job's supervisor
+	// stopped while the job was recorded running.
 	reasonSupervisorStop = "supervisor-stop"
 	// eventSupervisorStopped is the marker a stopping supervisor appends for each job it left
 	// recorded running.
 	eventSupervisorStopped = "job.supervisor_stopped"
+	// eventInterrupted records the end of a job whose stopping supervisor marked it running.
+	eventInterrupted = "job.interrupted"
 )
 
 type jobRecord struct {
@@ -85,27 +87,25 @@ func (s *Supervisor) eventLogLimits() eventlog.Limits {
 	}
 }
 
+var jobReducers = map[string]eventlog.Reducer{
+	"job.started":          reduceJobStarted,
+	"job.adopted":          reduceJobStarted,
+	"job.exited":           reduceJobExited,
+	eventInterrupted:       reduceJobInterrupted,
+	"job.refused":          reduceJobRefused,
+	"job.restarted":        reduceJobRestarted,
+	eventSupervisorStopped: reduceJobSupervisorStopped,
+	"job.stopped":          reduceJobStopped,
+	"job.armed":            reduceJobArmed,
+	"job.triggered":        reduceJobTriggered,
+}
+
 func JobReducer(st eventlog.State, rec eventlog.Record) (eventlog.State, error) {
 	if st.Jobs == nil {
 		st.Jobs = map[string]eventlog.Job{}
 	}
-	switch rec.Type {
-	case "job.started", "job.adopted":
-		return reduceJobStarted(st, rec)
-	case "job.exited":
-		return reduceJobExited(st, rec)
-	case "job.refused":
-		return reduceJobRefused(st, rec)
-	case "job.restarted":
-		return reduceJobRestarted(st, rec)
-	case eventSupervisorStopped:
-		return reduceJobSupervisorStopped(st, rec)
-	case "job.stopped":
-		return reduceJobStopped(st, rec)
-	case "job.armed":
-		return reduceJobArmed(st, rec)
-	case "job.triggered":
-		return reduceJobTriggered(st, rec)
+	if fn, ok := jobReducers[rec.Type]; ok {
+		return fn(st, rec)
 	}
 	return st, nil
 }
@@ -131,11 +131,22 @@ func reduceJobStarted(st eventlog.State, rec eventlog.Record) (eventlog.State, e
 }
 
 // reduceJobSupervisorStopped marks a job the stopping supervisor left recorded running. It
-// changes neither State, LastEvent nor the restart counts: the marker explains the exit that
+// changes neither State, LastEvent nor the restart counts: the marker explains the end that
 // follows, it is no event of the job.
 func reduceJobSupervisorStopped(st eventlog.State, rec eventlog.Record) (eventlog.State, error) {
 	job := st.Jobs[rec.TaskID]
 	job.Name, job.SupervisorStopped = rec.TaskID, true
+	st.Jobs[rec.TaskID] = job
+	return st, nil
+}
+
+// reduceJobInterrupted records the end of a job that was running when its supervisor stopped:
+// the job is dead with reason supervisor-stop and no exit code, the marker is cleared, and
+// its restart counts stay as they were.
+func reduceJobInterrupted(st eventlog.State, rec eventlog.Record) (eventlog.State, error) {
+	job := st.Jobs[rec.TaskID]
+	job.Name, job.State, job.LastEvent = rec.TaskID, string(StateDead), rec.Type
+	job.LastReason, job.LastExitCode, job.SupervisorStopped = reasonSupervisorStop, nil, false
 	st.Jobs[rec.TaskID] = job
 	return st, nil
 }
@@ -196,29 +207,11 @@ func appendRestartTime(times []string, t string) []string {
 	return out
 }
 
-// restartIsResume reports whether a job.restarted payload names a supervisor stop as its
-// reason. A payload that is missing or does not parse is a counted restart, as every
-// job.restarted was before the reason existed.
-func restartIsResume(payload []byte) bool {
-	if len(payload) == 0 {
-		return false
-	}
-	var body struct {
-		Reason string `json:"reason"`
-	}
-	if err := json.Unmarshal(payload, &body); err != nil {
-		return false
-	}
-	return body.Reason == reasonSupervisorStop
-}
-
 func reduceJobRestarted(st eventlog.State, rec eventlog.Record) (eventlog.State, error) {
 	job := st.Jobs[rec.TaskID]
 	job.Name, job.LastEvent = rec.TaskID, rec.Type
-	if !restartIsResume(rec.Payload) {
-		job.Restarts++
-		job.RestartTimes = appendRestartTime(job.RestartTimes, rec.Time)
-	}
+	job.Restarts++
+	job.RestartTimes = appendRestartTime(job.RestartTimes, rec.Time)
 	st.Jobs[rec.TaskID] = job
 	return st, nil
 }
@@ -376,7 +369,7 @@ func (s *Supervisor) reconcileAlwaysJob(ctx context.Context, job config.JobConfi
 	}
 	if st.State == string(StateRunning) {
 		if st.SupervisorStopped {
-			return s.recordExit(ctx, job, reasonSupervisorStop)
+			return s.recordInterrupted(ctx, job)
 		}
 		return s.recordExit(ctx, job, "lost")
 	}
@@ -384,7 +377,10 @@ func (s *Supervisor) reconcileAlwaysJob(ctx context.Context, job config.JobConfi
 		return s.Start(ctx, job.Name)
 	}
 	if shouldRestart(job, st, s.clk.Now()) {
-		return s.restartJob(ctx, job, endedBySupervisorStop(st))
+		if endedBySupervisorStop(st) {
+			return s.Start(ctx, job.Name)
+		}
+		return s.restartJob(ctx, job)
 	}
 	return nil
 }
@@ -399,32 +395,32 @@ func (s *Supervisor) adoptIfFreshStart(ctx context.Context, job config.JobConfig
 	return s.appendJobEvent(ctx, "job.adopted", job.Name, payload)
 }
 
+// recordInterrupted records the end of a job that was recorded running, holds no lock, and
+// was marked by its stopping supervisor: the stop ended it, nothing failed.
+func (s *Supervisor) recordInterrupted(ctx context.Context, job config.JobConfig) error {
+	payload := map[string]any{"state": string(StateDead), "reason": reasonSupervisorStop}
+	return s.appendJobEvent(ctx, eventInterrupted, job.Name, payload)
+}
+
 // recordExit records the exit of a job that was recorded running and holds no lock: nobody
-// else will record it. The reason is lost, or supervisor-stop when the stopping supervisor
-// marked the job.
+// else will record it.
 func (s *Supervisor) recordExit(ctx context.Context, job config.JobConfig, reason string) error {
 	payload := map[string]any{"state": string(StateDead), "reason": reason}
 	return s.appendJobEvent(ctx, "job.exited", job.Name, payload)
 }
 
-// endedBySupervisorStop reports whether the job's last exit was the stop of its supervisor,
-// and the job was not stopped on purpose since.
+// endedBySupervisorStop reports whether the job's last event was an interruption by the stop
+// of its supervisor, and the job was not stopped on purpose since.
 func endedBySupervisorStop(st eventlog.Job) bool {
-	return st.LastReason == reasonSupervisorStop && st.State != string(StateStopped)
+	return st.LastEvent == eventInterrupted && st.State != string(StateStopped)
 }
 
-// restartJob records a restart and starts the job again. A resume after a supervisor stop
-// carries its reason, does not count against the cap and waits for no backoff: nothing
-// failed.
-func (s *Supervisor) restartJob(ctx context.Context, job config.JobConfig, resume bool) error {
+func (s *Supervisor) restartJob(ctx context.Context, job config.JobConfig) error {
 	payload := map[string]any{"state": string(StateDead)}
-	if resume {
-		payload["reason"] = reasonSupervisorStop
-	}
 	if err := s.appendJobEvent(ctx, "job.restarted", job.Name, payload); err != nil {
 		return err
 	}
-	if !resume && job.Restart.BackoffSeconds > 0 && !sleepContext(ctx, time.Duration(job.Restart.BackoffSeconds)*time.Second) {
+	if job.Restart.BackoffSeconds > 0 && !sleepContext(ctx, time.Duration(job.Restart.BackoffSeconds)*time.Second) {
 		return ctx.Err()
 	}
 	return s.Start(ctx, job.Name)
