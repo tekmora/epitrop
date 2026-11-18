@@ -216,7 +216,7 @@ func TestSuperviseEndMapsHowSuperviseEnded(t *testing.T) {
 	bound := fmt.Errorf("supervise context: %w", context.DeadlineExceeded)
 	err := superviseEnd(bound)
 	var exitCoder interface{ ExitCode() int }
-	if !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &exitCoder) {
+	if err != bound || errors.As(err, &exitCoder) { //nolint:errorlint // Exact identity is the contract; errors.Is also accepts an unwanted wrapper.
 		t.Fatalf("superviseEnd(deadline) = %#v, want the error unchanged, with no exit code of its own", err)
 	}
 	err = superviseEnd(fmt.Errorf("%w: a dead", supervisor.ErrNoJobAlive))

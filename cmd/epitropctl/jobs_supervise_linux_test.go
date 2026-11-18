@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,5 +62,28 @@ func TestJobsSuperviseExitsThreeWhenNoJobIsAlive(t *testing.T) {
 	line := stderr.String()
 	if !strings.HasPrefix(line, "epitrop supervisor: finding: no job alive: ends dead (") || !strings.HasSuffix(line, "; supervise exits 3\n") || strings.Count(line, "\n") != 1 {
 		t.Fatalf("stderr = %q, want one finding line naming ends", line)
+	}
+}
+
+func TestCommandExitReportsNoJobAliveOnce(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantOutput bool
+	}{
+		{"already reported", supervisor.ErrNoJobAlive, false},
+		{"not written", fmt.Errorf("%w: %w", supervisor.ErrNoJobAlive, supervisor.ErrFindingLineNotWritten), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			err := fmt.Errorf("command: %w", superviseEnd(tc.err))
+			if code := commandExit(err, &stderr); code != 3 {
+				t.Fatalf("commandExit = %d, want 3", code)
+			}
+			if got := stderr.String(); strings.HasPrefix(got, "Error: ") != tc.wantOutput || strings.Count(got, "\n") > 1 {
+				t.Fatalf("stderr = %q, want Error line = %t", got, tc.wantOutput)
+			}
+		})
 	}
 }

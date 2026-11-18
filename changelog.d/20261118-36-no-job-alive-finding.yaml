@@ -1,3 +1,3 @@
 type: added
-title: '`epitropctl jobs supervise` writes a `no job alive` finding line and exits 3 when at least one job is down and none is alive, so a host unit fails instead of staying active over dead jobs (`RestartPreventExitStatus=3` makes it fail at once)'
+title: '`epitropctl jobs supervise` reports no job alive once per episode: inactive once jobs and stopped always jobs are excluded, running jobs and armed cron/event jobs are alive, recoverable windowed budgets keep supervision running with a restart due time, and terminal failures exit 3 (`RestartPreventExitStatus=3` prevents retries); a job becoming alive ends the episode, and `jobs stop` keeps on-failure always jobs stopped'
 issue: "36"

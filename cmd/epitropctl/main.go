@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -56,8 +57,18 @@ func run() int {
 	}
 
 	cmdErr := dispatchCommand(os.Args[1], os.Args[2:])
+	return commandExit(cmdErr, os.Stderr)
+}
+
+// commandExit prints unreported errors and preserves a command's exit status.
+func commandExit(cmdErr error, stderr io.Writer) int {
 	if cmdErr != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", cmdErr)
+		var reported interface{ Reported() bool }
+		if !errors.As(cmdErr, &reported) || !reported.Reported() {
+			if _, err := fmt.Fprintf(stderr, "Error: %v\n", cmdErr); err != nil {
+				cmdErr = fmt.Errorf("%w (stderr write: %w)", cmdErr, err)
+			}
+		}
 		var exitCoder interface{ ExitCode() int }
 		if errors.As(cmdErr, &exitCoder) {
 			return exitCoder.ExitCode()

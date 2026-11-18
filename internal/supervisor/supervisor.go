@@ -27,6 +27,7 @@ const (
 	StateStopped JobRunState = "stopped"
 
 	defaultPollInterval = time.Second
+	defaultWriteTimeout = 5 * time.Second
 	maxJobRuntime       = 365 * 24 * time.Hour
 	maxStatusPolls      = 100
 	// A start is awaited for 15 s (10 ms apart), longer than the shim may wait for the
@@ -92,14 +93,19 @@ type Supervisor struct {
 	pollInterval time.Duration
 	shimWaiters  atomic.Int32
 	stderr       io.Writer
+	writeTimeout time.Duration
+	// afterTick is a test hook, called after each liveness check; nil in production.
+	afterTick func()
 }
 
 // reportShimError tells the operator about a shim that could not be collected. Nothing
 // returns to a caller from the waiter, so it goes to the supervisor's stderr like the
 // shim's own errors.
-var reportShimError = func(w io.Writer, name string, err error) {
-	if _, werr := fmt.Fprintf(w, "Error: collect shim of %s: %v\n", name, err); werr != nil {
-		fmt.Fprintf(os.Stderr, "Error: collect shim of %s: %v (stderr write: %v)\n", name, err, werr)
+var reportShimError = func(w io.Writer, timeout time.Duration, name string, err error) {
+	if werr := writeLine(w, fmt.Sprintf("Error: collect shim of %s: %v", foldWhitespace(name), err), timeout); werr != nil {
+		if fallbackErr := writeLine(os.Stderr, fmt.Sprintf("Error: collect shim of %s: %v (stderr write: %v)", foldWhitespace(name), err, werr), timeout); fallbackErr != nil {
+			return
+		}
 	}
 }
 
@@ -130,7 +136,7 @@ func New(cfg config.Config, opts Options) (*Supervisor, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Supervisor{cfg: cfg, signer: signer, clk: opts.Clock, shimCommand: opts.ShimCommand, pollInterval: opts.PollInterval, stderr: opts.Stderr}, nil
+	return &Supervisor{cfg: cfg, signer: signer, clk: opts.Clock, shimCommand: opts.ShimCommand, pollInterval: opts.PollInterval, stderr: opts.Stderr, writeTimeout: defaultWriteTimeout}, nil
 }
 
 func (s *Supervisor) PublicKey() string {
@@ -274,7 +280,7 @@ func (s *Supervisor) collectShim(cmd *exec.Cmd, name string) {
 	err := cmd.Wait()
 	var exit *exec.ExitError
 	if err != nil && !errors.As(err, &exit) {
-		reportShimError(s.errOut(), name, err)
+		reportShimError(s.errOut(), s.writeTimeout, name, err)
 	}
 }
 
@@ -401,13 +407,18 @@ func (s *Supervisor) Supervise(ctx context.Context) error {
 	if _, err = writer.RepairTail(ctx); err != nil {
 		return fmt.Errorf("supervisor: repair event log tail %s: %w", s.cfg.EventLog.Dir, err)
 	}
+	reported := false
 	for tick := 0; tick < maxSuperviseTicks; tick++ {
 		state, err := s.reconcile(ctx)
 		if err != nil {
 			return err
 		}
-		if down := s.downJobsIfNoneAlive(state, s.clk.Now()); len(down) > 0 {
-			return s.reportNoJobAlive(down)
+		err = s.checkNoJobAlive(ctx, state, &reported)
+		if s.afterTick != nil {
+			s.afterTick()
+		}
+		if err != nil {
+			return err
 		}
 		if !sleepContext(ctx, s.pollInterval) {
 			return ctx.Err()

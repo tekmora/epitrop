@@ -153,6 +153,10 @@ func (e noJobAliveErr) ExitCode() int {
 	return supervisor.NoJobAliveExitCode
 }
 
+func (e noJobAliveErr) Reported() bool {
+	return !errors.Is(e.err, supervisor.ErrFindingLineNotWritten)
+}
+
 // superviseUntilStopped supervises until ctx ends. A stop signal is the normal end and
 // returns nil; reaching the runtime bound stays an error. No job alive ends it with an
 // error that exits 3.
