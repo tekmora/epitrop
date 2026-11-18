@@ -1,11 +1,15 @@
 name: Upstream schemas
 
 # Fetches the pinned upstream documents and checks that the committed schema
-# fragments still match what they give. It runs only when the pins, the
-# fragments or their extractor change: nothing else can change its answer.
-# Because the trigger is path-filtered, it is not a required check, so an
-# upstream outage cannot block unrelated merges. A hand-edited fragment is
-# still refused on every pull request by the digest test in go test.
+# fragments still match what they give. The path-filtered push and pull
+# request triggers run it when the pins, the fragments or their extractor
+# change. The upstream publisher can also change a live document at any time,
+# so a weekly run on main shows that drift as its own red run instead of as a
+# surprise on an unrelated pull request. Because of the path filter this is
+# not a required check, so an upstream outage cannot block unrelated merges.
+# After drift, run `make schemas-repin` by hand and review the diff. A
+# hand-edited fragment is still refused on every pull request by the digest
+# test in go test.
 on:
   push:
     branches: [main]
@@ -23,6 +27,8 @@ on:
       - 'tools/schemas/**'
       - 'Makefile'
       - '.github/workflows/schemas.yml'
+  schedule:
+    - cron: '47 6 * * 3'
   workflow_dispatch:
 
 permissions:
