@@ -13,6 +13,15 @@ import (
 	"github.com/tekmora/epitrop/internal/eventlog"
 )
 
+const (
+	// reasonSupervisorStop is the exit reason of a job whose supervisor stopped while the job
+	// was recorded running, and the reason of the restart that resumes it.
+	reasonSupervisorStop = "supervisor-stop"
+	// eventSupervisorStopped is the marker a stopping supervisor appends for each job it left
+	// recorded running.
+	eventSupervisorStopped = "job.supervisor_stopped"
+)
+
 type jobRecord struct {
 	Name      string `json:"name"`
 	PID       int    `json:"pid"`
@@ -89,6 +98,8 @@ func JobReducer(st eventlog.State, rec eventlog.Record) (eventlog.State, error) 
 		return reduceJobRefused(st, rec)
 	case "job.restarted":
 		return reduceJobRestarted(st, rec)
+	case eventSupervisorStopped:
+		return reduceJobSupervisorStopped(st, rec)
 	case "job.stopped":
 		return reduceJobStopped(st, rec)
 	case "job.armed":
@@ -114,6 +125,17 @@ func reduceJobStarted(st eventlog.State, rec eventlog.Record) (eventlog.State, e
 	job.Name, job.State, job.PID = rec.TaskID, payload.State, payload.PID
 	job.ShimPID, job.Since, job.LastEvent = payload.ShimPID, payload.Since, rec.Type
 	job.Sandbox = payload.Sandbox
+	job.SupervisorStopped = false
+	st.Jobs[rec.TaskID] = job
+	return st, nil
+}
+
+// reduceJobSupervisorStopped marks a job the stopping supervisor left recorded running. It
+// changes neither State, LastEvent nor the restart counts: the marker explains the exit that
+// follows, it is no event of the job.
+func reduceJobSupervisorStopped(st eventlog.State, rec eventlog.Record) (eventlog.State, error) {
+	job := st.Jobs[rec.TaskID]
+	job.Name, job.SupervisorStopped = rec.TaskID, true
 	st.Jobs[rec.TaskID] = job
 	return st, nil
 }
@@ -174,10 +196,29 @@ func appendRestartTime(times []string, t string) []string {
 	return out
 }
 
+// restartIsResume reports whether a job.restarted payload names a supervisor stop as its
+// reason. A payload that is missing or does not parse is a counted restart, as every
+// job.restarted was before the reason existed.
+func restartIsResume(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return false
+	}
+	return body.Reason == reasonSupervisorStop
+}
+
 func reduceJobRestarted(st eventlog.State, rec eventlog.Record) (eventlog.State, error) {
 	job := st.Jobs[rec.TaskID]
-	job.Name, job.Restarts, job.LastEvent = rec.TaskID, job.Restarts+1, rec.Type
-	job.RestartTimes = appendRestartTime(job.RestartTimes, rec.Time)
+	job.Name, job.LastEvent = rec.TaskID, rec.Type
+	if !restartIsResume(rec.Payload) {
+		job.Restarts++
+		job.RestartTimes = appendRestartTime(job.RestartTimes, rec.Time)
+	}
 	st.Jobs[rec.TaskID] = job
 	return st, nil
 }
@@ -334,49 +375,70 @@ func (s *Supervisor) reconcileAlwaysJob(ctx context.Context, job config.JobConfi
 		return s.adoptIfFreshStart(ctx, job, st, status)
 	}
 	if st.State == string(StateRunning) {
-		return s.recordLost(ctx, job)
+		if st.SupervisorStopped {
+			return s.recordExit(ctx, job, reasonSupervisorStop)
+		}
+		return s.recordExit(ctx, job, "lost")
 	}
 	if st.LastEvent == "" {
 		return s.Start(ctx, job.Name)
 	}
 	if shouldRestart(job, st, s.clk.Now()) {
-		return s.restartJob(ctx, job)
+		return s.restartJob(ctx, job, endedBySupervisorStop(st))
 	}
 	return nil
 }
 
 func (s *Supervisor) adoptIfFreshStart(ctx context.Context, job config.JobConfig, st eventlog.Job, status JobStatus) error {
-	if st.LastEvent != "job.started" {
+	// A job the stopping supervisor marked survived the stop (a supervisor run without its own
+	// pid namespace): its adoption clears the marker, so a later loss records lost.
+	if st.LastEvent != "job.started" && !st.SupervisorStopped {
 		return nil
 	}
 	payload := map[string]any{"state": string(StateRunning), "pid": status.PID, "shim_pid": status.ShimPID, "since": status.Since, "sandbox": status.Sandbox}
 	return s.appendJobEvent(ctx, "job.adopted", job.Name, payload)
 }
 
-func (s *Supervisor) recordLost(ctx context.Context, job config.JobConfig) error {
-	payload := map[string]any{"state": string(StateDead), "reason": "lost"}
+// recordExit records the exit of a job that was recorded running and holds no lock: nobody
+// else will record it. The reason is lost, or supervisor-stop when the stopping supervisor
+// marked the job.
+func (s *Supervisor) recordExit(ctx context.Context, job config.JobConfig, reason string) error {
+	payload := map[string]any{"state": string(StateDead), "reason": reason}
 	return s.appendJobEvent(ctx, "job.exited", job.Name, payload)
 }
 
-func (s *Supervisor) restartJob(ctx context.Context, job config.JobConfig) error {
+// endedBySupervisorStop reports whether the job's last exit was the stop of its supervisor,
+// and the job was not stopped on purpose since.
+func endedBySupervisorStop(st eventlog.Job) bool {
+	return st.LastReason == reasonSupervisorStop && st.State != string(StateStopped)
+}
+
+// restartJob records a restart and starts the job again. A resume after a supervisor stop
+// carries its reason, does not count against the cap and waits for no backoff: nothing
+// failed.
+func (s *Supervisor) restartJob(ctx context.Context, job config.JobConfig, resume bool) error {
 	payload := map[string]any{"state": string(StateDead)}
+	if resume {
+		payload["reason"] = reasonSupervisorStop
+	}
 	if err := s.appendJobEvent(ctx, "job.restarted", job.Name, payload); err != nil {
 		return err
 	}
-	if job.Restart.BackoffSeconds > 0 && !sleepContext(ctx, time.Duration(job.Restart.BackoffSeconds)*time.Second) {
+	if !resume && job.Restart.BackoffSeconds > 0 && !sleepContext(ctx, time.Duration(job.Restart.BackoffSeconds)*time.Second) {
 		return ctx.Err()
 	}
 	return s.Start(ctx, job.Name)
 }
 
-// restartsInWindow counts the restarts the cap bounds: every restart without a
-// window, otherwise those newer than now minus the window. A time that does not
-// parse counts, so an unreadable record never frees budget.
+// restartsInWindow counts the restarts the cap bounds: those newer than now minus the
+// window. A window of 0 is the default window, never the job's whole life. A time that does
+// not parse counts, so an unreadable record never frees budget.
 func restartsInWindow(job config.JobConfig, st eventlog.Job, now time.Time) int {
-	if job.Restart.WindowSeconds <= 0 {
-		return st.Restarts
+	window := job.Restart.WindowSeconds
+	if window <= 0 {
+		window = config.DefaultRestartWindowSeconds
 	}
-	cutoff := now.Add(-time.Duration(job.Restart.WindowSeconds) * time.Second)
+	cutoff := now.Add(-time.Duration(window) * time.Second)
 	count := 0
 	for _, raw := range st.RestartTimes {
 		t, err := time.Parse(time.RFC3339Nano, raw)
@@ -388,6 +450,11 @@ func restartsInWindow(job config.JobConfig, st eventlog.Job, now time.Time) int 
 }
 
 func shouldRestart(job config.JobConfig, st eventlog.Job, now time.Time) bool {
+	// The stop of the supervisor is no failure of the job: it resumes whatever the budget
+	// holds, unless its policy is never to restart.
+	if endedBySupervisorStop(st) && job.Restart.Policy != "never" {
+		return true
+	}
 	if restartsInWindow(job, st, now) >= job.Restart.MaxRestarts {
 		return false
 	}

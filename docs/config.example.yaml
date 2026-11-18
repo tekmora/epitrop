@@ -29,7 +29,8 @@ jobs:
       policy: never
       max_restarts: 0
       backoff_seconds: 0
-      window_seconds: 0
+      # max_restarts bounds the restarts of the last window_seconds; 0 takes the default, 3600.
+      window_seconds: 3600
     stop:
       signal: TERM
       grace_seconds: 10

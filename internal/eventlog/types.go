@@ -118,6 +118,11 @@ type Job struct {
 	ArmedSeq       uint64 `json:"armed_seq,omitempty"`
 	LastDue        string `json:"last_due,omitempty"`
 	LastTriggerSeq uint64 `json:"last_trigger_seq,omitempty"`
+	// SupervisorStopped is set by a job.supervisor_stopped record: the supervisor that ran the
+	// job ended while the job was recorded running. A start or an adoption clears it. It
+	// decides how the next reconcile reads a running job whose lock is free: the stop ended
+	// it (reason supervisor-stop), nothing failed.
+	SupervisorStopped bool `json:"supervisor_stopped,omitempty"`
 }
 
 // UnitNote is one unread inbox note. Seq is the log sequence number of its record.

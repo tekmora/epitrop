@@ -375,6 +375,73 @@ func TestLoadJobDefaults(t *testing.T) {
 	assertJobDefaults(t, job)
 }
 
+// TestLoadJobRestartWindowDefault: a window left out or 0 is the default window, an explicit
+// one is kept, and the schema bounds still refuse -1 and 604801 (see TestLoadNegativeValidation).
+func TestLoadJobRestartWindowDefault(t *testing.T) {
+	workspace := t.TempDir()
+	tests := []struct {
+		name    string
+		restart string
+		want    int
+	}{
+		{"unset", ``, DefaultRestartWindowSeconds},
+		{"restart without a window", `"restart": {"policy": "on-failure", "max_restarts": 5},`, DefaultRestartWindowSeconds},
+		{"explicit zero", `"restart": {"window_seconds": 0},`, DefaultRestartWindowSeconds},
+		{"explicit 600", `"restart": {"window_seconds": 600},`, 600},
+		{"maximum", `"restart": {"window_seconds": 604800},`, MaxRestartWindowSeconds},
+	}
+	for i := 0; i < len(tests); i++ {
+		t.Run(tests[i].name, func(t *testing.T) {
+			cfg, err := Load(testContext(t), writeConfig(t, fmt.Sprintf(`{"sandbox_input_roots": [%q], "jobs": [{
+  "name": "daemon",
+  "command": ["/bin/true"],
+  "log_path": "/tmp/daemon.log",
+  %s
+  "sandbox": {"workspace": %q}
+}]}`, workspace, tests[i].restart, workspace)))
+			if err != nil {
+				t.Fatalf("Load(%s) = %v, want nil", tests[i].name, err)
+			}
+			if got := cfg.Jobs[0].Restart.WindowSeconds; got != tests[i].want {
+				t.Fatalf("Load(%s) restart.window_seconds = %d, want %d", tests[i].name, got, tests[i].want)
+			}
+		})
+	}
+	if DefaultRestartWindowSeconds != 3600 {
+		t.Fatalf("DefaultRestartWindowSeconds = %d, want 3600", DefaultRestartWindowSeconds)
+	}
+}
+
+// TestRestartWindowSchemaDefaultIsTheGoDefault: the schema's default for window_seconds, alone
+// and inside the default restart object, is the window the loader applies to a job that sets none.
+func TestRestartWindowSchemaDefaultIsTheGoDefault(t *testing.T) {
+	var doc map[string]any
+	if err := json.Unmarshal(SchemaJSON(), &doc); err != nil {
+		t.Fatalf("Unmarshal(schema) = %v, want nil", err)
+	}
+	restart := schemaChild(t, doc, "properties", "jobs", "items", "properties", "restart")
+	window := schemaChild(t, restart, "properties", "window_seconds")
+	if got := window["default"]; got != float64(DefaultRestartWindowSeconds) {
+		t.Fatalf("schema window_seconds default = %v, want %d", got, DefaultRestartWindowSeconds)
+	}
+	object, ok := restart["default"].(map[string]any)
+	if !ok || object["window_seconds"] != float64(DefaultRestartWindowSeconds) {
+		t.Fatalf("schema restart default = %v, want window_seconds %d", restart["default"], DefaultRestartWindowSeconds)
+	}
+}
+
+func schemaChild(t *testing.T, node map[string]any, path ...string) map[string]any {
+	t.Helper()
+	for _, part := range path {
+		next, ok := node[part].(map[string]any)
+		if !ok {
+			t.Fatalf("schema path %s missing at %q", strings.Join(path, "."), part)
+		}
+		node = next
+	}
+	return node
+}
+
 func assertJobDefaults(t *testing.T, job JobConfig) {
 	t.Helper()
 	if job.Schedule != "always" || job.RouterAlias != "cordana/auto" || job.Restart.Policy != "never" || job.Stop.Signal != "TERM" {

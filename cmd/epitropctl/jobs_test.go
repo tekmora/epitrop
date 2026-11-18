@@ -395,7 +395,7 @@ func TestRunJobsActionHistoryWithLoadedConfig(t *testing.T) {
 			t.Fatalf("runJobsAction(history loaded) = %v, want nil", err)
 		}
 	})
-	if out != "idle\t0\t0\t0\t0\t0\t0\t0\t\t\n" {
+	if out != "idle\t0\t0\t0\t0\t0\t0\t0\t0\t0\t\t\n" {
 		t.Fatalf("history output = %q, want an idle row with nothing counted", out)
 	}
 }
@@ -456,8 +456,8 @@ func TestRunJobsActionRefusesABadSince(t *testing.T) {
 }
 
 func TestJobsHistoryLineOrdersItsColumns(t *testing.T) {
-	h := supervisor.JobHistory{Name: "d", Started: 1, Exited: 2, Unclean: 3, Restarted: 4, Stale: 5, Refused: 6, Stopped: 7, First: "f", Last: "l"}
-	if got, want := jobsHistoryLine(h), "d\t1\t2\t3\t4\t5\t6\t7\tf\tl"; got != want {
+	h := supervisor.JobHistory{Name: "d", Started: 1, Exited: 2, Unclean: 3, Restarted: 4, Resumed: 5, Stale: 6, Refused: 7, Stopped: 8, SupervisorStops: 9, First: "f", Last: "l"}
+	if got, want := jobsHistoryLine(h), "d\t1\t2\t3\t4\t5\t6\t7\t8\t9\tf\tl"; got != want {
 		t.Fatalf("jobsHistoryLine() = %q, want %q", got, want)
 	}
 }

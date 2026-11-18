@@ -854,7 +854,7 @@ func TestRestartAndShouldRestartBoundaries(t *testing.T) {
 	job := testJob("daemon", []string{"/bin/true"})
 	job.Restart = config.JobRestartConfig{Policy: "always", MaxRestarts: 2, BackoffSeconds: 1}
 	sup := &Supervisor{cfg: config.Config{EventLog: config.EventLogConfig{Dir: t.TempDir()}}}
-	err := sup.restartJob(canceledContext(t), job)
+	err := sup.restartJob(canceledContext(t), job, false)
 	if err == nil || !strings.Contains(err.Error(), "signer is required") {
 		t.Fatalf("restartJob(canceled) = %v, want append signer error", err)
 	}
@@ -863,18 +863,20 @@ func TestRestartAndShouldRestartBoundaries(t *testing.T) {
 	sup = testSupervisorAt(t, rt, withRestartCommand(job, []string{os.Args[0], "-test.run=TestHelperProcessJob"}))
 	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	defer cancel()
-	err = sup.restartJob(ctx, sup.cfg.Jobs[0])
+	err = sup.restartJob(ctx, sup.cfg.Jobs[0], false)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("restartJob(backoff canceled) = %v, want deadline before restart", err)
 	}
 	zero := 0
+	fixedNow := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	recent := fixedNow.Add(-time.Minute).Format(time.RFC3339Nano)
 	tests := []struct {
 		name string
 		job  config.JobConfig
 		st   eventlog.Job
 		want bool
 	}{
-		{name: "max", job: job, st: eventlog.Job{Restarts: 2}, want: false},
+		{name: "max", job: job, st: eventlog.Job{Restarts: 2, RestartTimes: []string{recent, recent}}, want: false},
 		{name: "always dead", job: job, st: eventlog.Job{State: string(StateDead)}, want: true},
 		{name: "always stopped", job: job, st: eventlog.Job{State: string(StateStopped)}, want: false},
 		{name: "never", job: withRestartPolicy(job, "never"), st: eventlog.Job{}, want: false},
@@ -882,7 +884,6 @@ func TestRestartAndShouldRestartBoundaries(t *testing.T) {
 		{name: "failure zero", job: withRestartPolicy(job, "on-failure"), st: eventlog.Job{LastExitCode: &zero}, want: false},
 		{name: "failure lost", job: withRestartPolicy(job, "on-failure"), st: eventlog.Job{LastExitCode: &zero, LastReason: "lost"}, want: true},
 	}
-	fixedNow := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < len(tests); i++ {
 		t.Run(tests[i].name, func(t *testing.T) {
 			if got := shouldRestart(tests[i].job, tests[i].st, fixedNow); got != tests[i].want {
@@ -919,7 +920,10 @@ func TestShouldRestartCountsOnlyRestartsInsideTheWindow(t *testing.T) {
 		{name: "negative recent restarts", job: withWindowAndCap(3600, 2), st: eventlog.Job{RestartTimes: []string{tenMinAgo, tenMinAgo}}, want: false},
 		{name: "boundary exact window allowed", job: withWindowAndCap(3600, 1), st: eventlog.Job{RestartTimes: []string{exact3600Ago}}, want: true},
 		{name: "boundary inside window refused", job: withWindowAndCap(3600, 1), st: eventlog.Job{RestartTimes: []string{sec3599Ago}}, want: false},
-		{name: "window zero lifetime cap kept", job: withWindowAndCap(0, 2), st: eventlog.Job{Restarts: 2, RestartTimes: []string{twoHoursAgo, twoHoursAgo}}, want: false},
+		{name: "window zero takes the default: old restarts free the budget", job: withWindowAndCap(0, 2), st: eventlog.Job{Restarts: 2, RestartTimes: []string{twoHoursAgo, twoHoursAgo}}, want: true},
+		{name: "window zero takes the default: recent restarts spend the budget", job: withWindowAndCap(0, 2), st: eventlog.Job{Restarts: 2, RestartTimes: []string{tenMinAgo, tenMinAgo}}, want: false},
+		{name: "window zero takes the default: boundary inside the hour refused", job: withWindowAndCap(0, 1), st: eventlog.Job{Restarts: 1, RestartTimes: []string{sec3599Ago}}, want: false},
+		{name: "window zero takes the default: boundary at the hour allowed", job: withWindowAndCap(0, 1), st: eventlog.Job{Restarts: 1, RestartTimes: []string{exact3600Ago}}, want: true},
 		{name: "unparseable time counts towards window cap", job: withWindowAndCap(3600, 1), st: eventlog.Job{RestartTimes: []string{"unparseable-time"}}, want: false},
 	}
 	for i := 0; i < len(tests); i++ {

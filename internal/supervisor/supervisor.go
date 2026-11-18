@@ -36,6 +36,8 @@ const (
 	// shim per job, so twice the number of jobs a config may hold is never reached in order.
 	maxShimWaiters    = 2 * config.MaxJobs
 	maxSuperviseTicks = 1 << 30
+	// supervisorStopMarkTimeout bounds the replay and the appends of the stop markers.
+	supervisorStopMarkTimeout = 5 * time.Second
 )
 
 var (
@@ -382,6 +384,9 @@ func (s *Supervisor) signalTarget(job config.JobConfig) (jobSignalTarget, error)
 	}, nil
 }
 
+// Supervise reconciles every poll interval until ctx ends, and on every return marks the
+// jobs it leaves recorded running (see markSupervisorStopped). A marker that cannot be
+// written is returned joined with the reason Supervise ended for.
 func (s *Supervisor) Supervise(ctx context.Context) error {
 	if err := readyContext(ctx, "supervise"); err != nil {
 		return err
@@ -393,6 +398,14 @@ func (s *Supervisor) Supervise(ctx context.Context) error {
 	if _, err = writer.RepairTail(ctx); err != nil {
 		return fmt.Errorf("supervisor: repair event log tail %s: %w", s.cfg.EventLog.Dir, err)
 	}
+	err = s.superviseLoop(ctx)
+	if markErr := s.markSupervisorStopped(); markErr != nil {
+		return errors.Join(err, markErr)
+	}
+	return err
+}
+
+func (s *Supervisor) superviseLoop(ctx context.Context) error {
 	for tick := 0; tick < maxSuperviseTicks; tick++ {
 		if err := s.Reconcile(ctx); err != nil {
 			return err
@@ -402,6 +415,32 @@ func (s *Supervisor) Supervise(ctx context.Context) error {
 		}
 	}
 	return fmt.Errorf("supervisor: supervise exceeded %d ticks", maxSuperviseTicks)
+}
+
+// markSupervisorStopped appends job.supervisor_stopped for each configured job the event log
+// records running. Whatever ended Supervise, its context has ended too, so the marker runs
+// under a deadline of its own. The unit that runs the supervisor ends its jobs with it, and
+// nothing else records their exit: the next supervisor reads the marker to tell this stop
+// from a loss (reconcileAlwaysJob).
+func (s *Supervisor) markSupervisorStopped() error {
+	ctx, cancel := context.WithTimeout(context.Background(), supervisorStopMarkTimeout)
+	defer cancel()
+	state, err := s.replayState(ctx)
+	if err != nil {
+		return fmt.Errorf("supervisor: replay state to mark the supervisor stop: %w", err)
+	}
+	payload := map[string]any{"supervisor_pid": os.Getpid()}
+	var errs []error
+	for i := 0; i < len(s.cfg.Jobs); i++ {
+		name := s.cfg.Jobs[i].Name
+		if state.Jobs[name].State != string(StateRunning) {
+			continue
+		}
+		if err = s.appendJobEvent(ctx, eventSupervisorStopped, name, payload); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (s *Supervisor) Reconcile(ctx context.Context) error {
