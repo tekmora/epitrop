@@ -1,2 +1,2 @@
 type: security
-title: '`tools/spectral/package-lock.json` moves fast-uri to 3.1.9, and the new `make lock-advisories` gate (osv-scanner, run at pre-push and in CI) fails on any published advisory in that lockfile; one dated exemption for the unpatched picomatch advisory GHSA-fc5q-39xc-vjpf ends on 2026-11-27'
+title: '`tools/spectral/package-lock.json` moves fast-uri to 3.1.9, and the new `make lock-advisories` gate (osv-scanner, run at pre-push and in CI) fails on any published advisory in that lockfile; one dated exemption for the unpatched picomatch advisory GHSA-fc5q-39xc-vjpf ends on 2026-11-27, and `make govulncheck-osvscanner` scans the osv-scanner module itself for reachable Go vulnerabilities'

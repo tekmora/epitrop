@@ -67,7 +67,7 @@ pre-push:
         not installed, skipping >&2; fi; else echo no go.mod at the repository
         root, skipping govulncheck >&2; fi
     lock-advisories:
-      run: make lock-advisories-selftest lock-advisories
+      run: make lock-advisories-selftest lock-advisories govulncheck-osvscanner
     flavor-audit:
       run: sh .config/lefthook/engine.sh flavor audit .
     audit:

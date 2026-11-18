@@ -18,9 +18,10 @@ env:
 jobs:
   # The required check. Its tools are pinned in tools/go/go.mod, and osv-scanner in
   # tools/osvscanner/go.mod, at versions that Renovate moves. The install steps download from
-  # the network (Go modules, apt, pip, npm, the trivy release). Three gates read it while they
-  # scan: govulncheck (the Go vulnerability database), the lock advisories scan and its
-  # self-test (osv.dev). The other gates read none; trivy's own network reads are unchecked.
+  # the network (Go modules, apt, pip, npm, the trivy release). Four gates read it while they
+  # scan: govulncheck (the Go vulnerability database), the same scan of the osv-scanner module,
+  # the lock advisories scan and its self-test (osv.dev). The other gates read none; trivy's own
+  # network reads are unchecked.
   go:
     # The sandbox tests need passt with --map-host-loopback, which Ubuntu 24.04's passt
     # (2024_02_20) lacks, and an env with --ignore-signal and --default-signal.
@@ -107,6 +108,9 @@ jobs:
         run: >-
           go tool -modfile=tools/go/go.mod standardsctl security govuln --path=.
           -- go tool -modfile=tools/go/go.mod govulncheck
+      # The osv-scanner module (tools/osvscanner) is nested, so the step above skips it.
+      - name: govulncheck (osv-scanner module)
+        run: make govulncheck-osvscanner
       # HISS-21: gosec and its self-test run on this Linux job only (platforms.yml runs
       # go test only); the self-test drives bash and GNU make, and gosec loads only the
       # packages the runner's GOOS builds.
