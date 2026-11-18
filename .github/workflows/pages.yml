@@ -36,15 +36,15 @@ on:
       - 'tools/go/go.sum'
   workflow_dispatch:
 
-# Pull requests cancel earlier runs on the same number; main pushes and
-# dispatches share the ref group without cancellation (newest pending run
-# replaces an older queued one). GitHub queues runs by arrival at the group
-# and a re-run reuses its original commit, so the deploy job refuses to move
-# the live site to an older commit (tools/pagesguard).
+# Pull requests cancel older runs of the same number; main and dispatch runs
+# do not wait at workflow level; the deploy job serialises them in a FIFO
+# queue that keeps every pending deploy (queue: max, up to 100); arrival order
+# is still not commit order and a re-run reuses its commit, so the deploy job
+# refuses an older commit than the live site (tools/pagesguard).
 concurrency:
   group: >-
     ${{ github.workflow }}-${{ github.event.pull_request.number ||
-    github.ref }}
+    github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Only the deploy job may write. The workflow also runs on pull_request, and a
@@ -136,9 +136,12 @@ jobs:
           include-hidden-files: true
 
   deploy:
+    # Default single would let a later arrival cancel the pending deploy of
+    # the newest commit.
     concurrency:
       group: github-pages-deploy
       cancel-in-progress: false
+      queue: max
     name: Deploy to GitHub Pages
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'

@@ -5,11 +5,10 @@
 // Command pagesguard refuses to deploy a GitHub Pages artifact from a commit
 // older than the current live github-pages deployment.
 //
-// Main branch Pages runs share a concurrency group without cancellation, but
-// GitHub orders runs by arrival at the group rather than push time, and a
-// workflow or deploy-only re-run reuses the original run's GITHUB_SHA. An
-// out-of-order run or old re-run could otherwise overwrite the live site with
-// an older artifact.
+// Deploy jobs queue FIFO without replacement (queue: max), but the queue
+// orders by arrival, not commit order, and a workflow or deploy-only re-run
+// reuses its run's GITHUB_SHA; an out-of-order or re-run deploy could
+// otherwise overwrite the live site with an older artifact.
 //
 // Refusing fails the deploy job before actions/deploy-pages runs so GitHub
 // marks the job's github-pages environment deployment failed; a step-level
