@@ -152,10 +152,10 @@ jobs:
           tools/spectral/node_modules/.bin/spectral lint -F warn --ruleset .spectral.yaml
           'internal/sources/*/testdata/upstream/*-openapi.yaml'
       # HISS-11: the locked spectral CLI against osv.dev, every severity failing. osv-scanner is
-      # pinned in tools/osvscanner; osv-scanner.toml holds the one dated exemption, the same one
-      # .standards.yaml records. The self-test plants an old fast-uri and an expired exemption
-      # and must see both reported. Both steps run on every build, not on a diff: osv.dev gains
-      # advisories with no change here, and the self-test reads osv.dev too.
+      # pinned in tools/osvscanner; osv-scanner.toml holds no exemption, so every advisory fails.
+      # The self-test plants an old fast-uri and an old braces with an expired and a valid
+      # exemption, and must see each one handled. Both steps run on every build, not on a diff:
+      # osv.dev gains advisories with no change here, and the self-test reads osv.dev too.
       - name: lock advisories self-test (planted findings must fail)
         run: make lock-advisories-selftest
       - name: lock advisories (osv-scanner)
