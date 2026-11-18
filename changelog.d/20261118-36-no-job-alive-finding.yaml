@@ -1,0 +1,3 @@
+type: added
+title: '`epitropctl jobs supervise` writes a `no job alive` finding line and exits 3 when at least one job is down and none is alive, so a host unit fails instead of staying active over dead jobs (`RestartPreventExitStatus=3` makes it fail at once)'
+issue: "36"

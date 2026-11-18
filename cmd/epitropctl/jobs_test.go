@@ -206,6 +206,25 @@ func TestRunLoadedJobsActionDispatchesStartStopSuperviseAndDefault(t *testing.T)
 	}
 }
 
+func TestSuperviseEndMapsHowSuperviseEnded(t *testing.T) {
+	if err := superviseEnd(fmt.Errorf("supervise context: %w", context.Canceled)); err != nil {
+		t.Fatalf("superviseEnd(canceled) = %v, want nil: a stop signal is the normal end", err)
+	}
+	if err := superviseEnd(nil); err != nil {
+		t.Fatalf("superviseEnd(nil) = %v, want nil", err)
+	}
+	bound := fmt.Errorf("supervise context: %w", context.DeadlineExceeded)
+	err := superviseEnd(bound)
+	var exitCoder interface{ ExitCode() int }
+	if !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &exitCoder) {
+		t.Fatalf("superviseEnd(deadline) = %#v, want the error unchanged, with no exit code of its own", err)
+	}
+	err = superviseEnd(fmt.Errorf("%w: a dead", supervisor.ErrNoJobAlive))
+	if !errors.Is(err, supervisor.ErrNoJobAlive) || !errors.As(err, &exitCoder) || exitCoder.ExitCode() != 3 {
+		t.Fatalf("superviseEnd(no job alive) = %#v, want ErrNoJobAlive with ExitCode() 3", err)
+	}
+}
+
 func TestPrintJobsStatusReturnsSupervisorError(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("status error test needs Linux supervisor support")

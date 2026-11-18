@@ -36,7 +36,7 @@ epitropctl jobs supervise --config=file [--poll-interval-seconds=1]
 The contract is described by `catalog/snapshot.schema.json`, and
 `epitropctl schema` prints the embedded copy for downstream pin checks.
 `epitropctl version` prints the release version, or `dev` for a source build.
-`epitropctl jobs supervise` runs until SIGTERM or an interrupt, which end it with exit 0, so a host service unit can hold it.
+`epitropctl jobs supervise` runs until SIGTERM or an interrupt, which end it with exit 0, so a host service unit can hold it. When at least one job is down and none is alive, it writes a `no job alive` finding line to stderr and exits 3; put `RestartPreventExitStatus=3` in the unit to make it fail at once instead of restarting.
 Releases, their signed artefacts and how to verify them are described in [Releasing](docs/releasing.md).
 
 `epitropctl` exports OpenTelemetry traces and metrics over OTLP once

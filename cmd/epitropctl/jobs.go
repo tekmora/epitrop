@@ -134,12 +134,39 @@ func runLoadedJobsAction(ctx context.Context, sup *supervisor.Supervisor, action
 	return fmt.Errorf("unknown jobs command: %s", action)
 }
 
+// noJobAliveErr is the end of a supervise with no job left alive. It exits with
+// supervisor.NoJobAliveExitCode (3: 0 is a clean end, 1 any other failure, 2 a flag error),
+// so a host unit sees a failure and can name the status in RestartPreventExitStatus.
+type noJobAliveErr struct {
+	err error
+}
+
+func (e noJobAliveErr) Error() string {
+	return e.err.Error()
+}
+
+func (e noJobAliveErr) Unwrap() error {
+	return e.err
+}
+
+func (e noJobAliveErr) ExitCode() int {
+	return supervisor.NoJobAliveExitCode
+}
+
 // superviseUntilStopped supervises until ctx ends. A stop signal is the normal end and
-// returns nil; reaching the runtime bound stays an error.
+// returns nil; reaching the runtime bound stays an error. No job alive ends it with an
+// error that exits 3.
 func superviseUntilStopped(ctx context.Context, sup *supervisor.Supervisor) error {
-	err := sup.Supervise(ctx)
+	return superviseEnd(sup.Supervise(ctx))
+}
+
+// superviseEnd maps how Supervise ended to the command's result.
+func superviseEnd(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return nil
+	}
+	if errors.Is(err, supervisor.ErrNoJobAlive) {
+		return noJobAliveErr{err: err}
 	}
 	return err
 }

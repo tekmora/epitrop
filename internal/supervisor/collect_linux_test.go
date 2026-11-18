@@ -3,7 +3,9 @@
 package supervisor
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,12 +95,16 @@ func TestStartGivesTheWaiterBackWhenTheShimCannotStart(t *testing.T) {
 
 func TestCollectShimReportsOnlyAWaitThatFails(t *testing.T) {
 	var reported []string
+	var stderr bytes.Buffer
 	old := reportShimError
 	t.Cleanup(func() { reportShimError = old })
-	reportShimError = func(name string, err error) {
+	reportShimError = func(w io.Writer, name string, err error) {
+		if w != io.Writer(&stderr) {
+			t.Errorf("reportShimError writer = %v, want the supervisor's stderr", w)
+		}
 		reported = append(reported, fmt.Sprintf("%s: %v", name, err))
 	}
-	sup := &Supervisor{}
+	sup := &Supervisor{stderr: &stderr}
 
 	failed := exec.CommandContext(t.Context(), "/bin/false")
 	if err := failed.Start(); err != nil {
