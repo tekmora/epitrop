@@ -462,22 +462,48 @@ func TestJobsHistoryLineOrdersItsColumns(t *testing.T) {
 	}
 }
 
+func wrapCanceledDepth(depth int) error {
+	err := context.Canceled
+	for i := 0; i < depth; i++ {
+		err = fmt.Errorf("wrap %d: %w", i, err)
+	}
+	return err
+}
+
+func assertSuperviseUntilStopped(t *testing.T, name string, got error, want []error) {
+	t.Helper()
+	if len(want) == 0 && got != nil {
+		t.Fatalf("superviseUntilStopped(%s) = %v, want nil", name, got)
+	}
+	for i := 0; i < len(want); i++ {
+		if !errors.Is(got, want[i]) {
+			t.Fatalf("superviseUntilStopped(%s) = %v, want errors.Is(%v)", name, got, want[i])
+		}
+	}
+}
+
 func TestSuperviseUntilStoppedKeepsMarkerWriteFailure(t *testing.T) {
 	old := superviseJobs
 	t.Cleanup(func() { superviseJobs = old })
-	superviseJobs = func(*supervisor.Supervisor, context.Context) error {
-		return context.Canceled
-	}
-	if err := superviseUntilStopped(testContext(t), nil); err != nil {
-		t.Fatalf("superviseUntilStopped(context.Canceled) = %v, want nil", err)
-	}
+	replayBoom, boom := errors.New("replay boom"), errors.New("boom")
 	markerErr := fmt.Errorf("%w: disk full", supervisor.ErrStopMarkersNotWritten)
-	superviseJobs = func(*supervisor.Supervisor, context.Context) error {
-		return errors.Join(context.Canceled, markerErr)
+	cases := []struct {
+		name string
+		err  error
+		want []error
+	}{
+		{"plain canceled", context.Canceled, nil},
+		{"wrapped canceled", fmt.Errorf("replay: %w", context.Canceled), nil},
+		{"canceled with replay error", fmt.Errorf("supervisor: x did not start: %w; last replay: %w", context.Canceled, replayBoom), []error{context.Canceled, replayBoom}},
+		{"joined canceled and error", errors.Join(context.Canceled, boom), []error{context.Canceled, boom}},
+		{"chain deeper than bound", wrapCanceledDepth(maxCancelErrorNodes), []error{context.Canceled}},
+		{"canceled with marker write failure", errors.Join(context.Canceled, markerErr), []error{supervisor.ErrStopMarkersNotWritten, context.Canceled}},
 	}
-	err := superviseUntilStopped(testContext(t), nil)
-	if !errors.Is(err, supervisor.ErrStopMarkersNotWritten) || !errors.Is(err, context.Canceled) {
-		t.Fatalf("superviseUntilStopped(canceled + marker failure) = %v, want ErrStopMarkersNotWritten joined with context.Canceled", err)
+	for i := 0; i < len(cases); i++ {
+		t.Run(cases[i].name, func(t *testing.T) {
+			superviseJobs = func(*supervisor.Supervisor, context.Context) error { return cases[i].err }
+			assertSuperviseUntilStopped(t, cases[i].name, superviseUntilStopped(testContext(t), nil), cases[i].want)
+		})
 	}
 }
 

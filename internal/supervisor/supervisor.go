@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/golusoris/golusoris/core/clock"
@@ -89,13 +91,21 @@ type Options struct {
 	PollInterval time.Duration
 }
 
+type collectedShim struct {
+	pid     int
+	sigterm bool
+}
+
 type Supervisor struct {
-	cfg          config.Config
-	signer       *corereceipt.Signer
-	clk          clock.Clock
-	shimCommand  []string
-	pollInterval time.Duration
-	shimWaiters  atomic.Int32
+	cfg           config.Config
+	signer        *corereceipt.Signer
+	clk           clock.Clock
+	shimCommand   []string
+	pollInterval  time.Duration
+	shimWaiters   atomic.Int32
+	mu            sync.Mutex
+	observedSince map[string]string
+	collectedShim map[string]collectedShim
 }
 
 // reportShimError tells the operator about a shim that could not be collected. Nothing
@@ -276,7 +286,26 @@ func (s *Supervisor) collectShim(cmd *exec.Cmd, name string) {
 	var exit *exec.ExitError
 	if err != nil && !errors.As(err, &exit) {
 		reportShimError(name, err)
+		return
 	}
+	s.recordCollectedShim(name, cmd.ProcessState)
+}
+
+func (s *Supervisor) recordCollectedShim(name string, state *os.ProcessState) {
+	if state == nil || state.Pid() <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.collectedShim == nil {
+		s.collectedShim = make(map[string]collectedShim, len(s.cfg.Jobs))
+	}
+	s.collectedShim[name] = collectedShim{pid: state.Pid(), sigterm: endedBySIGTERM(state)}
+}
+
+func endedBySIGTERM(state *os.ProcessState) bool {
+	ws, ok := state.Sys().(syscall.WaitStatus)
+	return ok && ws.Signaled() && ws.Signal() == syscall.SIGTERM
 }
 
 func (s *Supervisor) Status(ctx context.Context, name string) ([]JobStatus, error) {
@@ -424,20 +453,23 @@ func (s *Supervisor) superviseLoop(ctx context.Context) error {
 	return fmt.Errorf("supervisor: supervise exceeded %d ticks", maxSuperviseTicks)
 }
 
-// markSupervisorStopped appends job.supervisor_stopped for each configured job that the
-// event log still records running, with the run's start time. It does not read the job's
-// lock: a stop of the supervisor's unit sends SIGTERM to the shims in the same cgroup at
-// the same time, so each shim exits and frees its lock before the marker is written. A job
-// whose exit the shim recorded before the marker is no longer recorded running and gets
-// none; a job whose shim died unrecorded after the supervisor's last reconcile and before
-// the stop reads as interrupted, not lost, a window of one poll interval. Whatever ended
-// Supervise, its context has ended too, so each job's checked append runs under a
-// supervisorStopMarkTimeout deadline of its own: a slow or failing append for one job does
-// not shorten the next. Because the event log appends one record at a time, a supervisor
-// killed in the middle of marking still leaves the remaining jobs without a marker, and the
-// next supervisor records them lost like a crash. The unit that runs the supervisor ends
-// its jobs with it, and nothing else records their exit: the next supervisor reads the
-// marker to tell this stop from a loss (reconcileJob).
+// markSupervisorStopped appends job.supervisor_stopped for each configured job whose run this
+// supervisor observed (on Reconcile or Start) and that the event log still records running
+// with that start time, unless this supervisor started and collected that run's shim with an
+// exit other than SIGTERM. It does not read the job's lock: a stop of the supervisor's unit
+// sends SIGTERM to the shims in the same cgroup at the same time, so each shim exits and frees
+// its lock before the marker is written. A job whose exit the shim recorded before the marker
+// is no longer recorded running and gets none, and a shim this supervisor started that died on
+// its own (exit code, SIGKILL or crash) is collected with a non-SIGTERM status and gets none;
+// only a run this supervisor adopted rather than started (no wait status) whose shim died
+// unrecorded between the last reconcile and the stop reads as interrupted rather than lost, a
+// window of one poll interval. Whatever ended Supervise, its context has ended too, so each
+// job's checked append runs under a supervisorStopMarkTimeout deadline of its own: a slow or
+// failing append for one job does not shorten the next. Because the event log appends one
+// record at a time, a supervisor killed in the middle of marking still leaves the remaining
+// jobs without a marker, and the next supervisor records them lost like a crash. The unit
+// that runs the supervisor ends its jobs with it, and nothing else records their exit: the
+// next supervisor reads the marker to tell this stop from a loss (reconcileJob).
 func (s *Supervisor) markSupervisorStopped() error {
 	pid := os.Getpid()
 	var errs []error
@@ -452,23 +484,62 @@ func (s *Supervisor) markSupervisorStopped() error {
 	return nil
 }
 
+func (s *Supervisor) observeRunning(name string, since string) {
+	if since == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.observedSince == nil {
+		s.observedSince = make(map[string]string, len(s.cfg.Jobs))
+	}
+	s.observedSince[name] = since
+}
+
+func (s *Supervisor) observeReconciled(state eventlog.State) {
+	for i := 0; i < len(s.cfg.Jobs); i++ {
+		name := s.cfg.Jobs[i].Name
+		if job := state.Jobs[name]; job.State == string(StateRunning) {
+			s.observeRunning(name, job.Since)
+		}
+	}
+}
+
 // markOneJobStopped appends job.supervisor_stopped for job when the replay under the
-// event-log lock still records it running. The job's lock is not read because the stop's
-// SIGTERM reaches the shims at the same time; a job whose shim died unrecorded after the
-// supervisor's last reconcile and before the stop reads as interrupted, not lost (a window
-// of one poll interval).
+// event-log lock still records the run this supervisor observed running, and any exit status
+// collected from that run's shim was SIGTERM. The job's lock is not read because the stop's
+// SIGTERM reaches the shims at the same time; only an adopted run (no wait status) whose shim
+// died unrecorded between the last reconcile and the stop reads as interrupted rather than
+// lost (a window of one poll interval).
 func (s *Supervisor) markOneJobStopped(job config.JobConfig, pid int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), stopMarkTimeout)
 	defer cancel()
 	payload := map[string]any{"supervisor_pid": pid}
 	_, err := s.appendJobEventIf(ctx, eventSupervisorStopped, job.Name, payload, func(st eventlog.Job) bool {
-		if st.State != string(StateRunning) {
+		if !s.canMarkJobStopped(job.Name, st) {
 			return false
 		}
 		payload["since"] = st.Since
 		return true
 	})
 	return err
+}
+
+func (s *Supervisor) canMarkJobStopped(name string, st eventlog.Job) bool {
+	if st.State != string(StateRunning) || st.Since == "" {
+		return false
+	}
+	s.mu.Lock()
+	since := s.observedSince[name]
+	end, hasEnd := s.collectedShim[name]
+	s.mu.Unlock()
+	if st.Since != since {
+		return false
+	}
+	if hasEnd && end.pid == st.ShimPID && !end.sigterm {
+		return false
+	}
+	return true
 }
 
 func (s *Supervisor) Reconcile(ctx context.Context) error {
@@ -480,6 +551,7 @@ func (s *Supervisor) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.observeReconciled(state)
 	for i := 0; i < len(s.cfg.Jobs); i++ {
 		job := s.cfg.Jobs[i]
 		ended, err := s.endIfStale(ctx, job, state.Jobs[job.Name])
@@ -506,7 +578,7 @@ func (s *Supervisor) waitStarted(ctx context.Context, name string, before eventl
 	for i := 0; i < maxStartPolls; i++ {
 		state, err := s.replayState(ctx)
 		if err == nil {
-			if settled, startErr := startOutcome(name, state.Jobs[name], before, shimPID); settled {
+			if settled, startErr := s.settleStart(name, state.Jobs[name], before, shimPID); settled {
 				return startErr
 			}
 		}
@@ -516,6 +588,7 @@ func (s *Supervisor) waitStarted(ctx context.Context, name string, before eventl
 		}
 		shimGone = shimExited(shimPID)
 		if !shimGone && !sleepContext(ctx, startPollInterval) {
+			s.observeStartedOnCancel(name, before, shimPID)
 			return startWaitEnded(name, ctx.Err(), lastErr)
 		}
 	}
@@ -551,6 +624,29 @@ func startWaitEnded(name string, ctxErr error, lastErr error) error {
 func shimExited(pid int) bool {
 	gone, err := processGone(pid)
 	return err == nil && gone
+}
+
+func (s *Supervisor) settleStart(name string, job eventlog.Job, before eventlog.Job, shimPID int) (bool, error) {
+	settled, err := startOutcome(name, job, before, shimPID)
+	if settled && err == nil {
+		s.observeRunning(name, job.Since)
+	}
+	return settled, err
+}
+
+// observeStartedOnCancel replays once more when a stop ends the start wait, so a start the
+// shim recorded just before the stop is observed and can still get its stop marker.
+func (s *Supervisor) observeStartedOnCancel(name string, before eventlog.Job, shimPID int) {
+	ctx, cancel := context.WithTimeout(context.Background(), stopMarkTimeout)
+	defer cancel()
+	state, err := s.replayState(ctx)
+	if err != nil {
+		return
+	}
+	job := state.Jobs[name]
+	if settled, startErr := startOutcome(name, job, before, shimPID); settled && startErr == nil {
+		s.observeRunning(name, job.Since)
+	}
 }
 
 // startOutcome reports whether the shim has settled this start, by recording it or by

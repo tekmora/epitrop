@@ -136,18 +136,61 @@ func runLoadedJobsAction(ctx context.Context, sup *supervisor.Supervisor, action
 
 var superviseJobs = (*supervisor.Supervisor).Supervise
 
+const maxCancelErrorNodes = 64
+
 // superviseUntilStopped supervises until ctx ends. A stop signal is the normal end and
-// returns nil unless the stop markers could not be written; reaching the runtime bound
-// stays an error.
+// returns nil when every leaf of Supervise's error is context.Canceled and the stop markers
+// were written; any other error wrapped or joined beside context.Canceled, or reaching the
+// runtime bound, stays an error.
 func superviseUntilStopped(ctx context.Context, sup *supervisor.Supervisor) error {
 	err := superviseJobs(sup, ctx)
 	if errors.Is(err, supervisor.ErrStopMarkersNotWritten) {
 		return err
 	}
-	if errors.Is(err, context.Canceled) {
+	if onlyContextCanceled(err) {
 		return nil
 	}
 	return err
+}
+
+// onlyContextCanceled reports whether err is a non-nil error tree of at most
+// maxCancelErrorNodes nodes whose every leaf is context.Canceled.
+func onlyContextCanceled(err error) bool {
+	if err == nil {
+		return false
+	}
+	stack := []error{err}
+	for nodes := 0; nodes < maxCancelErrorNodes && len(stack) > 0; nodes++ {
+		curr := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if children, ok := unwrapErrorChildren(curr); ok {
+			stack = append(stack, children...)
+			continue
+		}
+		if !errors.Is(curr, context.Canceled) {
+			return false
+		}
+	}
+	return len(stack) == 0
+}
+
+func unwrapErrorChildren(err error) ([]error, bool) {
+	if multi, ok := err.(interface{ Unwrap() []error }); ok {
+		raw := multi.Unwrap()
+		out := make([]error, 0, len(raw))
+		for i := 0; i < len(raw); i++ {
+			if raw[i] != nil {
+				out = append(out, raw[i])
+			}
+		}
+		return out, len(out) > 0
+	}
+	if single, ok := err.(interface{ Unwrap() error }); ok {
+		if child := single.Unwrap(); child != nil {
+			return []error{child}, true
+		}
+	}
+	return nil, false
 }
 
 func printJobsStatus(ctx context.Context, sup *supervisor.Supervisor, name string) error {
