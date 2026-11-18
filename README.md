@@ -81,9 +81,9 @@ task execution from the control plane (`docs/epitrop-description-v2.md`,
 
 The runtime is called **Epitrop** (eh-PEE-trop), from Greek *epitropos*, the
 appointed trustee. Tekmora, the family the name belongs to, comes from Greek
-*tekmor* (Homeric *tekmor*): a set goal, and the sign that shows the way to it;
-said *TEK-mo-ra*. The repository was first named
-`tribunus`, in another organisation; its old address redirects.
+*tekmor*: a set goal, and the sign that shows the way to it; said *TEK-mo-ra*.
+The repository was first named `tribunus`, in another organisation; its old
+address redirects.
 
 ## Get started
 
