@@ -124,9 +124,9 @@ gosec:
 # lock-advisories scans the locked spectral CLI (tools/spectral/package-lock.json) for known
 # advisories with osv-scanner, pinned in its own tool module (tools/osvscanner) because its
 # dependencies conflict with the root module's. It reads osv.dev online, like govulncheck, and
-# every severity fails: exit 1 on any advisory osv-scanner.toml does not exempt, and the one
-# exemption it holds expires by itself. The self-test plants an old fast-uri and an expired
-# exemption and must see both reported before the scan is trusted. Neither target is gated by a
+# every severity fails: exit 1 on any advisory osv-scanner.toml does not exempt, and it exempts
+# none. The self-test plants an old fast-uri and an old braces with an expired and a valid
+# exemption, and must see each one handled before the scan is trusted. Neither target is gated by a
 # diff: the advisory database changes with no change in this repository, so a diff filter would
 # hide a new advisory until someone touched the lockfile. The self-test reads osv.dev too, so it
 # runs on every build as well. The scanner's own module (tools/osvscanner) is scanned by

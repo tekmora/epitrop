@@ -1,0 +1,2 @@
+type: fixed
+title: 'The withdrawn picomatch advisory GHSA-fc5q-39xc-vjpf ends its exemption in osv-scanner.toml and .standards.yaml; the osv-scanner self-test now plants braces 3.0.2 (GHSA-grv7-fg5c-xmjg) and names a withdrawn plant as such'
