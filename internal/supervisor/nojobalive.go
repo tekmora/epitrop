@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -18,11 +16,12 @@ import (
 // Supervise returns ErrNoJobAlive. A host unit can name it in RestartPreventExitStatus.
 const NoJobAliveExitCode = 3
 
-// ErrNoJobAlive ends Supervise when jobs are down, none is alive, and none can regain
-// restart eligibility, or when the finding cannot be written. Its text carries the jobs.
+// ErrNoJobAlive ends Supervise only for a terminal finding: jobs are down, none is alive,
+// and none can regain restart eligibility. Its text carries the jobs, even if output fails.
 var ErrNoJobAlive = errors.New("supervisor: no job alive")
 
-// ErrFindingLineNotWritten marks a finding whose output failed or exceeded its deadline.
+// ErrFindingLineNotWritten marks a terminal finding whose output failed or timed out.
+// A recoverable finding's failed write leaves the episode unreported for the next tick.
 var ErrFindingLineNotWritten = errors.New("supervisor: finding line not written")
 
 // downJob is a job that is down, with the restart count its budget was judged on.
@@ -31,14 +30,6 @@ type downJob struct {
 	st       eventlog.Job
 	restarts int
 	due      time.Time
-}
-
-// errOut is the writer for what the supervisor tells its operator.
-func (s *Supervisor) errOut() io.Writer {
-	if s.stderr == nil {
-		return os.Stderr
-	}
-	return s.stderr
 }
 
 // jobAlive checks running evidence first. Once jobs have no future supervised run;
@@ -64,7 +55,9 @@ func (s *Supervisor) jobAlive(job config.JobConfig, st eventlog.Job, now time.Ti
 
 // downJobsIfNoneAlive returns the down jobs, in config order, when at least one configured
 // job is down and none is alive; otherwise nil. A job an operator stopped is neither alive
-// nor down: a stop is intentional, not a failure.
+// nor down: a stop is intentional, not a failure. A non-running once job with no record
+// or a last end with exit code 0 is excluded: supervision never starts it, or it completed.
+// A stopped once job is excluded; every other once end is down with no recovery time.
 func (s *Supervisor) downJobsIfNoneAlive(state eventlog.State, now time.Time) []downJob {
 	var down []downJob
 	for i := 0; i < len(s.cfg.Jobs); i++ {
@@ -73,15 +66,24 @@ func (s *Supervisor) downJobsIfNoneAlive(state eventlog.State, now time.Time) []
 		if s.jobAlive(job, st, now) {
 			return nil
 		}
-		if job.Schedule != "once" && st.State != string(StateStopped) {
-			due, recoverable := restartDueAt(job, st, now)
-			if !recoverable {
-				due = time.Time{}
+		if !excludedFromFinding(job, st) {
+			var due time.Time
+			if job.Schedule != "once" {
+				if at, recoverable := restartDueAt(job, st, now); recoverable {
+					due = at
+				}
 			}
 			down = append(down, downJob{job: job, st: st, restarts: restartsInWindow(job, st, now), due: due})
 		}
 	}
 	return down
+}
+
+func excludedFromFinding(job config.JobConfig, st eventlog.Job) bool {
+	if st.State == string(StateStopped) {
+		return true
+	}
+	return job.Schedule == "once" && (st.LastEvent == "" || (st.LastExitCode != nil && *st.LastExitCode == 0))
 }
 
 // checkNoJobAlive replays only a candidate finding, closing the stale-reconcile gap.
@@ -104,9 +106,7 @@ func (s *Supervisor) checkNoJobAlive(ctx context.Context, state eventlog.State, 
 		*reported = false
 		return nil
 	}
-	err = s.reportNoJobAlive(ctx, down, *reported)
-	*reported = true
-	return err
+	return s.reportNoJobAlive(ctx, down, reported)
 }
 
 // findingDetail preserves configuration order and marks recoverable jobs with their due time.
@@ -119,7 +119,7 @@ func findingDetail(down []downJob) (string, bool) {
 			foldWhitespace(d.job.Name), exitText(d.st), d.restarts, d.job.Restart.MaxRestarts, restartWindowSeconds(d.job))
 		if !d.due.IsZero() {
 			terminal = false
-			part += ", restart due " + d.due.UTC().Format(time.RFC3339)
+			part += ", restart due " + d.due.UTC().Format(time.RFC3339Nano)
 		}
 		parts = append(parts, part+")")
 	}
@@ -128,46 +128,29 @@ func findingDetail(down []downJob) (string, bool) {
 
 // reportNoJobAlive emits once per episode plus any terminal finding.
 // Recoverable budgets keep supervision active.
-func (s *Supervisor) reportNoJobAlive(ctx context.Context, down []downJob, reported bool) error {
+func (s *Supervisor) reportNoJobAlive(ctx context.Context, down []downJob, reported *bool) error {
 	detail, terminal := findingDetail(down)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !reported || terminal {
+	if !*reported || terminal {
 		tail := "supervise keeps running"
 		if terminal {
 			tail = fmt.Sprintf("supervise exits %d", NoJobAliveExitCode)
 		}
 		line := fmt.Sprintf("epitrop supervisor: finding: no job alive: %s; %s", detail, tail)
 		if err := writeLine(s.errOut(), line, s.writeTimeout); err != nil {
+			if !terminal {
+				return nil
+			}
 			return fmt.Errorf("%w: %s (%w: %w)", ErrNoJobAlive, detail, ErrFindingLineNotWritten, err)
 		}
+		*reported = true
 	}
 	if terminal {
 		return fmt.Errorf("%w: %s", ErrNoJobAlive, detail)
 	}
 	return nil
-}
-
-// writeLine bounds the caller's wait even when a writer cannot be interrupted. A timed-out
-// write may finish later; its buffered result never leaves the goroutine blocked on send.
-func writeLine(w io.Writer, line string, timeout time.Duration) error {
-	if timeout <= 0 {
-		timeout = defaultWriteTimeout
-	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := fmt.Fprintln(w, line)
-		done <- err
-	}()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case err := <-done:
-		return err
-	case <-timer.C:
-		return fmt.Errorf("supervisor: stderr write timeout after %s", timeout)
-	}
 }
 
 // exitText is how a down job's last end reads: its exit code, otherwise its reason (lost,

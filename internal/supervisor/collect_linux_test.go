@@ -99,11 +99,11 @@ func TestCollectShimReportsOnlyAWaitThatFails(t *testing.T) {
 	var stderr bytes.Buffer
 	old := reportShimError
 	t.Cleanup(func() { reportShimError = old })
-	reportShimError = func(w io.Writer, timeout time.Duration, name string, err error) {
+	reportShimError = func(w *lineSink, timeout time.Duration, name string, err error) {
 		if timeout != defaultWriteTimeout {
 			t.Errorf("reportShimError timeout = %s, want %s", timeout, defaultWriteTimeout)
 		}
-		if w != io.Writer(&stderr) {
+		if w.writer != io.Writer(&stderr) {
 			t.Errorf("reportShimError writer = %v, want the supervisor's stderr", w)
 		}
 		reported = append(reported, fmt.Sprintf("%s: %v", name, err))

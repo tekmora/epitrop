@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -81,9 +82,24 @@ func TestCommandExitReportsNoJobAliveOnce(t *testing.T) {
 			if code := commandExit(err, &stderr); code != 3 {
 				t.Fatalf("commandExit = %d, want 3", code)
 			}
-			if got := stderr.String(); strings.HasPrefix(got, "Error: ") != tc.wantOutput || strings.Count(got, "\n") > 1 {
+			got := stderr.String()
+			if (!tc.wantOutput && got != "") || (tc.wantOutput && !regexp.MustCompile(`\AError: [^\n]+\n\z`).MatchString(got)) {
 				t.Fatalf("stderr = %q, want Error line = %t", got, tc.wantOutput)
 			}
 		})
+	}
+}
+
+type forbiddenFindingRetryWriter struct{ t *testing.T }
+
+func (w forbiddenFindingRetryWriter) Write([]byte) (int, error) {
+	w.t.Error("commandExit wrote to stderr after a timed-out finding")
+	return 0, errors.New("unexpected retry")
+}
+
+func TestCommandExitDoesNotRetryTimedOutFinding(t *testing.T) {
+	err := fmt.Errorf("%w: %w: %w", supervisor.ErrNoJobAlive, supervisor.ErrFindingLineNotWritten, supervisor.ErrWriteTimedOut)
+	if code := commandExit(superviseEnd(err), forbiddenFindingRetryWriter{t: t}); code != 3 {
+		t.Fatalf("commandExit = %d, want 3", code)
 	}
 }

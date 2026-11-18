@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -93,6 +94,8 @@ type Supervisor struct {
 	pollInterval time.Duration
 	shimWaiters  atomic.Int32
 	stderr       io.Writer
+	stderrOnce   sync.Once
+	stderrSink   *lineSink
 	writeTimeout time.Duration
 	// afterTick is a test hook, called after each liveness check; nil in production.
 	afterTick func()
@@ -101,9 +104,12 @@ type Supervisor struct {
 // reportShimError tells the operator about a shim that could not be collected. Nothing
 // returns to a caller from the waiter, so it goes to the supervisor's stderr like the
 // shim's own errors.
-var reportShimError = func(w io.Writer, timeout time.Duration, name string, err error) {
+var reportShimError = func(w *lineSink, timeout time.Duration, name string, err error) {
 	if werr := writeLine(w, fmt.Sprintf("Error: collect shim of %s: %v", foldWhitespace(name), err), timeout); werr != nil {
-		if fallbackErr := writeLine(os.Stderr, fmt.Sprintf("Error: collect shim of %s: %v (stderr write: %v)", foldWhitespace(name), err, werr), timeout); fallbackErr != nil {
+		if w == defaultStderrSink {
+			return
+		}
+		if fallbackErr := writeLine(defaultStderrSink, fmt.Sprintf("Error: collect shim of %s: %v (stderr write: %v)", foldWhitespace(name), err, werr), timeout); fallbackErr != nil {
 			return
 		}
 	}

@@ -154,7 +154,7 @@ func (e noJobAliveErr) ExitCode() int {
 }
 
 func (e noJobAliveErr) Reported() bool {
-	return !errors.Is(e.err, supervisor.ErrFindingLineNotWritten)
+	return !errors.Is(e.err, supervisor.ErrFindingLineNotWritten) || errors.Is(e.err, supervisor.ErrWriteTimedOut)
 }
 
 // superviseUntilStopped supervises until ctx ends. A stop signal is the normal end and
