@@ -317,7 +317,7 @@ func TestReadManifestValidatesSourceURLs(t *testing.T) {
 	}
 	tmp := t.TempDir()
 	manifestPath := filepath.Join(tmp, filepath.FromSlash(manifestRel))
-	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	body := `{"sources":[{"id":"insecure-src","url_template":"http://example.invalid/{revision}/doc.json","pinned_revision":"r1","full_document_sha256":"00","spdx_license":"MIT","copyright_holder":"X","fragments":[]}]}`
