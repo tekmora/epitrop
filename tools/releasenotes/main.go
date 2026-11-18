@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -20,7 +21,9 @@ import (
 const (
 	maxChangelogBytes = 4 << 20
 	maxChangelogLines = 100000
+	maxLineURLs       = 256
 	sectionPrefix     = "## "
+	urlEndChars       = " \t\r\n\v\f)\"'>"
 )
 
 // releaseVersion is a version as a changelog heading carries it: no leading "v", an
@@ -178,24 +181,72 @@ func readmeReleaseBadge(readme string) (string, error) {
 }
 
 func badgeMessageVersion(line string) (string, bool, error) {
-	if !strings.Contains(line, "label=release") {
+	found := false
+	message := ""
+	rest := line
+	for n := 0; n < maxLineURLs && rest != ""; n++ {
+		raw, tail, ok := nextURLToken(rest)
+		if !ok {
+			break
+		}
+		rest = tail
+		msg, isRelease := releaseBadgeMessage(raw)
+		if !isRelease {
+			continue
+		}
+		if found {
+			return "", false, errors.New("more than one label=release badge on one line")
+		}
+		found = true
+		message = msg
+	}
+	if !found {
 		return "", false, nil
 	}
-	if strings.Count(line, "label=release") > 1 {
-		return "", false, errors.New("more than one label=release badge on one line")
-	}
-	_, after, ok := strings.Cut(line, "message=v")
+	ver, ok := strings.CutPrefix(message, "v")
 	if !ok {
 		return "", false, errors.New("label=release badge has no message=v<version>")
-	}
-	ver := after
-	if end := strings.IndexAny(after, "&)\"' \t"); end >= 0 {
-		ver = after[:end]
 	}
 	if !releaseVersion.MatchString(ver) {
 		return "", false, fmt.Errorf("badge version %q is not of the form 1.2.3 or 1.2.3-rc.1", ver)
 	}
 	return ver, true, nil
+}
+
+func releaseBadgeMessage(rawURL string) (string, bool) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", false
+	}
+	query := parsed.Query()
+	if query.Get("label") != "release" {
+		return "", false
+	}
+	return query.Get("message"), true
+}
+
+func nextURLToken(s string) (string, string, bool) {
+	start := nextURLStart(s)
+	if start < 0 {
+		return "", "", false
+	}
+	sub := s[start:]
+	if end := strings.IndexAny(sub, urlEndChars); end >= 0 {
+		return sub[:end], sub[end:], true
+	}
+	return sub, "", true
+}
+
+func nextURLStart(s string) int {
+	httpIdx := strings.Index(s, "http://")
+	httpsIdx := strings.Index(s, "https://")
+	if httpIdx < 0 {
+		return httpsIdx
+	}
+	if httpsIdx >= 0 && httpsIdx < httpIdx {
+		return httpsIdx
+	}
+	return httpIdx
 }
 
 func headingLine(lines []string, version string) (int, error) {

@@ -270,6 +270,9 @@ func TestLatestReleased(t *testing.T) {
 func TestReadmeReleaseBadge(t *testing.T) {
 	badge020 := "[![Release](https://img.shields.io/static/v1?label=release&message=v0.2.0&style=for-the-badge&color=3b82f6&labelColor=111a35)](https://github.com/tekmora/epitrop/releases)"
 	badgeRC := "[![Release](https://img.shields.io/static/v1?label=release&message=v0.2.0-rc.1&style=for-the-badge&color=3b82f6&labelColor=111a35)](https://github.com/tekmora/epitrop/releases)"
+	badge010 := "[![Release](https://img.shields.io/static/v1?label=release&message=v0.1.0&style=for-the-badge&color=3b82f6&labelColor=111a35)](https://github.com/tekmora/epitrop/releases)"
+	docsBadge020 := "[![Docs](https://img.shields.io/static/v1?label=docs&message=v0.2.0&style=for-the-badge)](https://tekmora.github.io/epitrop/)"
+	releasesBadge020 := "[![Releases](https://img.shields.io/static/v1?label=releases&message=v0.2.0&style=for-the-badge)](https://github.com/tekmora/epitrop/releases)"
 	cases := []struct {
 		name    string
 		readme  string
@@ -278,6 +281,11 @@ func TestReadmeReleaseBadge(t *testing.T) {
 	}{
 		{name: "one release badge", readme: "# Title\n" + badge020 + "\n", want: "0.2.0"},
 		{name: "prerelease badge at boundary", readme: badgeRC, want: "0.2.0-rc.1"},
+		{name: "docs badge before release badge on one line", readme: docsBadge020 + " " + badge010, want: "0.1.0"},
+		{name: "release badge before docs badge on one line", readme: badge010 + " " + docsBadge020, want: "0.1.0"},
+		{name: "label=releases is not a release badge", readme: releasesBadge020, wantErr: "no label=release badge"},
+		{name: "https release badge before a plain http link on one line", readme: badge010 + " see http://example.com/notes", want: "0.1.0"},
+		{name: "message last before the closing parenthesis", readme: "[![Release](https://img.shields.io/static/v1?label=release&message=v0.3.0)](https://github.com/tekmora/epitrop/releases)", want: "0.3.0"},
 		{name: "no badge", readme: "# Title\nNo release badge here.\n", wantErr: "no label=release badge"},
 		{name: "empty input", readme: "", wantErr: "no label=release badge"},
 		{name: "two badges on different lines", readme: badge020 + "\n" + badgeRC + "\n", wantErr: "label=release badge at line 1 and at line 2"},

@@ -95,6 +95,19 @@ go vet ./...
 go test -race ./...
 ```
 
+Install `epitropctl` from the checkout (or pin a release tag with
+`go install github.com/tekmora/epitrop/cmd/epitropctl@<tag>`; see
+[Catalog data sync](docs/data-sync.md)), or run it without installing:
+
+```bash
+go install ./cmd/epitropctl
+go run ./cmd/epitropctl version
+```
+
+`go install` places the binary in `$(go env GOBIN)` or, when unset,
+`$(go env GOPATH)/bin`, which must be on `PATH` for the `epitropctl` commands
+below.
+
 Run the first CLI command (`epitropctl version` or `epitropctl sync`) and the
 operator subcommands:
 
