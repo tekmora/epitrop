@@ -1,0 +1,6 @@
+---
+# go.sum files are written by the go command; Codacy counted their lines as code.
+# "go.sum" covers the root file and "**/go.sum" covers every go.sum below a directory.
+exclude_paths:
+  - "go.sum"
+  - "**/go.sum"

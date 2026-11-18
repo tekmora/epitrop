@@ -75,9 +75,9 @@ commit-messages:
 # vulnerability database online, as in CI. docs-drift compares this branch with origin/main;
 # when the pull request body will carry a 'no docs needed: <reason>' line, put that text in a
 # file and pass it as PR_BODY_FILE=<file>.
-.PHONY: ci-parity gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec docs-drift
+.PHONY: ci-parity gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec docs-drift lock-advisories-selftest lock-advisories govulncheck-osvscanner selftest-interpreter
 verify-all: ci-parity
-ci-parity: commit-messages gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec docs-drift
+ci-parity: commit-messages gofmt-check vet tidy-check schemas-test golangci-lint gitleaks govulncheck gosec-selftest gosec lock-advisories-selftest lock-advisories govulncheck-osvscanner selftest-interpreter docs-drift
 
 GOTOOL := go tool -modfile=tools/go/go.mod
 
@@ -120,6 +120,44 @@ gosec-selftest:
 
 gosec:
 	@pkgs="$$($(GOSEC_PACKAGES))" && $(GOTOOL) gosec -conf .gosec.json $$pkgs
+
+# lock-advisories scans the locked spectral CLI (tools/spectral/package-lock.json) for known
+# advisories with osv-scanner, pinned in its own tool module (tools/osvscanner) because its
+# dependencies conflict with the root module's. It reads osv.dev online, like govulncheck, and
+# every severity fails: exit 1 on any advisory osv-scanner.toml does not exempt, and the one
+# exemption it holds expires by itself. The self-test plants an old fast-uri and an expired
+# exemption and must see both reported before the scan is trusted. Neither target is gated by a
+# diff: the advisory database changes with no change in this repository, so a diff filter would
+# hide a new advisory until someone touched the lockfile. The self-test reads osv.dev too, so it
+# runs on every build as well. The scanner's own module (tools/osvscanner) is scanned by
+# govulncheck-osvscanner, because the root govulncheck does not see a nested module: a finding
+# at symbol level (a vulnerable function the scanner calls) fails, a module-only finding
+# (required, never imported or called) is printed and passes, the root gate's rule.
+OSVSCANNER := go tool -modfile=tools/osvscanner/go.mod osv-scanner
+
+lock-advisories-selftest:
+	@bash tools/linterselftest/selftest.sh osv-scanner
+
+lock-advisories:
+	@$(OSVSCANNER) scan --lockfile tools/spectral/package-lock.json --config osv-scanner.toml
+
+govulncheck-osvscanner:
+	@$(GOTOOL) govulncheck -C tools/osvscanner github.com/google/osv-scanner/v2/cmd/osv-scanner
+
+# The self-test script reads Python through the repository launcher (.config/lefthook/python.sh,
+# 3.10 floor, proven before use). A command word python or python3, or tomllib (3.11 and up),
+# skips that proof. grep exit 0 = a hit = fail, 1 = no hit = pass, 2 and above = error = fail.
+# INTERPRETER_SCRIPT lets the planted case point the check at a copy.
+INTERPRETER_SCRIPT ?= tools/linterselftest/selftest.sh
+
+selftest-interpreter:
+	@rc=0; grep -nE -e '^[^#]*([[:space:];&|(`]|^)python3?([[:space:]]|$$)' -e '^[^#]*tomllib' \
+		"$(INTERPRETER_SCRIPT)" || rc=$$?; \
+	case "$$rc" in \
+		1) ;; \
+		0) echo "$(INTERPRETER_SCRIPT): bare python or tomllib; run Python through .config/lefthook/python.sh" >&2; exit 1 ;; \
+		*) echo "$(INTERPRETER_SCRIPT): grep exit $$rc" >&2; exit 1 ;; \
+	esac
 
 docs-drift:
 	@$(GOTOOL) standardsctl docs references --path=. --base=$$(git merge-base origin/main HEAD) \

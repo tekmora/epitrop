@@ -16,8 +16,12 @@ env:
   PRAETOR_REF: 8684218e78b89d81585d2a482eebb48da18180f0
 
 jobs:
-  # The required check. Every gate here runs offline; the tools come from
-  # tools/go/go.mod at pinned versions that Renovate moves.
+  # The required check. Its tools are pinned in tools/go/go.mod, and osv-scanner in
+  # tools/osvscanner/go.mod, at versions that Renovate moves. The install steps download from
+  # the network (Go modules, apt, pip, npm, the trivy release). Four gates read it while they
+  # scan: govulncheck (the Go vulnerability database), the same scan of the osv-scanner module,
+  # the lock advisories scan and its self-test (osv.dev). The other gates read none; trivy's own
+  # network reads are unchecked.
   go:
     # The sandbox tests need passt with --map-host-loopback, which Ubuntu 24.04's passt
     # (2024_02_20) lacks, and an env with --ignore-signal and --default-signal.
@@ -104,6 +108,9 @@ jobs:
         run: >-
           go tool -modfile=tools/go/go.mod standardsctl security govuln --path=.
           -- go tool -modfile=tools/go/go.mod govulncheck
+      # The osv-scanner module (tools/osvscanner) is nested, so the step above skips it.
+      - name: govulncheck (osv-scanner module)
+        run: make govulncheck-osvscanner
       # HISS-21: gosec and its self-test run on this Linux job only (platforms.yml runs
       # go test only); the self-test drives bash and GNU make, and gosec loads only the
       # packages the runner's GOOS builds.
@@ -144,6 +151,19 @@ jobs:
         run: >-
           tools/spectral/node_modules/.bin/spectral lint -F warn --ruleset .spectral.yaml
           'internal/sources/*/testdata/upstream/*-openapi.yaml'
+      # HISS-11: the locked spectral CLI against osv.dev, every severity failing. osv-scanner is
+      # pinned in tools/osvscanner; osv-scanner.toml holds the one dated exemption, the same one
+      # .standards.yaml records. The self-test plants an old fast-uri and an expired exemption
+      # and must see both reported. Both steps run on every build, not on a diff: osv.dev gains
+      # advisories with no change here, and the self-test reads osv.dev too.
+      - name: lock advisories self-test (planted findings must fail)
+        run: make lock-advisories-selftest
+      - name: lock advisories (osv-scanner)
+        run: make lock-advisories
+      # The self-test script runs Python through .config/lefthook/python.sh (3.10 floor); a bare
+      # python or python3 command, or tomllib, would skip that proof on a runner or a CRLF host.
+      - name: self-test script interpreter (no bare python)
+        run: make selftest-interpreter
       # trivy, declared by the framework profile: misconfiguration and secret scans of the tree.
       # The release tarball is pinned by its sha256 from the upstream checksums file; the
       # self-test plants a HIGH Dockerfile finding and a CRITICAL token and must see both.
