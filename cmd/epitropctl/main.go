@@ -65,7 +65,12 @@ func commandExit(cmdErr error, stderr io.Writer) int {
 	if cmdErr != nil {
 		var reported interface{ Reported() bool }
 		if !errors.As(cmdErr, &reported) || !reported.Reported() {
-			if _, err := fmt.Fprintf(stderr, "Error: %v\n", cmdErr); err != nil {
+			prefix := ""
+			var partial interface{ PartialLine() bool }
+			if errors.As(cmdErr, &partial) && partial.PartialLine() {
+				prefix = "\n"
+			}
+			if _, err := fmt.Fprintf(stderr, "%sError: %v\n", prefix, cmdErr); err != nil {
 				cmdErr = fmt.Errorf("%w (stderr write: %w)", cmdErr, err)
 			}
 		}

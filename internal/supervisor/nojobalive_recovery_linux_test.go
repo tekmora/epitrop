@@ -138,13 +138,8 @@ func TestFindingWriteDeadline(t *testing.T) {
 	select {
 	case <-entered:
 	case err := <-done:
-		select {
-		case <-entered:
-			assertFindingTimeout(t, err)
-			return
-		default:
-			t.Fatalf("Supervise ended before Write entry: %v", err)
-		}
+		assertFindingTimeout(t, err)
+		return
 	case <-time.After(10 * time.Second):
 		t.Fatal("Supervise did not reach finding Write within 10s")
 	}
@@ -409,6 +404,9 @@ func TestNoJobAliveDuePreservesFraction(t *testing.T) {
 	}
 	var episode findingEpisode
 	checkFindingEpisode(t, sup, state, &episode)
+	if !episode.reported || episode.pending != nil {
+		t.Fatalf("episode = %+v, want completed report", episode)
+	}
 	if got := stderr.String(); !strings.Contains(got, "restart due 2026-11-18T08:00:02.9Z") {
 		t.Fatalf("stderr = %q, want fractional due time 2026-11-18T08:00:02.9Z", got)
 	}
@@ -444,7 +442,10 @@ func TestRecoverableFindingRetriesFailedWrite(t *testing.T) {
 		t.Fatalf("failed recoverable write = %v, reported = %t, want nil, false", err, episode.reported)
 	}
 	checkFindingEpisode(t, sup, state, &episode)
-	if got := w.buf.String(); !episode.reported || strings.Count(got, "\n") != 1 || !strings.HasSuffix(got, "; supervise keeps running\n") {
+	if !episode.reported || episode.pending != nil {
+		t.Fatalf("episode = %+v, want completed report", episode)
+	}
+	if got := w.buf.String(); strings.Count(got, "\n") != 1 || !strings.HasSuffix(got, "; supervise keeps running\n") {
 		t.Fatalf("retry = %q, reported = %t, want one recoverable line, true", got, episode.reported)
 	}
 }

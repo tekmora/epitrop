@@ -148,3 +148,22 @@ func TestCommandExitDoesNotRetryTimedOutFinding(t *testing.T) {
 		t.Fatalf("commandExit = %d, want 3", code)
 	}
 }
+
+func TestCommandExitPartialFinding(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cause  error
+		prefix string
+	}{{"partial", supervisor.ErrPartialLine, "\nError: "}, {"empty", errors.New("failure"), "Error: "}, {"timeout", supervisor.ErrWriteTimedOut, ""}} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := fmt.Errorf("%w: %w: %w", supervisor.ErrNoJobAlive, supervisor.ErrFindingLineNotWritten, tc.cause)
+			var out bytes.Buffer
+			if code := commandExit(superviseEnd(err), &out); code != 3 {
+				t.Fatalf("exit = %d, want 3", code)
+			}
+			if (tc.prefix == "" && out.String() != "") || (tc.prefix != "" && !strings.HasPrefix(out.String(), tc.prefix)) {
+				t.Fatalf("output = %q, want prefix %q", out.String(), tc.prefix)
+			}
+		})
+	}
+}

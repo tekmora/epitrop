@@ -67,14 +67,17 @@ func (e *findingEpisode) shouldWrite(terminal bool) bool {
 	return terminal || !e.reported
 }
 
+var probeJobLock = lockHeld
+
 // jobAlive checks running evidence first. Once jobs are alive only while their lock is held;
-// cron/event jobs remain armed, and an intentional stop excludes an always job.
+// An unreadable once lock defers the finding; cron/event jobs remain armed.
 func (s *Supervisor) jobAlive(job config.JobConfig, st eventlog.Job, now time.Time) bool {
 	if s.statusFor(job, st).State == StateRunning {
 		return true
 	}
 	if job.Schedule == "once" {
-		return false
+		held, err := probeJobLock(s.lockPath(job.Name))
+		return err != nil || held
 	}
 	if st.State == string(StateRunning) || job.Schedule != "always" {
 		return true
@@ -174,15 +177,36 @@ func (s *Supervisor) confirmLostOnce(ctx context.Context, down []downJob) ([]dow
 	if len(confirmedDown) == 0 {
 		return nil, true, nil
 	}
+	for i := 0; i < len(confirmedDown); i++ {
+		if confirmedDown[i].lostOnce && !containsLostOnce(down, confirmedDown[i]) {
+			return nil, false, nil
+		}
+	}
+	if !sameLostOnceStarts(down, confirmed) {
+		return nil, false, nil
+	}
+	return confirmedDown, true, nil
+}
+
+func sameLostOnceStarts(down []downJob, state eventlog.State) bool {
 	for i := 0; i < len(down); i++ {
 		if down[i].lostOnce {
-			st := confirmed.Jobs[down[i].job.Name]
+			st := state.Jobs[down[i].job.Name]
 			if st.State != string(StateRunning) || st.Since != down[i].st.Since {
-				return nil, false, nil
+				return false
 			}
 		}
 	}
-	return confirmedDown, true, nil
+	return true
+}
+
+func containsLostOnce(down []downJob, candidate downJob) bool {
+	for i := 0; i < len(down); i++ {
+		if down[i].lostOnce && down[i].job.Name == candidate.job.Name && down[i].st.Since == candidate.st.Since {
+			return true
+		}
+	}
+	return false
 }
 
 func hasLostOnce(down []downJob) bool {

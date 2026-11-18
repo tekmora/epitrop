@@ -13,6 +13,9 @@ import (
 // pending on that writer.
 var ErrWriteTimedOut = errors.New("supervisor: stderr write timeout")
 
+// ErrPartialLine marks a failed write that left part of its line on the writer.
+var ErrPartialLine = errors.New("supervisor: partial line")
+
 // lineSink permits at most one outstanding write, including a write whose caller timed out.
 type lineSink struct {
 	writer  io.Writer
@@ -80,6 +83,9 @@ func (sink *lineSink) writeAdmitted(line string, done chan<- error) {
 		sink.partial = false
 	} else if n > 0 && err != nil {
 		sink.partial = true
+	}
+	if err != nil && sink.partial {
+		err = fmt.Errorf("%w: %w", ErrPartialLine, err)
 	}
 	<-sink.slot
 	done <- err
