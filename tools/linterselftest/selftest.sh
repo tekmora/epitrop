@@ -35,6 +35,48 @@ require_findings() {
   fi
 }
 
+osv_reported() {
+  local scan_log="$1" id="$2" package="$3" version="$4"
+  awk -F '|' -v id="$id" -v package="$package" -v version="$version" '
+    function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    /^\|/ {
+      for (i = 2; i < NF; i++) {
+        cell = trim($i)
+        if (cell == "OSV URL") url_col = i
+        if (cell == "PACKAGE") package_col = i
+        if (cell == "VERSION") version_col = i
+      }
+      if (url_col && package_col && version_col &&
+          trim($url_col) == "https://osv.dev/" id &&
+          trim($package_col) == package && trim($version_col) == version) found = 1
+    }
+    END { exit !found }
+  ' "$scan_log"
+}
+
+osv_filtered() {
+  local scan_log="$1" id="$2"
+  awk -v id="$id" '
+    index($0, id " ") == 1 {
+      rest = substr($0, length(id) + 2)
+      if (rest ~ /^has been filtered out because: / ||
+          rest ~ /^and 1 alias have been filtered out because: / ||
+          rest ~ /^and [0-9]+ aliases have been filtered out because: /) found = 1
+    }
+    END { exit !found }
+  ' "$scan_log"
+}
+
+osv_unused_ignore() {
+  local scan_log="$1" id="$2"
+  awk -v id="$id" '
+    /has unused ignores:$/ { bullets = 1; next }
+    bullets && /^ - / { if ($0 == " - " id) found = 1; next }
+    { bullets = 0 }
+    END { exit !found }
+  ' "$scan_log"
+}
+
 run_make_gosec() {
   local out="$1"
   shift
@@ -346,13 +388,16 @@ YAML
     # C (offline, first): the production exemption state. Both osv-scanner.toml and .standards.yaml
     # hold an entry with matching dates and no other advisory is exempt. Neither holds one: skipped.
     # Exactly one: fail. A: the real lock with fast-uri set back to 3.1.8 (GHSA-w74x-v6f9-j3xg,
-    # fixed in 3.1.9) must fail the scan under the repository's osv-scanner.toml. B2 and B scan the real lock with braces 3.0.2 planted
-    # (GHSA-grv7-fg5c-xmjg), without the production config. B2: a config that ended 2020-01-01
-    # must report the advisory. B: a config valid until 2099-01-01 must exit 0 without it; any
-    # other advisory fails this case. B2 runs first: when it does not report the advisory, osv.dev
-    # withdrew it or changed its range, and the self-test asks for a new plant instead of reading
-    # B's unused ignore as a report. Exit 1 means advisories found in A and B2; B needs exit 0;
-    # any other exit (scanner error) fails the self-test.
+    # fixed in 3.1.9) must fail the scan under the repository's osv-scanner.toml. B2 and B scan the
+    # real lock with braces 3.0.2 planted (GHSA-grv7-fg5c-xmjg), without the production config.
+    # B2: a config that ended 2020-01-01 must report the advisory and must not filter it. B: a
+    # config valid until 2099-01-01 must exit 0 without it and must filter it; any other advisory
+    # fails this case. B2 runs first: when it does not report the advisory, osv.dev withdrew it or
+    # changed its range, and the self-test asks for a new plant instead of reading B's unused
+    # ignore as a report. Exit 1 means advisories found in A and B2; B needs exit 0; any other
+    # exit (scanner error) fails the self-test. The checks read three line shapes of osv-scanner
+    # v2.7.1: the report table row (OSV URL, package, version), the "filtered out" line and the
+    # bullets under "has unused ignores:".
     repo="$PWD"
     modfile="$repo/tools/osvscanner/go.mod"
     shared_rc=0
@@ -384,12 +429,22 @@ YAML
     rc=0
     osv_scan "$plant/a/package-lock.json" "$repo/osv-scanner.toml" "$log" || rc="$?"
     require_findings "$tool (fast-uri $old_version planted)" "$rc" "$log" "${expected[@]}"
+    if ! osv_reported "$log" GHSA-w74x-v6f9-j3xg fast-uri "$old_version"; then
+      echo "$tool (fast-uri $old_version planted): advisory GHSA-w74x-v6f9-j3xg not reported for fast-uri $old_version" >&2
+      cat "$log" >&2
+      exit 1
+    fi
 
     expired_log="$plant/expired-scan.log"
     osv_write_config "$plant/expired.toml" 2020-01-01 "$braces_advisory"
     rc=0
     osv_scan "$plant/b/package-lock.json" "$plant/expired.toml" "$expired_log" || rc="$?"
-    if [[ "$rc" -le 1 ]] && ! grep -F -- "$braces_advisory" "$expired_log" | grep -qvE '^ *- '; then
+    if osv_filtered "$expired_log" "$braces_advisory"; then
+      echo "$tool (expired exemption): expired exemption honoured: osv-scanner filtered $braces_advisory under a config that ended 2020-01-01" >&2
+      cat "$expired_log" >&2
+      exit 1
+    fi
+    if [[ "$rc" -le 1 ]] && ! osv_reported "$expired_log" "$braces_advisory" braces "$braces_version"; then
       echo "$tool (expired exemption): planted advisory $braces_advisory is no longer reported by osv.dev (withdrawn or its range changed); a new plant is needed" >&2
       cat "$expired_log" >&2
       exit 1
@@ -400,15 +455,18 @@ YAML
     osv_write_config "$plant/valid.toml" 2099-01-01 "$braces_advisory"
     rc=0
     osv_scan "$plant/b/package-lock.json" "$plant/valid.toml" "$valid_log" || rc="$?"
-    if grep -A 1 -F -- 'has unused ignores:' "$valid_log" | grep -qF -- "$braces_advisory"; then
+    if osv_unused_ignore "$valid_log" "$braces_advisory"; then
       echo "$tool (valid exemption): unused ignore $braces_advisory; the plant no longer matches the advisory" >&2
       cat "$valid_log" >&2
       exit 1
     fi
-    # osv-scanner names a filtered advisory on its "have been filtered out" line; any other line
-    # naming it is a report.
-    if [[ "$rc" -ne 0 ]] || grep -F -- "$braces_advisory" "$valid_log" | grep -qvF -- 'have been filtered out'; then
+    if [[ "$rc" -ne 0 ]] || osv_reported "$valid_log" "$braces_advisory" braces "$braces_version"; then
       echo "$tool (valid exemption): exit $rc; the planted braces $braces_version lock under a valid exemption must exit 0 without $braces_advisory" >&2
+      cat "$valid_log" >&2
+      exit 1
+    fi
+    if ! osv_filtered "$valid_log" "$braces_advisory"; then
+      echo "$tool (valid exemption): valid exemption not applied: no filtered-out line for $braces_advisory" >&2
       cat "$valid_log" >&2
       exit 1
     fi
