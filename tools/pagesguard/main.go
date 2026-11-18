@@ -34,11 +34,17 @@ import (
 )
 
 const (
-	defaultAPIBase   = "https://api.github.com"
-	maxDeployments   = 30
-	maxStatuses      = 100
-	maxResponseBytes = 4 << 20
-	requestTimeout   = 20 * time.Second
+	defaultAPIBase     = "https://api.github.com"
+	deploymentsPerPage = 100
+	// List deployments caps per_page at 100 (default 30, page default 1).
+	// With maxDeploymentPages = 3 (bound 300 records), worst case is 3 list
+	// calls + 300 status calls = 303 requests, below the 1,000 requests per
+	// hour per repository GITHUB_TOKEN rate limit for one run.
+	maxDeploymentPages = 3
+	maxDeployments     = deploymentsPerPage * maxDeploymentPages
+	maxStatuses        = 100
+	maxResponseBytes   = 4 << 20
+	requestTimeout     = 20 * time.Second
 	// The compare response lists up to 300 changed files with their patches
 	// even with per_page=1 (GitHub REST compare, "Working with large
 	// comparisons"), so a large gap between live and ours needs more room
@@ -169,7 +175,7 @@ func decide(ctx context.Context, cfg config) (allow bool, reason string, err err
 	}
 	if !found {
 		if len(deployments) >= maxDeployments {
-			return false, "live deployment not among the newest 30", nil
+			return false, "live deployment not among the newest 300", nil
 		}
 		return true, "no earlier successful deployment", nil
 	}
@@ -188,14 +194,27 @@ func githubHeader(access string) http.Header {
 }
 
 func fetchDeployments(ctx context.Context, apiBase, repo string, header http.Header) ([]deployment, error) {
-	endpoint := fmt.Sprintf("%s/repos/%s/deployments?environment=github-pages&per_page=%d", apiBase, repo, maxDeployments)
-	body, err := httpfetch.GetWithHeader(ctx, endpoint, header, requestTimeout, maxResponseBytes)
-	if err != nil {
-		return nil, fmt.Errorf("fetch deployments: %w", err)
-	}
 	var deployments []deployment
-	if err := json.Unmarshal(body, &deployments); err != nil {
-		return nil, fmt.Errorf("decode deployments: %w", err)
+	for page := 1; page <= maxDeploymentPages; page++ {
+		endpoint := fmt.Sprintf(
+			"%s/repos/%s/deployments?environment=github-pages&per_page=%d&page=%d",
+			apiBase,
+			repo,
+			deploymentsPerPage,
+			page,
+		)
+		body, err := httpfetch.GetWithHeader(ctx, endpoint, header, requestTimeout, maxResponseBytes)
+		if err != nil {
+			return nil, fmt.Errorf("fetch deployments page %d: %w", page, err)
+		}
+		var pageDeployments []deployment
+		if err := json.Unmarshal(body, &pageDeployments); err != nil {
+			return nil, fmt.Errorf("decode deployments page %d: %w", page, err)
+		}
+		deployments = append(deployments, pageDeployments...)
+		if len(pageDeployments) < deploymentsPerPage {
+			break
+		}
 	}
 	slices.SortFunc(deployments, compareDeployments)
 	return deployments, nil

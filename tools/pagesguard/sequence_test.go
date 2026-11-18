@@ -232,7 +232,12 @@ func (s *statefulGitHub) serve(t *testing.T, w http.ResponseWriter, r *http.Requ
 	const prefix = "/repos/" + testRepo
 	switch {
 	case r.URL.Path == prefix+"/deployments":
-		writeJSON(t, w, s.deployments)
+		page, ok := parseDeploymentsQuery(r)
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		serveDeploymentPage(t, w, s.deployments, page)
 	case strings.HasPrefix(r.URL.Path, prefix+"/deployments/") && strings.HasSuffix(r.URL.Path, "/statuses"):
 		s.serveStatuses(t, w, r)
 	case strings.HasPrefix(r.URL.Path, prefix+"/compare/"):

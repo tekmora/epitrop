@@ -13,32 +13,37 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
 
 const (
-	testRepo      = "tekmora/epitrop"
-	testOurSHA    = "2bbdef5db8deb4bb645d4bceab6b42af4751e25a"
-	testLiveSHA   = "0c759db111111111111111111111111111111111"
-	testOlderSHA  = "aaaaaaa000000000000000000000000000000000"
-	testAccessVal = "ghs_test_viewer_value"
-	maxTestCases  = 64
+	testRepo           = "tekmora/epitrop"
+	testOurSHA         = "2bbdef5db8deb4bb645d4bceab6b42af4751e25a"
+	testLiveSHA        = "0c759db111111111111111111111111111111111"
+	testOlderSHA       = "aaaaaaa000000000000000000000000000000000"
+	testAccessVal      = "ghs_test_viewer_value"
+	maxTestCases       = 64
+	maxTestDeployments = 400
 )
 
 type fakeGitHub struct {
-	deploymentsStatus int
-	deploymentsRaw    string
-	deployments       []deployment
-	statusesStatus    int
-	statusesRaw       string
-	statusesByID      map[int64][]deploymentStatus
-	compareStatus     int
-	compareRaw        string
-	compareByPair     map[string]string
-	statusesCalls     atomic.Int32
-	compareCalls      atomic.Int32
+	deploymentsStatus      int
+	deploymentsStatusPage  int
+	deploymentsBadJSON     bool
+	deploymentsBadJSONPage int
+	deployments            []deployment
+	statusesStatus         int
+	statusesBadJSON        bool
+	statusesByID           map[int64][]deploymentStatus
+	compareStatus          int
+	compareBadJSON         bool
+	compareByPair          map[string]string
+	deploymentsCalls       atomic.Int32
+	statusesCalls          atomic.Int32
+	compareCalls           atomic.Int32
 }
 
 func newFakeGitHubServer(t *testing.T, fk *fakeGitHub) *httptest.Server {
@@ -75,19 +80,44 @@ func (fk *fakeGitHub) serve(t *testing.T, w http.ResponseWriter, r *http.Request
 
 func (fk *fakeGitHub) serveDeployments(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	t.Helper()
-	if r.URL.Query().Get("environment") != "github-pages" || r.URL.Query().Get("per_page") != "30" {
+	fk.deploymentsCalls.Add(1)
+	page, ok := parseDeploymentsQuery(r)
+	if !ok {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	if fk.deploymentsStatus != 0 {
+	if fk.deploymentsStatus != 0 && matchesPage(fk.deploymentsStatusPage, page) {
 		w.WriteHeader(fk.deploymentsStatus)
 		return
 	}
-	if fk.deploymentsRaw != "" {
-		writeBytes(t, w, []byte(fk.deploymentsRaw))
+	if fk.deploymentsBadJSON && matchesPage(fk.deploymentsBadJSONPage, page) {
+		writeJSON(t, w, map[string]string{"invalid": "deployments"})
 		return
 	}
-	writeJSON(t, w, fk.deployments)
+	serveDeploymentPage(t, w, fk.deployments, page)
+}
+
+func parseDeploymentsQuery(r *http.Request) (int, bool) {
+	q := r.URL.Query()
+	if q.Get("environment") != "github-pages" || q.Get("per_page") != "100" {
+		return 0, false
+	}
+	page, err := strconv.Atoi(q.Get("page"))
+	if err != nil || page < 1 {
+		return 0, false
+	}
+	return page, true
+}
+
+func matchesPage(targetPage, page int) bool {
+	return targetPage == 0 || targetPage == page
+}
+
+func serveDeploymentPage(t *testing.T, w http.ResponseWriter, deps []deployment, page int) {
+	t.Helper()
+	start := min((page-1)*deploymentsPerPage, len(deps))
+	end := min(start+deploymentsPerPage, len(deps))
+	writeJSON(t, w, deps[start:end])
 }
 
 func (fk *fakeGitHub) serveStatuses(t *testing.T, w http.ResponseWriter, r *http.Request) {
@@ -101,8 +131,8 @@ func (fk *fakeGitHub) serveStatuses(t *testing.T, w http.ResponseWriter, r *http
 		w.WriteHeader(fk.statusesStatus)
 		return
 	}
-	if fk.statusesRaw != "" {
-		writeBytes(t, w, []byte(fk.statusesRaw))
+	if fk.statusesBadJSON {
+		writeJSON(t, w, map[string]string{"invalid": "statuses"})
 		return
 	}
 	var id int64
@@ -124,8 +154,8 @@ func (fk *fakeGitHub) serveCompare(t *testing.T, w http.ResponseWriter, r *http.
 		w.WriteHeader(fk.compareStatus)
 		return
 	}
-	if fk.compareRaw != "" {
-		writeBytes(t, w, []byte(fk.compareRaw))
+	if fk.compareBadJSON {
+		writeJSON(t, w, []string{"invalid-compare"})
 		return
 	}
 	pair := strings.TrimPrefix(r.URL.Path, "/repos/"+testRepo+"/compare/")
@@ -139,31 +169,21 @@ func (fk *fakeGitHub) serveCompare(t *testing.T, w http.ResponseWriter, r *http.
 
 func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
 	t.Helper()
-	data, err := json.Marshal(v)
-	if err != nil {
-		t.Errorf("marshal response: %v", err)
-		return
-	}
-	writeBytes(t, w, data)
-}
-
-func writeBytes(t *testing.T, w http.ResponseWriter, data []byte) {
-	t.Helper()
 	w.Header().Set("Content-Type", "application/json")
-	if _, err := w.Write(data); err != nil {
-		t.Errorf("write response: %v", err)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		t.Errorf("encode response: %v", err)
 	}
 }
 
 func makeFailedDeployments(count int) ([]deployment, map[int64][]deploymentStatus) {
 	deps := make([]deployment, 0, count)
 	statuses := make(map[int64][]deploymentStatus, count)
-	for i := 0; i < count && i < maxTestCases; i++ {
-		id := int64(i + 1)
+	for i := 0; i < count && i < maxTestDeployments; i++ {
+		id := int64(count - i + 1)
 		deps = append(deps, deployment{
 			ID:        id,
-			SHA:       fmt.Sprintf("sha-%02d", id),
-			CreatedAt: fmt.Sprintf("2026-11-18T10:%02d:00Z", i%60),
+			SHA:       fmt.Sprintf("sha-%03d", id),
+			CreatedAt: "2026-11-18T13:00:00Z",
 		})
 		statuses[id] = []deploymentStatus{{State: "failure"}}
 	}
@@ -171,22 +191,25 @@ func makeFailedDeployments(count int) ([]deployment, map[int64][]deploymentStatu
 }
 
 type decideCase struct {
-	name             string
-	sha              string
-	fk               *fakeGitHub
-	wantAllow        bool
-	wantReason       []string
-	wantErr          string
-	wantStatusesCall int32
-	wantCompareCall  int32
+	name                string
+	sha                 string
+	fk                  *fakeGitHub
+	wantAllow           bool
+	wantReason          []string
+	wantErr             string
+	wantDeploymentsCall int32
+	wantStatusesCall    int32
+	wantCompareCall     int32
 }
 
 func TestDecidePositive(t *testing.T) {
 	cases := []decideCase{
 		{
-			name:      "no deployments allows",
-			fk:        &fakeGitHub{deployments: []deployment{}},
-			wantAllow: true, wantReason: []string{"no earlier successful deployment"},
+			name:                "no deployments allows",
+			fk:                  &fakeGitHub{deployments: []deployment{}},
+			wantAllow:           true,
+			wantReason:          []string{"no earlier successful deployment"},
+			wantDeploymentsCall: 1,
 		},
 		{
 			name: "live equals ours allows without compare",
@@ -194,7 +217,11 @@ func TestDecidePositive(t *testing.T) {
 				deployments:  []deployment{{ID: 1, SHA: testOurSHA, CreatedAt: "2026-11-18T12:00:00Z"}},
 				statusesByID: map[int64][]deploymentStatus{1: {{State: "success"}}},
 			},
-			wantAllow: true, wantReason: []string{testOurSHA}, wantStatusesCall: 1, wantCompareCall: 0,
+			wantAllow:           true,
+			wantReason:          []string{testOurSHA},
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    1,
+			wantCompareCall:     0,
 		},
 		{
 			name: "compare ahead allows",
@@ -203,7 +230,11 @@ func TestDecidePositive(t *testing.T) {
 				statusesByID:  map[int64][]deploymentStatus{1: {{State: "success"}}},
 				compareByPair: map[string]string{testLiveSHA + "..." + testOurSHA: "ahead"},
 			},
-			wantAllow: true, wantReason: []string{"ahead", testLiveSHA}, wantStatusesCall: 1, wantCompareCall: 1,
+			wantAllow:           true,
+			wantReason:          []string{"ahead", testLiveSHA},
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    1,
+			wantCompareCall:     1,
 		},
 		{
 			name: "compare identical allows",
@@ -212,7 +243,11 @@ func TestDecidePositive(t *testing.T) {
 				statusesByID:  map[int64][]deploymentStatus{1: {{State: "success"}}},
 				compareByPair: map[string]string{testLiveSHA + "..." + testOurSHA: "identical"},
 			},
-			wantAllow: true, wantReason: []string{"identical", testLiveSHA}, wantStatusesCall: 1, wantCompareCall: 1,
+			wantAllow:           true,
+			wantReason:          []string{"identical", testLiveSHA},
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    1,
+			wantCompareCall:     1,
 		},
 	}
 	runDecideCases(t, cases)
@@ -233,7 +268,11 @@ func TestDecideOrderingAndStatuses(t *testing.T) {
 				},
 				compareByPair: map[string]string{testLiveSHA + "..." + testOurSHA: "ahead"},
 			},
-			wantAllow: true, wantReason: []string{"ahead", testLiveSHA}, wantStatusesCall: 2, wantCompareCall: 1,
+			wantAllow:           true,
+			wantReason:          []string{"ahead", testLiveSHA},
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    2,
+			wantCompareCall:     1,
 		},
 		{
 			name: "status list inactive and success counts as success and stops at first hit",
@@ -248,7 +287,11 @@ func TestDecideOrderingAndStatuses(t *testing.T) {
 				},
 				compareByPair: map[string]string{testLiveSHA + "..." + testOurSHA: "ahead"},
 			},
-			wantAllow: true, wantReason: []string{"ahead", testLiveSHA}, wantStatusesCall: 1, wantCompareCall: 1,
+			wantAllow:           true,
+			wantReason:          []string{"ahead", testLiveSHA},
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    1,
+			wantCompareCall:     1,
 		},
 		{
 			name: "response order shuffled is sorted by created_at desc then id desc",
@@ -265,31 +308,60 @@ func TestDecideOrderingAndStatuses(t *testing.T) {
 				},
 				compareByPair: map[string]string{testLiveSHA + "..." + testOurSHA: "ahead"},
 			},
-			wantAllow: true, wantReason: []string{"ahead", testLiveSHA}, wantStatusesCall: 1, wantCompareCall: 1,
+			wantAllow:           true,
+			wantReason:          []string{"ahead", testLiveSHA},
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    1,
+			wantCompareCall:     1,
 		},
 	}
 	runDecideCases(t, cases)
 }
 
 func TestDecideBoundary(t *testing.T) {
-	deps29, stat29 := makeFailedDeployments(29)
-	deps30, stat30 := makeFailedDeployments(30)
-	deps35, stat35 := makeFailedDeployments(35)
+	depsRec, statRec := makeFailedDeployments(120)
+	depsRec = append(depsRec, deployment{ID: 1, SHA: testLiveSHA, CreatedAt: "2026-11-18T12:00:00Z"})
+	statRec[1] = []deploymentStatus{{State: "success"}}
+	deps150, stat150 := makeFailedDeployments(150)
+	deps300, stat300 := makeFailedDeployments(300)
+	deps305, stat305 := makeFailedDeployments(305)
 	cases := []decideCase{
 		{
-			name:      "boundary 29 deployments none success allows",
-			fk:        &fakeGitHub{deployments: deps29, statusesByID: stat29},
-			wantAllow: true, wantReason: []string{"no earlier successful deployment"}, wantStatusesCall: 29,
+			name: "recovery success on page 2 after 120 failed deployments compares with live",
+			fk: &fakeGitHub{
+				deployments:   depsRec,
+				statusesByID:  statRec,
+				compareByPair: map[string]string{testLiveSHA + "..." + testOurSHA: "ahead"},
+			},
+			wantAllow:           true,
+			wantReason:          []string{"ahead", testLiveSHA},
+			wantDeploymentsCall: 2,
+			wantStatusesCall:    121,
+			wantCompareCall:     1,
 		},
 		{
-			name:      "boundary 30 deployments none success refuses",
-			fk:        &fakeGitHub{deployments: deps30, statusesByID: stat30},
-			wantAllow: false, wantReason: []string{"live deployment not among the newest 30"}, wantStatusesCall: 30,
+			name:                "boundary 150 deployments none success exhausts history on page 2 and allows",
+			fk:                  &fakeGitHub{deployments: deps150, statusesByID: stat150},
+			wantAllow:           true,
+			wantReason:          []string{"no earlier successful deployment"},
+			wantDeploymentsCall: 2,
+			wantStatusesCall:    150,
 		},
 		{
-			name:      "boundary over 30 deployments makes at most 30 statuses requests",
-			fk:        &fakeGitHub{deployments: deps35, statusesByID: stat35},
-			wantAllow: false, wantReason: []string{"live deployment not among the newest 30"}, wantStatusesCall: 30,
+			name:                "boundary 300 deployments none success refuses",
+			fk:                  &fakeGitHub{deployments: deps300, statusesByID: stat300},
+			wantAllow:           false,
+			wantReason:          []string{"live deployment not among the newest 300"},
+			wantDeploymentsCall: 3,
+			wantStatusesCall:    300,
+		},
+		{
+			name:                "boundary over 300 deployments makes at most 3 page requests and 300 statuses requests",
+			fk:                  &fakeGitHub{deployments: deps305, statusesByID: stat305},
+			wantAllow:           false,
+			wantReason:          []string{"live deployment not among the newest 300"},
+			wantDeploymentsCall: 3,
+			wantStatusesCall:    300,
 		},
 	}
 	runDecideCases(t, cases)
@@ -306,10 +378,11 @@ func TestDecideNegativeCompare(t *testing.T) {
 				statusesByID:  liveSuccess,
 				compareByPair: map[string]string{testLiveSHA + "..." + testOurSHA: "behind"},
 			},
-			wantAllow:        false,
-			wantReason:       []string{testOurSHA, testLiveSHA, "behind", "re-run the newest Pages run on main or dispatch the workflow on main"},
-			wantStatusesCall: 1,
-			wantCompareCall:  1,
+			wantAllow:           false,
+			wantReason:          []string{testOurSHA, testLiveSHA, "behind", "re-run the newest Pages run on main or dispatch the workflow on main"},
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    1,
+			wantCompareCall:     1,
 		},
 		{
 			name: "compare diverged refuses and names status",
@@ -318,10 +391,11 @@ func TestDecideNegativeCompare(t *testing.T) {
 				statusesByID:  liveSuccess,
 				compareByPair: map[string]string{testLiveSHA + "..." + testOurSHA: "diverged"},
 			},
-			wantAllow:        false,
-			wantReason:       []string{testOurSHA, testLiveSHA, "diverged"},
-			wantStatusesCall: 1,
-			wantCompareCall:  1,
+			wantAllow:           false,
+			wantReason:          []string{testOurSHA, testLiveSHA, "diverged"},
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    1,
+			wantCompareCall:     1,
 		},
 	}
 	runDecideCases(t, cases)
@@ -330,42 +404,71 @@ func TestDecideNegativeCompare(t *testing.T) {
 func TestDecideNegativeErrors(t *testing.T) {
 	liveDep := []deployment{{ID: 1, SHA: testLiveSHA, CreatedAt: "2026-11-18T12:00:00Z"}}
 	liveSuccess := map[int64][]deploymentStatus{1: {{State: "success"}}}
+	deps150, stat150 := makeFailedDeployments(150)
 	cases := []decideCase{
 		{
-			name:    "HTTP 500 on deployments returns error",
-			fk:      &fakeGitHub{deploymentsStatus: http.StatusInternalServerError},
-			wantErr: "fetch deployments",
+			name:                "HTTP 500 on deployments returns error",
+			fk:                  &fakeGitHub{deploymentsStatus: http.StatusInternalServerError},
+			wantErr:             "fetch deployments page 1",
+			wantDeploymentsCall: 1,
 		},
 		{
-			name:             "HTTP 500 on statuses returns error",
-			fk:               &fakeGitHub{deployments: liveDep, statusesStatus: http.StatusInternalServerError},
-			wantErr:          "fetch statuses for deployment 1",
-			wantStatusesCall: 1,
+			name: "HTTP 500 on deployments page 2 returns error",
+			fk: &fakeGitHub{
+				deployments:           deps150,
+				statusesByID:          stat150,
+				deploymentsStatus:     http.StatusInternalServerError,
+				deploymentsStatusPage: 2,
+			},
+			wantErr:             "fetch deployments page 2",
+			wantDeploymentsCall: 2,
 		},
 		{
-			name:             "HTTP 500 on compare returns error",
-			fk:               &fakeGitHub{deployments: liveDep, statusesByID: liveSuccess, compareStatus: http.StatusInternalServerError},
-			wantErr:          "compare " + testLiveSHA + "..." + testOurSHA,
-			wantStatusesCall: 1,
-			wantCompareCall:  1,
+			name:                "HTTP 500 on statuses returns error",
+			fk:                  &fakeGitHub{deployments: liveDep, statusesStatus: http.StatusInternalServerError},
+			wantErr:             "fetch statuses for deployment 1",
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    1,
 		},
 		{
-			name:    "malformed JSON on deployments returns error",
-			fk:      &fakeGitHub{deploymentsRaw: "{not-json"},
-			wantErr: "decode deployments",
+			name:                "HTTP 500 on compare returns error",
+			fk:                  &fakeGitHub{deployments: liveDep, statusesByID: liveSuccess, compareStatus: http.StatusInternalServerError},
+			wantErr:             "compare " + testLiveSHA + "..." + testOurSHA,
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    1,
+			wantCompareCall:     1,
 		},
 		{
-			name:             "malformed JSON on statuses returns error",
-			fk:               &fakeGitHub{deployments: liveDep, statusesRaw: "{not-json"},
-			wantErr:          "decode statuses for deployment 1",
-			wantStatusesCall: 1,
+			name:                "malformed JSON on deployments returns error",
+			fk:                  &fakeGitHub{deploymentsBadJSON: true},
+			wantErr:             "decode deployments page 1",
+			wantDeploymentsCall: 1,
 		},
 		{
-			name:             "malformed JSON on compare returns error",
-			fk:               &fakeGitHub{deployments: liveDep, statusesByID: liveSuccess, compareRaw: "{not-json"},
-			wantErr:          "decode compare",
-			wantStatusesCall: 1,
-			wantCompareCall:  1,
+			name: "malformed JSON on deployments page 2 returns error",
+			fk: &fakeGitHub{
+				deployments:            deps150,
+				statusesByID:           stat150,
+				deploymentsBadJSON:     true,
+				deploymentsBadJSONPage: 2,
+			},
+			wantErr:             "decode deployments page 2",
+			wantDeploymentsCall: 2,
+		},
+		{
+			name:                "malformed JSON on statuses returns error",
+			fk:                  &fakeGitHub{deployments: liveDep, statusesBadJSON: true},
+			wantErr:             "decode statuses for deployment 1",
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    1,
+		},
+		{
+			name:                "malformed JSON on compare returns error",
+			fk:                  &fakeGitHub{deployments: liveDep, statusesByID: liveSuccess, compareBadJSON: true},
+			wantErr:             "decode compare",
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    1,
+			wantCompareCall:     1,
 		},
 		{
 			name: "successful deployment with empty sha returns error",
@@ -373,8 +476,9 @@ func TestDecideNegativeErrors(t *testing.T) {
 				deployments:  []deployment{{ID: 1, SHA: " ", CreatedAt: "2026-11-18T12:00:00Z"}},
 				statusesByID: liveSuccess,
 			},
-			wantErr:          "deployment 1 has an empty sha",
-			wantStatusesCall: 1,
+			wantErr:             "deployment 1 has an empty sha",
+			wantDeploymentsCall: 1,
+			wantStatusesCall:    1,
 		},
 		{
 			name:    "missing GITHUB_SHA returns error",
@@ -437,6 +541,9 @@ func checkDecideOutcome(t *testing.T, tc decideCase, allow bool, reason string, 
 
 func checkDecideCalls(t *testing.T, tc decideCase) {
 	t.Helper()
+	if got := tc.fk.deploymentsCalls.Load(); got != tc.wantDeploymentsCall {
+		t.Fatalf("deployments calls = %d, want %d", got, tc.wantDeploymentsCall)
+	}
 	if got := tc.fk.statusesCalls.Load(); got != tc.wantStatusesCall {
 		t.Fatalf("statuses calls = %d, want %d", got, tc.wantStatusesCall)
 	}
@@ -452,7 +559,8 @@ func TestRunWritesStepSummaryAndEnforcesConfig(t *testing.T) {
 		compareByPair: map[string]string{testLiveSHA + "..." + testOurSHA: "ahead"},
 	}
 	srv := newFakeGitHubServer(t, fk)
-	summaryPath := filepath.Join(t.TempDir(), "summary.md")
+	dir := t.TempDir()
+	summaryPath := filepath.Join(dir, "summary.md")
 	env := map[string]string{
 		"GITHUB_API_URL":      srv.URL,
 		"GITHUB_REPOSITORY":   testRepo,
@@ -464,9 +572,17 @@ func TestRunWritesStepSummaryAndEnforcesConfig(t *testing.T) {
 	if err := run(context.Background(), func(k string) string { return env[k] }, &out); err != nil {
 		t.Fatalf("run() = %v, want nil", err)
 	}
-	summaryBytes, err := os.ReadFile(summaryPath)
+	root, err := os.OpenRoot(dir)
 	if err != nil {
-		t.Fatalf("ReadFile(%s) = %v", summaryPath, err)
+		t.Fatalf("OpenRoot(%s) = %v", dir, err)
+	}
+	summaryBytes, readErr := root.ReadFile("summary.md")
+	closeErr := root.Close()
+	if readErr != nil {
+		t.Fatalf("root.ReadFile(summary.md) = %v", readErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("root.Close() = %v", closeErr)
 	}
 	if out.String() == "" || string(summaryBytes) != out.String() {
 		t.Fatalf("summary = %q, stdout = %q, want identical non-empty outcome line", summaryBytes, out.String())
