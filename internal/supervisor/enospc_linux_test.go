@@ -21,7 +21,7 @@ func TestSuperviseAppendENOSPC_ErrorWrapped(t *testing.T) {
 	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running"})
 
 	realAppend := appendEvent
-	appendEvent = func(w *eventlog.Writer, c context.Context, ev eventlog.Event) (eventlog.Record, error) {
+	appendEvent = func(_ *eventlog.Writer, _ context.Context, _ func(context.Context) (eventlog.Event, error)) (eventlog.Record, error) {
 		return eventlog.Record{}, &os.PathError{Op: "write", Path: sup.cfg.EventLog.Dir, Err: syscall.ENOSPC}
 	}
 	t.Cleanup(func() { appendEvent = realAppend })

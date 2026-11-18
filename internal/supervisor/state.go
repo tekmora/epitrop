@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -130,11 +131,20 @@ func reduceJobStarted(st eventlog.State, rec eventlog.Record) (eventlog.State, e
 	return st, nil
 }
 
-// reduceJobSupervisorStopped marks a job the stopping supervisor left recorded running. It
-// changes neither State, LastEvent nor the restart counts: the marker explains the end that
-// follows, it is no event of the job.
+// reduceJobSupervisorStopped marks a job the stopping supervisor left recorded running, when
+// the marker's since matches the job's current run. It changes neither State, LastEvent nor
+// the restart counts: the marker explains the end that follows, it is no event of the job.
 func reduceJobSupervisorStopped(st eventlog.State, rec eventlog.Record) (eventlog.State, error) {
+	var payload struct {
+		Since string `json:"since"`
+	}
+	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
+		return eventlog.State{}, fmt.Errorf("job payload: %w", err)
+	}
 	job := st.Jobs[rec.TaskID]
+	if job.State != string(StateRunning) || payload.Since == "" || payload.Since != job.Since {
+		return st, nil
+	}
 	job.Name, job.SupervisorStopped = rec.TaskID, true
 	st.Jobs[rec.TaskID] = job
 	return st, nil
@@ -325,26 +335,65 @@ func readJobRecord(path string) (jobRecord, bool) {
 	return rec, true
 }
 
-// appendEvent writes one event to the event log. It is a package seam replaced in tests
-// to simulate disk errors (such as ENOSPC) during event logging.
-var appendEvent = (*eventlog.Writer).Append
+// errSkipJobEvent stops an AppendChecked call without writing a record when the replayed
+// state under the event-log lock no longer matches the snapshot that decided the append.
+var errSkipJobEvent = errors.New("supervisor: skip job event")
+
+// appendEvent writes one event to the event log after check has accepted it under the log's
+// lock. It is a package seam replaced in tests to simulate disk or deadline errors.
+var appendEvent = (*eventlog.Writer).AppendChecked
 
 func (s *Supervisor) appendJobEvent(ctx context.Context, typ string, name string, payload map[string]any) error {
+	_, err := s.appendJobEventIf(ctx, typ, name, payload, nil)
+	return err
+}
+
+func (s *Supervisor) appendJobEventIf(ctx context.Context, typ string, name string, payload map[string]any, want func(eventlog.Job) bool) (bool, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("supervisor: marshal %s: %w", typ, err)
+		return false, fmt.Errorf("supervisor: marshal %s: %w", typ, err)
 	}
 	writer, err := eventlog.Open(s.cfg.EventLog.Dir, s.signer, s.eventLogLimits())
 	if err != nil {
-		return fmt.Errorf("supervisor: record %s for job %s in event log %s: %w", typ, name, s.cfg.EventLog.Dir, err)
+		return false, fmt.Errorf("supervisor: record %s for job %s in event log %s: %w", typ, name, s.cfg.EventLog.Dir, err)
 	}
-	if _, err = appendEvent(writer, ctx, eventlog.Event{Type: typ, TaskID: name, Payload: body}); err != nil {
-		return fmt.Errorf("supervisor: record %s for job %s in event log %s: %w", typ, name, s.cfg.EventLog.Dir, err)
+	_, err = appendEvent(writer, ctx, func(cctx context.Context) (eventlog.Event, error) {
+		if err := s.checkJobEvent(cctx, name, want); err != nil {
+			return eventlog.Event{}, err
+		}
+		body, err = json.Marshal(payload)
+		if err != nil {
+			return eventlog.Event{}, fmt.Errorf("supervisor: marshal %s: %w", typ, err)
+		}
+		return eventlog.Event{Type: typ, TaskID: name, Payload: body}, nil
+	})
+	if errors.Is(err, errSkipJobEvent) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("supervisor: record %s for job %s in event log %s: %w", typ, name, s.cfg.EventLog.Dir, err)
+	}
+	return true, nil
+}
+
+func (s *Supervisor) checkJobEvent(ctx context.Context, name string, want func(eventlog.Job) bool) error {
+	if want == nil {
+		return nil
+	}
+	st, err := s.replayState(ctx)
+	if err != nil {
+		return err
+	}
+	if !want(st.Jobs[name]) {
+		return errSkipJobEvent
 	}
 	return nil
 }
 
 func (s *Supervisor) reconcileJob(ctx context.Context, job config.JobConfig, st eventlog.Job, matches []uint64, replayHead uint64) error {
+	if st.State == string(StateRunning) && st.SupervisorStopped && s.statusFor(job, st).State != StateRunning {
+		return s.recordInterrupted(ctx, job, st)
+	}
 	switch job.Schedule {
 	case "always":
 		return s.reconcileAlwaysJob(ctx, job, st)
@@ -368,10 +417,7 @@ func (s *Supervisor) reconcileAlwaysJob(ctx context.Context, job config.JobConfi
 		return s.adoptIfFreshStart(ctx, job, st, status)
 	}
 	if st.State == string(StateRunning) {
-		if st.SupervisorStopped {
-			return s.recordInterrupted(ctx, job)
-		}
-		return s.recordExit(ctx, job, "lost")
+		return s.recordExit(ctx, job, st, "lost")
 	}
 	if st.LastEvent == "" {
 		return s.Start(ctx, job.Name)
@@ -392,21 +438,30 @@ func (s *Supervisor) adoptIfFreshStart(ctx context.Context, job config.JobConfig
 		return nil
 	}
 	payload := map[string]any{"state": string(StateRunning), "pid": status.PID, "shim_pid": status.ShimPID, "since": status.Since, "sandbox": status.Sandbox}
-	return s.appendJobEvent(ctx, "job.adopted", job.Name, payload)
+	_, err := s.appendJobEventIf(ctx, "job.adopted", job.Name, payload, func(curr eventlog.Job) bool {
+		return curr.LastEvent == st.LastEvent && curr.State == st.State && curr.Since == st.Since
+	})
+	return err
 }
 
 // recordInterrupted records the end of a job that was recorded running, holds no lock, and
 // was marked by its stopping supervisor: the stop ended it, nothing failed.
-func (s *Supervisor) recordInterrupted(ctx context.Context, job config.JobConfig) error {
+func (s *Supervisor) recordInterrupted(ctx context.Context, job config.JobConfig, st eventlog.Job) error {
 	payload := map[string]any{"state": string(StateDead), "reason": reasonSupervisorStop}
-	return s.appendJobEvent(ctx, eventInterrupted, job.Name, payload)
+	_, err := s.appendJobEventIf(ctx, eventInterrupted, job.Name, payload, func(curr eventlog.Job) bool {
+		return curr.State == string(StateRunning) && curr.SupervisorStopped && curr.Since == st.Since
+	})
+	return err
 }
 
 // recordExit records the exit of a job that was recorded running and holds no lock: nobody
 // else will record it.
-func (s *Supervisor) recordExit(ctx context.Context, job config.JobConfig, reason string) error {
+func (s *Supervisor) recordExit(ctx context.Context, job config.JobConfig, st eventlog.Job, reason string) error {
 	payload := map[string]any{"state": string(StateDead), "reason": reason}
-	return s.appendJobEvent(ctx, "job.exited", job.Name, payload)
+	_, err := s.appendJobEventIf(ctx, "job.exited", job.Name, payload, func(curr eventlog.Job) bool {
+		return curr.State == string(StateRunning) && curr.Since == st.Since
+	})
+	return err
 }
 
 // endedBySupervisorStop reports whether the job's last event was an interruption by the stop
@@ -446,6 +501,9 @@ func restartsInWindow(job config.JobConfig, st eventlog.Job, now time.Time) int 
 }
 
 func shouldRestart(job config.JobConfig, st eventlog.Job, now time.Time) bool {
+	if st.State == string(StateStopped) {
+		return false
+	}
 	// The stop of the supervisor is no failure of the job: it resumes whatever the budget
 	// holds, unless its policy is never to restart.
 	if endedBySupervisorStop(st) && job.Restart.Policy != "never" {
@@ -454,7 +512,7 @@ func shouldRestart(job config.JobConfig, st eventlog.Job, now time.Time) bool {
 	if restartsInWindow(job, st, now) >= job.Restart.MaxRestarts {
 		return false
 	}
-	if job.Restart.Policy == "always" && st.State != string(StateStopped) {
+	if job.Restart.Policy == "always" {
 		return true
 	}
 	if job.Restart.Policy != "on-failure" {

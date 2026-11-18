@@ -134,10 +134,16 @@ func runLoadedJobsAction(ctx context.Context, sup *supervisor.Supervisor, action
 	return fmt.Errorf("unknown jobs command: %s", action)
 }
 
+var superviseJobs = (*supervisor.Supervisor).Supervise
+
 // superviseUntilStopped supervises until ctx ends. A stop signal is the normal end and
-// returns nil; reaching the runtime bound stays an error.
+// returns nil unless the stop markers could not be written; reaching the runtime bound
+// stays an error.
 func superviseUntilStopped(ctx context.Context, sup *supervisor.Supervisor) error {
-	err := sup.Supervise(ctx)
+	err := superviseJobs(sup, ctx)
+	if errors.Is(err, supervisor.ErrStopMarkersNotWritten) {
+		return err
+	}
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
@@ -177,14 +183,15 @@ func printJobsHistory(ctx context.Context, sup *supervisor.Supervisor, name stri
 }
 
 // jobsHistoryLine is one job's history row: name, then the started, exited, unclean,
-// restarted, interrupted, stale, refused, stopped and supervisor-stops counts, then the first
-// and last counted times.
+// restarted, stale, refused and stopped counts, the first and last counted times, and the
+// interrupted and supervisor-stops counts.
 func jobsHistoryLine(h supervisor.JobHistory) string {
-	counts := []int{h.Started, h.Exited, h.Unclean, h.Restarted, h.Interrupted, h.Stale, h.Refused, h.Stopped, h.SupervisorStops}
-	fields := make([]string, 0, len(counts)+3)
+	counts := []int{h.Started, h.Exited, h.Unclean, h.Restarted, h.Stale, h.Refused, h.Stopped}
+	fields := make([]string, 0, len(counts)+5)
 	fields = append(fields, h.Name)
 	for i := 0; i < len(counts); i++ {
 		fields = append(fields, strconv.Itoa(counts[i]))
 	}
-	return strings.Join(append(fields, h.First, h.Last), "\t")
+	fields = append(fields, h.First, h.Last, strconv.Itoa(h.Interrupted), strconv.Itoa(h.SupervisorStops))
+	return strings.Join(fields, "\t")
 }

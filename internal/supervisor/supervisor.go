@@ -36,9 +36,13 @@ const (
 	// shim per job, so twice the number of jobs a config may hold is never reached in order.
 	maxShimWaiters    = 2 * config.MaxJobs
 	maxSuperviseTicks = 1 << 30
-	// supervisorStopMarkTimeout bounds the replay and the appends of the stop markers.
+	// supervisorStopMarkTimeout bounds each stop-marker append.
 	supervisorStopMarkTimeout = 5 * time.Second
 )
+
+// stopMarkTimeout is how long each job's stop-marker append may wait. It is a package
+// variable so tests can shrink the bound without sleeping for seconds.
+var stopMarkTimeout = supervisorStopMarkTimeout
 
 var (
 	ErrUnknownJob = errors.New("supervisor: unknown job")
@@ -47,6 +51,9 @@ var (
 	ErrNotSupported = errors.New("supervisor: not-supported")
 	// ErrRunning marks a StartOnce of a job that runs already.
 	ErrRunning = errors.New("supervisor: job is running")
+	// ErrStopMarkersNotWritten marks a Supervise return whose stop markers could not all be
+	// written to the event log.
+	ErrStopMarkersNotWritten = errors.New("supervisor: stop markers not written")
 )
 
 type JobRunState string
@@ -417,30 +424,41 @@ func (s *Supervisor) superviseLoop(ctx context.Context) error {
 	return fmt.Errorf("supervisor: supervise exceeded %d ticks", maxSuperviseTicks)
 }
 
-// markSupervisorStopped appends job.supervisor_stopped for each configured job the event log
-// records running. Whatever ended Supervise, its context has ended too, so the marker runs
-// under a deadline of its own. The unit that runs the supervisor ends its jobs with it, and
-// nothing else records their exit: the next supervisor reads the marker to tell this stop
-// from a loss (reconcileAlwaysJob).
+// markSupervisorStopped appends job.supervisor_stopped for each configured job that the
+// event log still records running and that still holds its lock, with the run's start time.
+// Whatever ended Supervise, its context has ended too, so each job's checked append runs
+// under a supervisorStopMarkTimeout deadline of its own: a slow or failing append for one
+// job does not shorten the next. Because the event log appends one record at a time, a
+// supervisor killed in the middle of marking still leaves the remaining jobs without a
+// marker, and the next supervisor records them lost like a crash. The unit that runs the
+// supervisor ends its jobs with it, and nothing else records their exit: the next supervisor
+// reads the marker to tell this stop from a loss (reconcileJob).
 func (s *Supervisor) markSupervisorStopped() error {
-	ctx, cancel := context.WithTimeout(context.Background(), supervisorStopMarkTimeout)
-	defer cancel()
-	state, err := s.replayState(ctx)
-	if err != nil {
-		return fmt.Errorf("supervisor: replay state to mark the supervisor stop: %w", err)
-	}
-	payload := map[string]any{"supervisor_pid": os.Getpid()}
+	pid := os.Getpid()
 	var errs []error
 	for i := 0; i < len(s.cfg.Jobs); i++ {
-		name := s.cfg.Jobs[i].Name
-		if state.Jobs[name].State != string(StateRunning) {
-			continue
-		}
-		if err = s.appendJobEvent(ctx, eventSupervisorStopped, name, payload); err != nil {
+		if err := s.markOneJobStopped(s.cfg.Jobs[i], pid); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	if len(errs) > 0 {
+		return fmt.Errorf("%w: %w", ErrStopMarkersNotWritten, errors.Join(errs...))
+	}
+	return nil
+}
+
+func (s *Supervisor) markOneJobStopped(job config.JobConfig, pid int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), stopMarkTimeout)
+	defer cancel()
+	payload := map[string]any{"supervisor_pid": pid}
+	_, err := s.appendJobEventIf(ctx, eventSupervisorStopped, job.Name, payload, func(st eventlog.Job) bool {
+		if st.State != string(StateRunning) || s.statusFor(job, st).State != StateRunning {
+			return false
+		}
+		payload["since"] = st.Since
+		return true
+	})
+	return err
 }
 
 func (s *Supervisor) Reconcile(ctx context.Context) error {

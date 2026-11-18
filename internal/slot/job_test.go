@@ -329,6 +329,22 @@ func assertSupervisedWaitUnrecordedExits(t *testing.T, exited supervisor.Recorde
 	}
 }
 
+func TestSupervisedWaitReadsAnInterruptedEnd(t *testing.T) {
+	interrupted := supervisor.RecordedJob{Since: "t1", LastEvent: "job.interrupted", LastReason: "supervisor-stop"}
+	job := supervised(&fakeSupervisor{running: []bool{true, false}, recorded: interrupted}, 5)
+	job.since = "t1"
+	end, err := job.Wait(slotCtx(t))
+	if err != nil || !end.Recorded || end.Code != nil || end.Reason != "supervisor-stop" {
+		t.Fatalf("Wait(interrupted own start) = %+v, %v; want Recorded true, Code nil, Reason supervisor-stop", end, err)
+	}
+	other := supervised(&fakeSupervisor{running: []bool{false}, recorded: interrupted}, 5)
+	other.since = "t0"
+	end, err = other.Wait(slotCtx(t))
+	if err != nil || end.Recorded || end.Code != nil || !strings.Contains(end.Reason, "without its exit") {
+		t.Fatalf("Wait(interrupted other start) = %+v, %v; want Recorded false", end, err)
+	}
+}
+
 func TestSupervisedWaitIsBounded(t *testing.T) {
 	sup := &fakeSupervisor{running: []bool{true}}
 	if _, err := supervised(sup, 4).Wait(slotCtx(t)); err == nil || !strings.Contains(err.Error(), "still runs after its deadline") || sup.statusCalls != 4 {
