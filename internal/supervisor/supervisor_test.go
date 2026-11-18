@@ -1237,10 +1237,6 @@ func TestStopPropagatesSignalTargetAndSignalErrors(t *testing.T) {
 	if err := sup.Start(testContext(t), "probe"); err != nil {
 		t.Fatalf("Start() = %v, want nil", err)
 	}
-	failNextJobRecordRead(t)
-	if err := sup.Stop(testContext(t), "probe"); err == nil || !strings.Contains(err.Error(), "missing or invalid") {
-		t.Fatalf("Stop(record read failure) = %v, want signal target error", err)
-	}
 	rec := withStopSignaller(t, unixEPERMOnAnySignal)
 	err := sup.Stop(testContext(t), "probe")
 	if err == nil || !strings.Contains(err.Error(), "signal TERM") {
@@ -1248,6 +1244,42 @@ func TestStopPropagatesSignalTargetAndSignalErrors(t *testing.T) {
 	}
 	if len(*rec) != 1 {
 		t.Fatalf("recorded signals = %+v, want one TERM", *rec)
+	}
+}
+
+func TestStopRecordReadFailures(t *testing.T) {
+	sup := testSupervisor(t, testJob("probe", longJobCommand(t)))
+	if err := sup.Start(testContext(t), "probe"); err != nil {
+		t.Fatal(err)
+	}
+	old := jobRecordReadFile
+	reads := 0
+	jobRecordReadFile = func(string) ([]byte, error) {
+		reads++
+		return nil, os.ErrNotExist
+	}
+	t.Cleanup(func() { jobRecordReadFile = old })
+	signals := withRecordingSignaller(t)
+	err := sup.Stop(testContext(t), "probe")
+	if err == nil || !strings.Contains(err.Error(), "probe") || !strings.Contains(err.Error(), "missing or invalid") {
+		t.Fatalf("Stop(record failures) = %v, want job and last cause", err)
+	}
+	if reads < maxStatusPolls || len(*signals) != 0 || countEvents(t, sup.cfg.EventLog.Dir, "job.stopped") != 0 {
+		t.Fatalf("reads=%d signals=%v, want bounded retries and no signals or stopped event", reads, *signals)
+	}
+}
+
+func TestStopRecordReadRetrySucceeds(t *testing.T) {
+	sup := testSupervisor(t, testJob("probe", longJobCommand(t)))
+	if err := sup.Start(testContext(t), "probe"); err != nil {
+		t.Fatal(err)
+	}
+	failNextJobRecordRead(t)
+	if err := sup.Stop(testContext(t), "probe"); err != nil {
+		t.Fatalf("Stop(transient read failure) = %v", err)
+	}
+	if got := eventlogJob(t, sup, "probe"); got.LastEvent != "job.stopped" {
+		t.Fatalf("last event = %s, want job.stopped", got.LastEvent)
 	}
 }
 

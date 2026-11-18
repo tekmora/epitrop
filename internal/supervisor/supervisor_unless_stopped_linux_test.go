@@ -172,7 +172,7 @@ func assertStopNotRunningWithoutRecordErrors(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 35*time.Millisecond)
 	defer cancel()
 	err = sup.Stop(ctx, "daemon")
-	if err == nil || !strings.Contains(err.Error(), "stop daemon: job lock is held without a record") {
+	if err == nil || !strings.Contains(err.Error(), "stop daemon:") || !strings.Contains(err.Error(), "missing or invalid") {
 		t.Fatalf("Stop(no record) = %v, want error naming daemon and missing record", err)
 	}
 	if stopped := countEvents(t, sup.cfg.EventLog.Dir, "job.stopped"); stopped != 0 {

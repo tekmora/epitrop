@@ -18,14 +18,19 @@ import (
 // A stop that validates its target in that moment sees the job and its shim alive and the
 // lock free (#227). These tests put the stop in that moment: the shim probe of the call
 // numbered killAt kills the shim and returns once the lock is free, as a shim in the middle
-// of its exit looks.
+// of its exit looks. Probe 1 is the stop's wait for a live target (waitStopTarget), probe 2
+// the validation before the stop signal, probe 3 the validation before SIGKILL.
 
-func TestStopOfAJobWhoseShimExitsDuringTheSignalIsDone(t *testing.T) {
+func TestStopOfAJobWhoseShimExitsDuringTheTargetWaitIsDone(t *testing.T) {
 	stopWhileShimExits(t, 1, 0)
 }
 
+func TestStopOfAJobWhoseShimExitsDuringTheSignalIsDone(t *testing.T) {
+	stopWhileShimExits(t, 2, 0)
+}
+
 func TestStopOfAJobWhoseShimExitsDuringTheKillIsDone(t *testing.T) {
-	stopWhileShimExits(t, 2, 1)
+	stopWhileShimExits(t, 3, 1)
 }
 
 // TestStopRefusalStandsWhileTheLockIsHeld is the negative case: a refusal while the shim

@@ -481,6 +481,8 @@ func (s *Supervisor) endIfStale(ctx context.Context, job config.JobConfig, st ev
 	return true, s.terminate(ctx, job)
 }
 
+var errSignalRefused = errors.New("signal target refused")
+
 func (s *Supervisor) signalTarget(job config.JobConfig) (jobSignalTarget, error) {
 	recordPath := s.recordPath(job.Name)
 	rec, ok := readJobRecord(recordPath)

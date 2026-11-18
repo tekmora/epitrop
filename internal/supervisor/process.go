@@ -56,15 +56,14 @@ func (s *Supervisor) waitStopTarget(ctx context.Context, job config.JobConfig) (
 			return nil, jobSignalTarget{}, err
 		}
 		target, err := s.signalTarget(job)
-		if err == nil {
-			gone, probeErr := processGone(target.ShimPID)
-			if probeErr != nil {
-				return nil, jobSignalTarget{}, probeErr
-			}
-			if !gone {
-				return nil, target, nil
-			}
-			last = fmt.Errorf("stale record: shim %d is gone", target.ShimPID)
+		if err != nil {
+			last = err
+		} else if err = validateSignalTarget(target); err == nil {
+			return nil, target, nil
+		} else if errors.Is(err, errSignalRefused) {
+			last = err
+		} else {
+			return nil, jobSignalTarget{}, fmt.Errorf("validate stop target: %w", err)
 		}
 		if !sleepContext(ctx, startPollInterval) {
 			return nil, jobSignalTarget{}, errors.Join(last, ctx.Err())

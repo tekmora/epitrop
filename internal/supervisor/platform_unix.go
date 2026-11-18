@@ -166,10 +166,10 @@ func signalStartedGroup(pid int, sig unix.Signal, name string) error {
 
 func validateStartedProcessGroup(pid int) error {
 	if pid <= 1 {
-		return fmt.Errorf("supervisor: refuse signal: pid %d is not safe", pid)
+		return fmt.Errorf("supervisor: refuse signal: pid %d is not safe: %w", pid, errSignalRefused)
 	}
 	if pid == os.Getpid() || pid == unix.Getpgrp() {
-		return fmt.Errorf("supervisor: refuse signal: pid %d targets supervisor", pid)
+		return fmt.Errorf("supervisor: refuse signal: pid %d targets supervisor: %w", pid, errSignalRefused)
 	}
 	pgid, err := processGroupID(pid)
 	if errors.Is(err, unix.ESRCH) {
@@ -179,13 +179,16 @@ func validateStartedProcessGroup(pid int) error {
 		return fmt.Errorf("supervisor: refuse signal: getpgid %d: %w", pid, err)
 	}
 	if pgid != pid {
-		return fmt.Errorf("supervisor: refuse signal: pid %d is not a process-group leader", pid)
+		return fmt.Errorf("supervisor: refuse signal: pid %d is not a process-group leader: %w", pid, errSignalRefused)
 	}
 	return nil
 }
 
 func validateSignalTarget(target jobSignalTarget) error {
 	if err := validateStartedProcessGroup(target.PID); err != nil {
+		if errors.Is(err, errProcessGone) {
+			err = errors.Join(errSignalRefused, err)
+		}
 		return signalRecordError(target, err)
 	}
 	if target.PID == target.ShimPID {
@@ -202,7 +205,7 @@ func validateSignalParent(target jobSignalTarget) error {
 	// A process that ends between the open and the read of its status file gives ESRCH,
 	// not a missing file.
 	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, unix.ESRCH) {
-		return signalRecordError(target, fmt.Errorf("pid %d: %w", target.PID, errProcessGone))
+		return signalRecordError(target, fmt.Errorf("pid %d: %w", target.PID, errors.Join(errSignalRefused, errProcessGone)))
 	}
 	if err != nil {
 		return signalRecordError(target, err)
@@ -215,6 +218,9 @@ func validateSignalParent(target jobSignalTarget) error {
 
 func validateSignalShim(target jobSignalTarget) error {
 	if err := shimProcessProbe(target.ShimPID, 0); err != nil {
+		if errors.Is(err, unix.ESRCH) {
+			return signalRecordError(target, fmt.Errorf("shim_pid %d is not alive: %w", target.ShimPID, errors.Join(errSignalRefused, errProcessGone)))
+		}
 		return signalRecordError(target, fmt.Errorf("shim_pid %d is not alive: %w", target.ShimPID, err))
 	}
 	held, err := lockHeld(target.LockPath)
@@ -226,6 +232,9 @@ func validateSignalShim(target jobSignalTarget) error {
 	}
 	reason, err := shimCmdlineMismatch(target)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, unix.ESRCH) {
+			return signalRecordError(target, errors.Join(errSignalRefused, errProcessGone, err))
+		}
 		return signalRecordError(target, err)
 	}
 	if reason != "" {
@@ -257,7 +266,7 @@ func shimCmdlineMismatch(target jobSignalTarget) (string, error) {
 	// strings.Split always returns at least one element; it is "" only for an empty line.
 	args := strings.Split(strings.TrimRight(string(body), "\x00"), "\x00")
 	if args[0] == "" {
-		return "", fmt.Errorf("cmdline of shim_pid %d is empty", target.ShimPID)
+		return "", fmt.Errorf("cmdline of shim_pid %d is empty: %w", target.ShimPID, errSignalRefused)
 	}
 	if !hasArg(args, "__job-shim") {
 		return "__job-shim missing", nil
@@ -297,7 +306,7 @@ func signalRecordError(target jobSignalTarget, err error) error {
 }
 
 func signalRecordReason(target jobSignalTarget, reason string) error {
-	return fmt.Errorf("supervisor: record %s: refuse signal for %s: %s", target.RecordPath, target.Name, reason)
+	return fmt.Errorf("supervisor: record %s: refuse signal for %s: %s: %w", target.RecordPath, target.Name, reason, errSignalRefused)
 }
 
 func signalFromName(name string) (unix.Signal, error) {
