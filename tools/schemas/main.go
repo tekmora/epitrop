@@ -16,6 +16,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golusoris/golusoris/httpx/client"
 	"github.com/tekmora/epitrop/internal/sources/httpfetch"
 )
 
@@ -95,7 +98,24 @@ func readManifest(root string) (schemaManifest, error) {
 	if err := json.Unmarshal(body, &manifest); err != nil {
 		return schemaManifest{}, fmt.Errorf("decode schema manifest: %w", err)
 	}
+	for i := 0; i < len(manifest.Sources); i++ {
+		if err := validateSourceURL(manifest.Sources[i]); err != nil {
+			return schemaManifest{}, err
+		}
+	}
 	return manifest, nil
+}
+
+func validateSourceURL(source schemaSource) error {
+	raw := sourceURL(source)
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s: invalid url %q: %w", source.ID, raw, err)
+	}
+	if parsed.Scheme != "https" || parsed.Host == "" {
+		return fmt.Errorf("%s: url %q must use https with a non-empty host", source.ID, raw)
+	}
+	return nil
 }
 
 func refresh(ctx context.Context, manifest schemaManifest, outRoot string, repin bool) error {
@@ -139,11 +159,31 @@ func check(ctx context.Context, manifest schemaManifest, root string) error {
 }
 
 func fetchPinned(ctx context.Context, source schemaSource) ([]byte, error) {
-	body, err := httpfetch.Get(ctx, sourceURL(source), fetchTimeout, maxFetchBytes)
+	rawURL := sourceURL(source)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%s: build request for %s: %w", source.ID, rawURL, err)
+	}
+	httpClient := client.New(client.Options{Name: "epitrop.schemas", Timeout: fetchTimeout})
+	httpClient.CheckRedirect = checkHTTPSRedirect
+	status, _, body, err := httpfetch.Do(ctx, httpClient, req, fetchTimeout, maxFetchBytes)
 	if err != nil {
 		return nil, fmt.Errorf("%s: fetch: %w", source.ID, err)
 	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("%s: fetch: %s returned HTTP %d", source.ID, rawURL, status)
+	}
 	return body, nil
+}
+
+func checkHTTPSRedirect(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("redirect to non-https url %q refused", req.URL.String())
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
 }
 
 func sourceURL(source schemaSource) string {
@@ -153,38 +193,30 @@ func sourceURL(source schemaSource) string {
 func generateFragments(source schemaSource, full []byte) (map[string][]byte, error) {
 	switch source.ID {
 	case "openai-openapi":
-		body, err := openAIModelsFragment(string(full))
-		if err != nil {
-			return nil, err
-		}
-		return oneFragment(source, body)
+		return extractOneFragment(source, full, openAIModelsFragment)
 	case "litellm-price-map":
 		return liteLLMFragment(source, full)
 	case "openrouter-models":
-		body, err := openRouterFragment(string(full))
-		if err != nil {
-			return nil, err
-		}
-		return oneFragment(source, body)
+		return extractOneFragment(source, full, openRouterFragment)
 	case "ollama-api":
-		body, err := ollamaFragment(string(full))
-		if err != nil {
-			return nil, err
-		}
-		return oneFragment(source, body)
+		return extractOneFragment(source, full, ollamaFragment)
 	case "codex-rate-limit-status-payload",
 		"codex-rate-limit-status-details",
 		"codex-rate-limit-window-snapshot":
 		return oneFragment(source, string(full))
 	case "litellm-key-info":
-		body, err := liteLLMKeyInfoFragment(string(full))
-		if err != nil {
-			return nil, err
-		}
-		return oneFragment(source, body)
+		return extractOneFragment(source, full, liteLLMKeyInfoFragment)
 	default:
 		return nil, fmt.Errorf("unknown schema source %q", source.ID)
 	}
+}
+
+func extractOneFragment(source schemaSource, full []byte, extract func(string) (string, error)) (map[string][]byte, error) {
+	body, err := extract(string(full))
+	if err != nil {
+		return nil, err
+	}
+	return oneFragment(source, body)
 }
 
 func oneFragment(source schemaSource, body string) (map[string][]byte, error) {
@@ -714,15 +746,6 @@ func beforeMarker(body, marker string) string {
 		return body
 	}
 	return body[:at]
-}
-
-func requireMarkers(id, full string, markers []string) error {
-	for i := 0; i < len(markers); i++ {
-		if !strings.Contains(full, markers[i]) {
-			return fmt.Errorf("%s: missing marker %q", id, markers[i])
-		}
-	}
-	return nil
 }
 
 func addCommentHeader(path string, source schemaSource, body string) ([]byte, error) {

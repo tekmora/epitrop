@@ -1,0 +1,2 @@
+type: changed
+title: "The schema refresh tool refuses a manifest URL that does not use https with a host and refuses any redirect off https, and the docs record the provenance rule for unsigned upstream schema documents"
