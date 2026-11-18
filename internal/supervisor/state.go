@@ -172,7 +172,7 @@ func reduceJobExited(st eventlog.State, rec eventlog.Record) (eventlog.State, er
 	}
 	job := st.Jobs[rec.TaskID]
 	job.Name, job.State, job.LastExitCode = rec.TaskID, payload.State, payload.Code
-	job.LastReason, job.LastEvent = payload.Reason, rec.Type
+	job.LastReason, job.LastEvent, job.SupervisorStopped = payload.Reason, rec.Type, false
 	st.Jobs[rec.TaskID] = job
 	return st, nil
 }
@@ -192,7 +192,7 @@ func reduceJobRefused(st eventlog.State, rec eventlog.Record) (eventlog.State, e
 	}
 	job := st.Jobs[rec.TaskID]
 	job.Name, job.State, job.LastEvent = rec.TaskID, payload.State, rec.Type
-	job.LastReason, job.LastExitCode = payload.Reason, nil
+	job.LastReason, job.LastExitCode, job.SupervisorStopped = payload.Reason, nil, false
 	job.RefusedShimPID, job.RefusedAt = payload.ShimPID, payload.At
 	st.Jobs[rec.TaskID] = job
 	return st, nil
@@ -229,6 +229,7 @@ func reduceJobRestarted(st eventlog.State, rec eventlog.Record) (eventlog.State,
 func reduceJobStopped(st eventlog.State, rec eventlog.Record) (eventlog.State, error) {
 	job := st.Jobs[rec.TaskID]
 	job.Name, job.State, job.LastEvent = rec.TaskID, string(StateStopped), rec.Type
+	job.SupervisorStopped = false
 	st.Jobs[rec.TaskID] = job
 	return st, nil
 }
@@ -434,12 +435,13 @@ func (s *Supervisor) reconcileAlwaysJob(ctx context.Context, job config.JobConfi
 func (s *Supervisor) adoptIfFreshStart(ctx context.Context, job config.JobConfig, st eventlog.Job, status JobStatus) error {
 	// A job the stopping supervisor marked survived the stop (a supervisor run without its own
 	// pid namespace): its adoption clears the marker, so a later loss records lost.
-	if st.LastEvent != "job.started" && !st.SupervisorStopped {
+	markedRunning := st.State == string(StateRunning) && st.SupervisorStopped
+	if st.LastEvent != "job.started" && !markedRunning {
 		return nil
 	}
 	payload := map[string]any{"state": string(StateRunning), "pid": status.PID, "shim_pid": status.ShimPID, "since": status.Since, "sandbox": status.Sandbox}
 	_, err := s.appendJobEventIf(ctx, "job.adopted", job.Name, payload, func(curr eventlog.Job) bool {
-		return curr.LastEvent == st.LastEvent && curr.State == st.State && curr.Since == st.Since
+		return curr.LastEvent == st.LastEvent && curr.State == st.State && curr.Since == st.Since && curr.SupervisorStopped == st.SupervisorStopped
 	})
 	return err
 }
@@ -459,7 +461,7 @@ func (s *Supervisor) recordInterrupted(ctx context.Context, job config.JobConfig
 func (s *Supervisor) recordExit(ctx context.Context, job config.JobConfig, st eventlog.Job, reason string) error {
 	payload := map[string]any{"state": string(StateDead), "reason": reason}
 	_, err := s.appendJobEventIf(ctx, "job.exited", job.Name, payload, func(curr eventlog.Job) bool {
-		return curr.State == string(StateRunning) && curr.Since == st.Since
+		return curr.State == string(StateRunning) && !curr.SupervisorStopped && curr.Since == st.Since
 	})
 	return err
 }

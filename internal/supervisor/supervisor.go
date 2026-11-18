@@ -271,6 +271,9 @@ func (s *Supervisor) spawnAndAwait(ctx context.Context, job config.JobConfig) er
 		return fmt.Errorf("supervisor: start shim for %s: %w", job.Name, err)
 	}
 	shimPID := cmd.Process.Pid
+	s.mu.Lock()
+	delete(s.collectedShim, job.Name)
+	s.mu.Unlock()
 	go s.collectShim(cmd, job.Name)
 	return s.waitStarted(ctx, job.Name, before.Jobs[job.Name], shimPID)
 }
@@ -581,6 +584,10 @@ func (s *Supervisor) waitStarted(ctx context.Context, name string, before eventl
 			if settled, startErr := s.settleStart(name, state.Jobs[name], before, shimPID); settled {
 				return startErr
 			}
+		}
+		if ctx.Err() != nil {
+			s.observeStartedOnCancel(name, before, shimPID)
+			return startWaitEnded(name, ctx.Err(), lastErr)
 		}
 		lastErr = lastReplayError(lastErr, err, ctx.Err())
 		if shimGone {

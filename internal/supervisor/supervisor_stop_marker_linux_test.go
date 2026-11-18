@@ -282,6 +282,15 @@ func assertCheckedAdoptedSkipsAfterExit(t *testing.T) {
 	if got := countEvents(t, sup.cfg.EventLog.Dir, "job.adopted"); got != 1 {
 		t.Fatalf("job.adopted count after racing job.exited = %d, want still 1", got)
 	}
+	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "pid": 6, "shim_pid": 5, "since": "t3"})
+	staleUnmarked := eventlogJob(t, sup, "daemon")
+	appendHistory(t, sup, eventSupervisorStopped, "daemon", map[string]any{"supervisor_pid": 1, "since": "t3"})
+	if err := sup.adoptIfFreshStart(testContext(t), job, staleUnmarked, JobStatus{Name: "daemon", State: StateRunning, PID: 6, ShimPID: 5, Since: "t3"}); err != nil {
+		t.Fatalf("adoptIfFreshStart(stale SupervisorStopped) = %v, want nil", err)
+	}
+	if got := countEvents(t, sup.cfg.EventLog.Dir, "job.adopted"); got != 1 {
+		t.Fatalf("job.adopted count after stale SupervisorStopped = %d, want still 1", got)
+	}
 }
 
 func assertCheckedLostSkipsAfterStop(t *testing.T) {
@@ -305,59 +314,17 @@ func assertCheckedLostSkipsAfterStop(t *testing.T) {
 	if got := countEvents(t, sup.cfg.EventLog.Dir, "job.exited"); got != 1 {
 		t.Fatalf("job.exited count after racing job.stopped = %d, want still 1", got)
 	}
-}
-
-func TestHistoryCountsInterruptionsApartFromExitsAndRestarts(t *testing.T) {
-	sup, _ := historySupervisor(t)
-	appendHistory(t, sup, "job.exited", "daemon", map[string]any{"state": "dead", "code": 0})
-	appendHistory(t, sup, "job.exited", "daemon", map[string]any{"state": "dead", "code": 1})
-	appendHistory(t, sup, "job.exited", "daemon", map[string]any{"state": "dead", "reason": "lost"})
-	appendHistory(t, sup, "job.restarted", "daemon", map[string]any{"state": "dead"})
-	appendHistory(t, sup, eventInterrupted, "daemon", map[string]any{"state": "dead", "reason": reasonSupervisorStop})
-	appendHistory(t, sup, eventInterrupted, "daemon", map[string]any{"state": "dead", "reason": reasonSupervisorStop})
-	appendHistory(t, sup, eventSupervisorStopped, "daemon", map[string]any{"supervisor_pid": 1})
-	appendHistory(t, sup, eventSupervisorStopped, "other", map[string]any{"supervisor_pid": 1})
-	got := historyOne(t, sup, "daemon")
-	wantDaemon := JobHistory{Name: "daemon", Exited: 3, Unclean: 2, Restarted: 1, Interrupted: 2, SupervisorStops: 1, First: got.First, Last: got.Last}
-	if got != wantDaemon {
-		t.Fatalf("History(daemon) = %+v, want %+v", got, wantDaemon)
+	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "since": "t3"})
+	staleUnmarked := eventlogJob(t, sup, "daemon")
+	appendHistory(t, sup, eventSupervisorStopped, "daemon", map[string]any{"supervisor_pid": 1, "since": "t3"})
+	if err := sup.recordExit(testContext(t), job, staleUnmarked, "lost"); err != nil {
+		t.Fatalf("recordExit(after marker) = %v, want nil", err)
 	}
-	other := historyOne(t, sup, "other")
-	wantOther := JobHistory{Name: "other", SupervisorStops: 1, First: other.First, Last: other.Last}
-	if other != wantOther {
-		t.Fatalf("History(other) = %+v, want %+v", other, wantOther)
+	if got := countEvents(t, sup.cfg.EventLog.Dir, "job.exited"); got != 1 {
+		t.Fatalf("job.exited count after racing marker = %d, want still 1", got)
 	}
-}
-
-// A run started after the supervisor's last reconcile (by another process before the stop
-// marker is written) was never observed by this supervisor: it gets no marker, and the next
-// supervisor records job.exited with reason lost and counts the restart.
-func TestSupervisorStopSkipsRunStartedAfterLastObservation(t *testing.T) {
-	sup, _ := stopSupervisor(t, stopJob("always", 2, 0, longJobCommand(t)))
-	lock, err := holdLock(sup.lockPath("daemon"))
-	if err != nil {
-		t.Fatalf("holdLock(daemon) = %v, want nil", err)
-	}
-	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "pid": 400, "shim_pid": 399, "since": "2026-11-18T08:00:00Z"})
-	reconcileOnce(t, sup, "observe S1")
-	if closeErr := lock.Close(); closeErr != nil {
-		t.Fatalf("Close(lock) = %v, want nil", closeErr)
-	}
-	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "pid": 500, "shim_pid": 499, "since": "2026-11-18T08:05:00Z"})
-	if err = sup.markSupervisorStopped(); err != nil {
-		t.Fatalf("markSupervisorStopped() = %v, want nil", err)
-	}
-	if got := historyOne(t, sup, "daemon").SupervisorStops; got != 0 {
-		t.Fatalf("supervisor stop markers for unobserved run S2 = %d, want 0", got)
-	}
-	reconcileOnce(t, sup, "record the loss of S2")
-	if got := eventlogJob(t, sup, "daemon"); got.LastEvent != "job.exited" || got.LastReason != "lost" {
-		t.Fatalf("unobserved run after reconcile = %+v, want job.exited with reason lost", got)
-	}
-	reconcileOnce(t, sup, "restart after loss")
-	if got, hist := eventlogJob(t, sup, "daemon"), historyOne(t, sup, "daemon"); got.Restarts != 1 || hist.Restarted != 1 {
-		t.Fatalf("job after restart = %+v, history %+v, want 1 counted restart", got, hist)
-	}
+	reconcileOnce(t, sup, "record interruption after skipped stale loss")
+	assertInterruptedState(t, eventlogJob(t, sup, "daemon"))
 }
 
 // A run this supervisor started in its last tick, with no Reconcile after Start, is in the
@@ -375,17 +342,25 @@ func TestSupervisorStopMarksRunStartedInLastTick(t *testing.T) {
 	assertMarkerCarriesSince(t, sup, "daemon", wantSince)
 }
 
-// A stop that ends the start wait before a replay saw the start still observes a start the
-// shim recorded: the replay after the cancel binds the run, and it gets its stop marker.
+// A stop that ends the start wait when the shim exits on the cancel returns context.Canceled,
+// and when the shim recorded job.started before the cancel its Since is observed and marked.
 func TestSupervisorStopMarksRunStartedBeforeStartWaitEnded(t *testing.T) {
 	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
-	shim := startSleep(t, false)
+	emptyCtx, emptyPID := startStubShimUntilCancel(t, sup, "daemon")
+	if err := sup.waitStarted(emptyCtx, "daemon", eventlog.Job{}, emptyPID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitStarted(canceled, exited without start) = %v, want context.Canceled", err)
+	}
+	ctx, shimPID := startStubShimUntilCancel(t, sup, "daemon")
 	const since = "2026-11-18T08:00:00Z"
-	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "pid": shim.Process.Pid + 10, "shim_pid": shim.Process.Pid, "since": since})
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if err := sup.waitStarted(ctx, "daemon", eventlog.Job{}, shim.Process.Pid); !errors.Is(err, context.Canceled) {
+	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "pid": shimPID + 10, "shim_pid": shimPID, "since": since})
+	if err := sup.waitStarted(ctx, "daemon", eventlog.Job{}, shimPID); !errors.Is(err, context.Canceled) {
 		t.Fatalf("waitStarted(canceled) = %v, want context.Canceled", err)
+	}
+	sup.mu.Lock()
+	gotSince := sup.observedSince["daemon"]
+	sup.mu.Unlock()
+	if gotSince != since {
+		t.Fatalf("observedSince[daemon] = %q, want %q", gotSince, since)
 	}
 	if err := sup.markSupervisorStopped(); err != nil {
 		t.Fatalf("markSupervisorStopped() = %v, want nil", err)
@@ -396,11 +371,26 @@ func TestSupervisorStopMarksRunStartedBeforeStartWaitEnded(t *testing.T) {
 	assertMarkerCarriesSince(t, sup, "daemon", since)
 }
 
-func startAndCollectStubShim(t *testing.T, sup *Supervisor, name string, script string) int {
+func startStubShimUntilCancel(t *testing.T, sup *Supervisor, name string) (context.Context, int) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", script)
+	ctx, cancel := context.WithCancel(t.Context())
+	cmd := exec.CommandContext(ctx, "sleep", "30")
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("Start(%q) = %v, want nil", script, err)
+		t.Fatalf("Start(sleep) = %v, want nil", err)
+	}
+	pid := cmd.Process.Pid
+	sup.shimWaiters.Add(1)
+	cancel()
+	sup.collectShim(cmd, name)
+	return ctx, pid
+}
+
+func startAndCollectStubShim(t *testing.T, sup *Supervisor, name string) int {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", "exit 1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start(exit 1) = %v, want nil", err)
 	}
 	pid := cmd.Process.Pid
 	sup.shimWaiters.Add(1)
@@ -414,7 +404,7 @@ func startAndCollectStubShim(t *testing.T, sup *Supervisor, name string, script 
 func TestSupervisorStopSkipsShimThatExitedWithoutSIGTERM(t *testing.T) {
 	sup, _ := stopSupervisor(t, stopJob("always", 2, 0, longJobCommand(t)))
 	const since = "2026-11-18T08:00:00Z"
-	shimPID := startAndCollectStubShim(t, sup, "daemon", "exit 1")
+	shimPID := startAndCollectStubShim(t, sup, "daemon")
 	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "pid": shimPID + 1, "shim_pid": shimPID, "since": since})
 	sup.observeRunning("daemon", since)
 	if err := sup.markSupervisorStopped(); err != nil {
@@ -470,11 +460,12 @@ func TestSupervisorStopMarksShimEndedBySIGTERM(t *testing.T) {
 }
 
 // A collected shim exit whose pid does not match the running record's shim_pid is ignored and
-// does not block the stop marker.
+// does not block the stop marker; a later spawn for the same job clears the collected entry so
+// a run that reuses the collected pid still gets its marker.
 func TestSupervisorStopIgnoresCollectedShimWithDifferentPID(t *testing.T) {
 	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
 	const since = "2026-11-18T08:00:00Z"
-	oldShimPID := startAndCollectStubShim(t, sup, "daemon", "exit 1")
+	oldShimPID := startAndCollectStubShim(t, sup, "daemon")
 	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "pid": oldShimPID + 20, "shim_pid": oldShimPID + 10, "since": since})
 	sup.observeRunning("daemon", since)
 	if err := sup.markSupervisorStopped(); err != nil {
@@ -484,4 +475,23 @@ func TestSupervisorStopIgnoresCollectedShimWithDifferentPID(t *testing.T) {
 		t.Fatalf("supervisor stop markers with older collected shim pid = %d, want 1", got)
 	}
 	assertMarkerCarriesSince(t, sup, "daemon", since)
+	assertSpawnClearsCollectedShim(t)
+}
+
+func assertSpawnClearsCollectedShim(t *testing.T) {
+	t.Helper()
+	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
+	reusedPID := startAndCollectStubShim(t, sup, "daemon")
+	if err := sup.Start(testContext(t), "daemon"); err != nil {
+		t.Fatalf("Start() = %v, want nil", err)
+	}
+	const since = "2026-11-18T08:10:00Z"
+	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "pid": reusedPID + 1, "shim_pid": reusedPID, "since": since})
+	sup.observeRunning("daemon", since)
+	if err := sup.markSupervisorStopped(); err != nil {
+		t.Fatalf("markSupervisorStopped() = %v, want nil", err)
+	}
+	if got := historyOne(t, sup, "daemon").SupervisorStops; got != 1 {
+		t.Fatalf("supervisor stop markers after spawn cleared collected pid = %d, want 1", got)
+	}
 }
