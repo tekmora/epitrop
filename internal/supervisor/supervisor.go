@@ -638,13 +638,14 @@ func (s *Supervisor) canMarkJobStopped(name string, st eventlog.Job) bool {
 	if st.Since != since {
 		return false
 	}
-	if spawned.pid == st.ShimPID && shimExited(spawned.pid) && (!hasEnd || end.pid != st.ShimPID) {
-		return false
+	return shimAllowsStopMarker(st.ShimPID, spawned, end, hasEnd)
+}
+
+func shimAllowsStopMarker(shimPID int, spawned spawnedShim, end collectedShim, hasEnd bool) bool {
+	if hasEnd && end.pid == shimPID {
+		return end.sigterm
 	}
-	if hasEnd && end.pid == st.ShimPID && !end.sigterm {
-		return false
-	}
-	return true
+	return spawned.pid != shimPID || !shimExited(spawned.pid)
 }
 
 func (s *Supervisor) Reconcile(ctx context.Context) error {
