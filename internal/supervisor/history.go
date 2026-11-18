@@ -23,7 +23,7 @@ type JobHistory struct {
 	Refused     int
 	Stopped     int
 	// SupervisorStops counts recorded job.supervisor_stopped markers: each is one stop of a
-	// supervisor that left this job recorded running and holding its lock.
+	// supervisor that left this job recorded running.
 	SupervisorStops int
 	First           string // time of the first counted record, empty when none was counted
 	Last            string // time of the last counted record

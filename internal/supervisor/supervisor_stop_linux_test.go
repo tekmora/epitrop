@@ -230,25 +230,49 @@ func assertMarkerCarriesSince(t *testing.T, sup *Supervisor, name string, wantSi
 	t.Fatalf("no %s record found for %s", eventSupervisorStopped, name)
 }
 
-// A job recorded running whose lock is already free when the supervisor stops is already lost:
-// it gets no stop marker, the next reconcile records job.exited with reason lost, and its
-// restart spends budget.
-func TestSupervisorStopSkipsAJobWhoseLockIsFree(t *testing.T) {
+// A job recorded running whose lock is already free when the supervisor stops (as after the
+// unit's SIGTERM reaches the shims at the same time) still gets a stop marker carrying its
+// since; the next reconcile records job.interrupted with reason supervisor-stop and no
+// job.exited, and the following reconcile resumes it with Restarts unchanged.
+func TestSupervisorStopMarksARecordedRunningJobWhoseLockIsFree(t *testing.T) {
+	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
+	const since = "2026-11-18T08:00:00Z"
+	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "since": since})
+	if err := sup.markSupervisorStopped(); err != nil {
+		t.Fatalf("markSupervisorStopped() = %v, want nil", err)
+	}
+	if got := historyOne(t, sup, "daemon").SupervisorStops; got != 1 {
+		t.Fatalf("supervisor stop markers of an unlocked running job = %d, want 1", got)
+	}
+	assertMarkerCarriesSince(t, sup, "daemon", since)
+	reconcileOnce(t, sup, "record the interruption")
+	assertInterruptedState(t, eventlogJob(t, sup, "daemon"))
+	if exits := countEvents(t, sup.cfg.EventLog.Dir, "job.exited"); exits != 0 {
+		t.Fatalf("job.exited count = %d, want 0", exits)
+	}
+	reconcileOnce(t, sup, "resume the interrupted job")
+	if got := eventlogJob(t, sup, "daemon"); got.Restarts != 0 || got.State != string(StateRunning) {
+		t.Fatalf("job after resuming the interrupted job = %+v, want 0 counted restarts and running", got)
+	}
+}
+
+// A job whose exit the shim recorded before the supervisor stopped is dead, not running:
+// it gets no stop marker, and the next reconcile restarts it with Restarts +1 and a
+// job.restarted record.
+func TestSupervisorStopLeavesARecordedCrashCharged(t *testing.T) {
 	sup, _ := stopSupervisor(t, stopJob("on-failure", 2, 0, longJobCommand(t)))
 	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "since": "2026-11-18T08:00:00Z"})
+	appendHistory(t, sup, "job.exited", "daemon", map[string]any{"state": "dead", "code": 1})
 	if err := sup.markSupervisorStopped(); err != nil {
 		t.Fatalf("markSupervisorStopped() = %v, want nil", err)
 	}
 	if got := historyOne(t, sup, "daemon").SupervisorStops; got != 0 {
-		t.Fatalf("supervisor stop markers of an unlocked job = %d, want 0", got)
+		t.Fatalf("supervisor stop markers of a crashed job = %d, want 0", got)
 	}
-	reconcileOnce(t, sup, "record the loss")
-	if got := eventlogJob(t, sup, "daemon"); got.LastEvent != "job.exited" || got.LastReason != "lost" {
-		t.Fatalf("job after reconcile of an unlocked stop = %+v, want job.exited with reason lost", got)
-	}
-	reconcileOnce(t, sup, "restart the lost job")
-	if got := eventlogJob(t, sup, "daemon"); got.Restarts != 1 || got.State != string(StateRunning) {
-		t.Fatalf("job after restarting the lost job = %+v, want 1 counted restart and running", got)
+	reconcileOnce(t, sup, "restart the crashed job")
+	got, hist := eventlogJob(t, sup, "daemon"), historyOne(t, sup, "daemon")
+	if got.Restarts != 1 || got.State != string(StateRunning) || hist.Restarted != 1 {
+		t.Fatalf("job after restarting the crashed job = %+v, history %+v, want 1 counted restart, 1 job.restarted and running", got, hist)
 	}
 }
 

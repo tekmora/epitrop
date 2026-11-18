@@ -425,14 +425,19 @@ func (s *Supervisor) superviseLoop(ctx context.Context) error {
 }
 
 // markSupervisorStopped appends job.supervisor_stopped for each configured job that the
-// event log still records running and that still holds its lock, with the run's start time.
-// Whatever ended Supervise, its context has ended too, so each job's checked append runs
-// under a supervisorStopMarkTimeout deadline of its own: a slow or failing append for one
-// job does not shorten the next. Because the event log appends one record at a time, a
-// supervisor killed in the middle of marking still leaves the remaining jobs without a
-// marker, and the next supervisor records them lost like a crash. The unit that runs the
-// supervisor ends its jobs with it, and nothing else records their exit: the next supervisor
-// reads the marker to tell this stop from a loss (reconcileJob).
+// event log still records running, with the run's start time. It does not read the job's
+// lock: a stop of the supervisor's unit sends SIGTERM to the shims in the same cgroup at
+// the same time, so each shim exits and frees its lock before the marker is written. A job
+// whose exit the shim recorded before the marker is no longer recorded running and gets
+// none; a job whose shim died unrecorded after the supervisor's last reconcile and before
+// the stop reads as interrupted, not lost, a window of one poll interval. Whatever ended
+// Supervise, its context has ended too, so each job's checked append runs under a
+// supervisorStopMarkTimeout deadline of its own: a slow or failing append for one job does
+// not shorten the next. Because the event log appends one record at a time, a supervisor
+// killed in the middle of marking still leaves the remaining jobs without a marker, and the
+// next supervisor records them lost like a crash. The unit that runs the supervisor ends
+// its jobs with it, and nothing else records their exit: the next supervisor reads the
+// marker to tell this stop from a loss (reconcileJob).
 func (s *Supervisor) markSupervisorStopped() error {
 	pid := os.Getpid()
 	var errs []error
@@ -447,12 +452,17 @@ func (s *Supervisor) markSupervisorStopped() error {
 	return nil
 }
 
+// markOneJobStopped appends job.supervisor_stopped for job when the replay under the
+// event-log lock still records it running. The job's lock is not read because the stop's
+// SIGTERM reaches the shims at the same time; a job whose shim died unrecorded after the
+// supervisor's last reconcile and before the stop reads as interrupted, not lost (a window
+// of one poll interval).
 func (s *Supervisor) markOneJobStopped(job config.JobConfig, pid int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), stopMarkTimeout)
 	defer cancel()
 	payload := map[string]any{"supervisor_pid": pid}
 	_, err := s.appendJobEventIf(ctx, eventSupervisorStopped, job.Name, payload, func(st eventlog.Job) bool {
-		if st.State != string(StateRunning) || s.statusFor(job, st).State != StateRunning {
+		if st.State != string(StateRunning) {
 			return false
 		}
 		payload["since"] = st.Since
