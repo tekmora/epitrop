@@ -97,19 +97,20 @@ type Supervisor struct {
 	stderrOnce   sync.Once
 	stderrSink   *lineSink
 	writeTimeout time.Duration
-	// afterTick is a test hook, called after each liveness check; nil in production.
-	afterTick func()
+	// afterTick and beforeConfirmReplay are test hooks; nil in production.
+	afterTick           func()
+	beforeConfirmReplay func()
 }
 
 // reportShimError tells the operator about a shim that could not be collected. Nothing
 // returns to a caller from the waiter, so it goes to the supervisor's stderr like the
 // shim's own errors.
 var reportShimError = func(w *lineSink, timeout time.Duration, name string, err error) {
-	if werr := writeLine(w, fmt.Sprintf("Error: collect shim of %s: %v", foldWhitespace(name), err), timeout); werr != nil {
+	if _, werr := writeLine(context.Background(), w, fmt.Sprintf("Error: collect shim of %s: %v", foldWhitespace(name), err), timeout); werr != nil {
 		if w == defaultStderrSink {
 			return
 		}
-		if fallbackErr := writeLine(defaultStderrSink, fmt.Sprintf("Error: collect shim of %s: %v (stderr write: %v)", foldWhitespace(name), err, werr), timeout); fallbackErr != nil {
+		if _, fallbackErr := writeLine(context.Background(), defaultStderrSink, fmt.Sprintf("Error: collect shim of %s: %v (stderr write: %v)", foldWhitespace(name), err, werr), timeout); fallbackErr != nil {
 			return
 		}
 	}
@@ -413,13 +414,13 @@ func (s *Supervisor) Supervise(ctx context.Context) error {
 	if _, err = writer.RepairTail(ctx); err != nil {
 		return fmt.Errorf("supervisor: repair event log tail %s: %w", s.cfg.EventLog.Dir, err)
 	}
-	reported := false
+	var episode findingEpisode
 	for tick := 0; tick < maxSuperviseTicks; tick++ {
 		state, err := s.reconcile(ctx)
 		if err != nil {
 			return err
 		}
-		err = s.checkNoJobAlive(ctx, state, &reported)
+		err = s.checkNoJobAlive(ctx, state, &episode)
 		if s.afterTick != nil {
 			s.afterTick()
 		}

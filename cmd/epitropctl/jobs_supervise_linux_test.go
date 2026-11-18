@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,10 +19,8 @@ import (
 	"github.com/tekmora/epitrop/internal/supervisor"
 )
 
-// A job that ran and ended with no restart left leaves nothing alive: supervise says so on
-// its stderr and the command exits 3, the status a host unit can name in
-// RestartPreventExitStatus.
-func TestJobsSuperviseExitsThreeWhenNoJobIsAlive(t *testing.T) {
+func newEndsSupervisor(t *testing.T, stderr io.Writer) *supervisor.Supervisor {
+	t.Helper()
 	base := jobsTempDir(t)
 	keyPath := filepath.Join(base, "seed.hex")
 	if err := os.WriteFile(keyPath, []byte(hex.EncodeToString(bytes.Repeat([]byte{6}, 32))), 0o600); err != nil {
@@ -40,19 +40,26 @@ func TestJobsSuperviseExitsThreeWhenNoJobIsAlive(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(cfg.EventLog.Dir, ".git"), 0o700); err != nil {
 		t.Fatalf("MkdirAll(state/.git) = %v, want nil", err)
 	}
-	var stderr bytes.Buffer
 	sup, err := supervisor.New(cfg, supervisor.Options{
 		Clock:        clock.NewFake(),
 		ShimCommand:  []string{os.Args[0], "-test.run=TestHelperProcessShim", "--"},
-		PollInterval: 10 * time.Millisecond,
-		Stderr:       &stderr,
+		PollInterval: 100 * time.Millisecond,
+		Stderr:       stderr,
 	})
 	if err != nil {
 		t.Fatalf("New() = %v, want nil", err)
 	}
 	t.Setenv("EPITROP_TEST_SHIM", "1")
+	return sup
+}
 
-	err = runLoadedJobsAction(testContext(t), sup, "supervise", "")
+// A job that ran and ended with no restart left leaves nothing alive: supervise says so on
+// its stderr and the command exits 3, the status a host unit can name in
+// RestartPreventExitStatus.
+func TestJobsSuperviseExitsThreeWhenNoJobIsAlive(t *testing.T) {
+	var stderr bytes.Buffer
+	sup := newEndsSupervisor(t, &stderr)
+	err := runLoadedJobsAction(testContext(t), sup, "supervise", "")
 	if !errors.Is(err, supervisor.ErrNoJobAlive) {
 		t.Fatalf("runLoadedJobsAction(supervise) = %v, want an error wrapping ErrNoJobAlive", err)
 	}
@@ -61,8 +68,46 @@ func TestJobsSuperviseExitsThreeWhenNoJobIsAlive(t *testing.T) {
 		t.Fatalf("runLoadedJobsAction(supervise) = %#v, want an error with ExitCode() 3", err)
 	}
 	line := stderr.String()
-	if !strings.HasPrefix(line, "epitrop supervisor: finding: no job alive: ends dead (") || !strings.HasSuffix(line, "; supervise exits 3\n") || strings.Count(line, "\n") != 1 {
-		t.Fatalf("stderr = %q, want one finding line naming ends", line)
+	if !strings.HasPrefix(line, "epitrop supervisor: finding: no job alive: ends dead (exit 0,") || !strings.HasSuffix(line, "; supervise exits 3\n") || strings.Count(line, "\n") != 1 {
+		t.Fatalf("stderr = %q, want one finding line naming ends with exit 0", line)
+	}
+}
+
+type blockedSuperviseWriter struct {
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (w blockedSuperviseWriter) Write(p []byte) (int, error) {
+	select {
+	case w.entered <- struct{}{}:
+	default:
+	}
+	<-w.release
+	return len(p), nil
+}
+
+func TestJobsSuperviseExitsZeroWhenCanceledDuringFindingWrite(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	defer close(release)
+	sup := newEndsSupervisor(t, blockedSuperviseWriter{entered: entered, release: release})
+	ctx, cancel := context.WithCancel(testContext(t))
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runLoadedJobsAction(ctx, sup, "supervise", "") }()
+	select {
+	case <-entered:
+		cancel()
+	case err := <-done:
+		t.Fatalf("supervise ended before finding Write: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("supervise did not reach finding Write within 10s")
+	}
+	err := <-done
+	var stderr bytes.Buffer
+	if err != nil || commandExit(err, &stderr) != 0 || stderr.String() != "" {
+		t.Fatalf("supervise err = %v, exit = %d, stderr = %q; want nil, 0, empty", err, commandExit(err, &stderr), stderr.String())
 	}
 }
 

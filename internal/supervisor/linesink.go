@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -37,7 +38,12 @@ func (s *Supervisor) errOut() *lineSink {
 
 // writeLine uses one deadline for admission and output. Only the writer releases its slot:
 // an uninterruptible Write can outlive the caller, but cannot spawn more stalled writes.
-func writeLine(sink *lineSink, line string, timeout time.Duration) error {
+// When an admitted write times out or its caller's context ends, writeLine returns the
+// write's result channel so the episode can track completion across ticks.
+func writeLine(ctx context.Context, sink *lineSink, line string, timeout time.Duration) (<-chan error, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("supervisor: stderr write: %w", err)
+	}
 	if timeout <= 0 {
 		timeout = defaultWriteTimeout
 	}
@@ -45,8 +51,10 @@ func writeLine(sink *lineSink, line string, timeout time.Duration) error {
 	defer timer.Stop()
 	select {
 	case sink.slot <- struct{}{}:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("supervisor: stderr write: %w", ctx.Err())
 	case <-timer.C:
-		return fmt.Errorf("%w after %s", ErrWriteTimedOut, timeout)
+		return nil, fmt.Errorf("%w after %s", ErrWriteTimedOut, timeout)
 	}
 	done := make(chan error, 1)
 	go func() {
@@ -56,8 +64,10 @@ func writeLine(sink *lineSink, line string, timeout time.Duration) error {
 	}()
 	select {
 	case err := <-done:
-		return err
+		return nil, err
+	case <-ctx.Done():
+		return done, fmt.Errorf("supervisor: stderr write: %w", ctx.Err())
 	case <-timer.C:
-		return fmt.Errorf("%w after %s", ErrWriteTimedOut, timeout)
+		return done, fmt.Errorf("%w after %s", ErrWriteTimedOut, timeout)
 	}
 }

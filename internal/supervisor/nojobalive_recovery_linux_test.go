@@ -74,8 +74,8 @@ func TestNoJobAliveCancellationWins(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(testContext(t))
 	cancel()
-	reported := false
-	if err = sup.reportNoJobAlive(ctx, down, &reported); !errors.Is(err, context.Canceled) {
+	var episode findingEpisode
+	if err = sup.reportNoJobAlive(ctx, down, &episode); !errors.Is(err, context.Canceled) {
 		t.Fatalf("report = %v, want original cancellation", err)
 	}
 	if got := stderr.String(); got != "" {
@@ -97,18 +97,27 @@ func TestNoJobAliveReplaysCandidate(t *testing.T) {
 	if err = sup.appendJobEvent(testContext(t), "job.started", "changed", map[string]any{"state": "running"}); err != nil {
 		t.Fatal(err)
 	}
-	reported := true
-	if err = sup.checkNoJobAlive(testContext(t), old, &reported); err != nil {
+	episode := findingEpisode{reported: true, pending: make(chan error)}
+	if err = sup.checkNoJobAlive(testContext(t), old, &episode); err != nil {
 		t.Fatalf("fresh judgment = %v, want nil after concurrent start", err)
 	}
-	if got := stderr.String(); got != "" || reported {
-		t.Fatalf("stderr = %q, reported = %t, want no finding", got, reported)
+	if got := stderr.String(); got != "" || episode.reported || episode.pending != nil {
+		t.Fatalf("stderr = %q, episode = %+v, want no finding and cleared episode", got, episode)
 	}
 }
 
-type stalledFindingWriter struct{ release <-chan struct{} }
+type stalledFindingWriter struct {
+	entered chan<- struct{}
+	release <-chan struct{}
+}
 
 func (w stalledFindingWriter) Write(p []byte) (int, error) {
+	if w.entered != nil {
+		select {
+		case w.entered <- struct{}{}:
+		default:
+		}
+	}
 	<-w.release
 	return len(p), nil
 }
@@ -118,13 +127,21 @@ func TestFindingWriteDeadline(t *testing.T) {
 	if sup.writeTimeout != 5*time.Second {
 		t.Fatalf("writeTimeout = %s, want 5s", sup.writeTimeout)
 	}
+	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
 	defer close(release)
-	sup.stderr = stalledFindingWriter{release: release}
+	sup.stderr = stalledFindingWriter{entered: entered, release: release}
 	sup.writeTimeout = 20 * time.Millisecond
 	plantExit(t, sup, "broken", intPtr(1), "")
 	done := make(chan error, 1)
 	go func() { done <- sup.Supervise(testContext(t)) }()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("Supervise ended before Write entry: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Supervise did not reach finding Write within 10s")
+	}
 	select {
 	case err := <-done:
 		if !errors.Is(err, ErrNoJobAlive) || !errors.Is(err, ErrFindingLineNotWritten) || !errors.Is(err, ErrWriteTimedOut) {
@@ -174,26 +191,27 @@ func TestNoJobAliveEpisodeResets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reported := false
-	checkFindingEpisode(t, sup, state, &reported)
-	checkFindingEpisode(t, sup, state, &reported)
+	var episode findingEpisode
+	checkFindingEpisode(t, sup, state, &episode)
+	checkFindingEpisode(t, sup, state, &episode)
 	if got := strings.Count(stderr.String(), "\n"); got != 1 {
 		t.Fatalf("lines in first episode = %d, want 1", got)
 	}
+	episode.pending = make(chan error)
 	alive := eventlog.State{Jobs: map[string]eventlog.Job{job.Name: {State: "running"}}}
-	checkFindingEpisode(t, sup, alive, &reported)
-	if reported {
-		t.Fatal("episode did not end when a job became alive")
+	checkFindingEpisode(t, sup, alive, &episode)
+	if episode.reported || episode.pending != nil {
+		t.Fatalf("episode = %+v, want reported and pending cleared when a job became alive", episode)
 	}
-	checkFindingEpisode(t, sup, state, &reported)
+	checkFindingEpisode(t, sup, state, &episode)
 	if got := strings.Count(stderr.String(), "\n"); got != 2 {
 		t.Fatalf("lines across two episodes = %d, want 2", got)
 	}
 }
 
-func checkFindingEpisode(t *testing.T, sup *Supervisor, state eventlog.State, reported *bool) {
+func checkFindingEpisode(t *testing.T, sup *Supervisor, state eventlog.State, episode *findingEpisode) {
 	t.Helper()
-	if err := sup.checkNoJobAlive(testContext(t), state, reported); err != nil {
+	if err := sup.checkNoJobAlive(testContext(t), state, episode); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -290,18 +308,18 @@ func TestNoJobAliveTerminalAfterRecoverableFinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reported := false
-	checkFindingEpisode(t, sup, state, &reported)
+	var episode findingEpisode
+	checkFindingEpisode(t, sup, state, &episode)
 	want := "epitrop supervisor: finding: no job alive: A dead (exit 1, restarts 1/1 in 3600s, restart due 2026-11-18T09:00:00Z), B dead (exit 1, restarts 1/1 in 0s); supervise keeps running\n"
-	if got := stderr.String(); got != want || !reported {
-		t.Fatalf("first finding = %q, reported = %t, want %q, true", got, reported, want)
+	if got := stderr.String(); got != want || !episode.reported {
+		t.Fatalf("first finding = %q, reported = %t, want %q, true", got, episode.reported, want)
 	}
-	checkFindingEpisode(t, sup, state, &reported)
+	checkFindingEpisode(t, sup, state, &episode)
 	if got := stderr.String(); got != want {
 		t.Fatalf("unchanged episode = %q, want no second line after %q", got, want)
 	}
 	plantStopped(t, sup, "A")
-	if err = sup.checkNoJobAlive(testContext(t), state, &reported); !errors.Is(err, ErrNoJobAlive) {
+	if err = sup.checkNoJobAlive(testContext(t), state, &episode); !errors.Is(err, ErrNoJobAlive) {
 		t.Fatalf("terminal finding = %v, want ErrNoJobAlive", err)
 	}
 	want += "epitrop supervisor: finding: no job alive: B dead (exit 1, restarts 1/1 in 0s); supervise exits 3\n"
@@ -320,7 +338,7 @@ func (delayedFindingWriter) Write(p []byte) (int, error) {
 func TestFindingWriteDefaultTimeout(t *testing.T) {
 	for _, timeout := range []time.Duration{0, -time.Millisecond} {
 		t.Run(timeout.String(), func(t *testing.T) {
-			if err := writeLine(newLineSink(delayedFindingWriter{}), "finding", timeout); err != nil {
+			if _, err := writeLine(testContext(t), newLineSink(delayedFindingWriter{}), "finding", timeout); err != nil {
 				t.Fatalf("writeLine(timeout %s) = %v, want default deadline to allow a 20ms write", timeout, err)
 			}
 		})
@@ -355,8 +373,8 @@ func TestForbiddenRestartHasNoDueFinding(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			reported := false
-			if err = sup.checkNoJobAlive(testContext(t), state, &reported); !errors.Is(err, ErrNoJobAlive) {
+			var episode findingEpisode
+			if err = sup.checkNoJobAlive(testContext(t), state, &episode); !errors.Is(err, ErrNoJobAlive) {
 				t.Fatalf("finding = %v, want ErrNoJobAlive for a forbidden restart", err)
 			}
 			want := fmt.Sprintf("epitrop supervisor: finding: no job alive: forbidden dead (exit %d, restarts 1/1 in 3600s); supervise exits 3\n", tc.code)
@@ -378,8 +396,8 @@ func TestNoJobAliveDuePreservesFraction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reported := false
-	checkFindingEpisode(t, sup, state, &reported)
+	var episode findingEpisode
+	checkFindingEpisode(t, sup, state, &episode)
 	if got := stderr.String(); !strings.Contains(got, "restart due 2026-11-18T08:00:02.9Z") {
 		t.Fatalf("stderr = %q, want fractional due time 2026-11-18T08:00:02.9Z", got)
 	}
@@ -410,12 +428,12 @@ func TestRecoverableFindingRetriesFailedWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reported := false
-	if err = sup.checkNoJobAlive(testContext(t), state, &reported); err != nil || reported {
-		t.Fatalf("failed recoverable write = %v, reported = %t, want nil, false", err, reported)
+	var episode findingEpisode
+	if err = sup.checkNoJobAlive(testContext(t), state, &episode); err != nil || episode.reported {
+		t.Fatalf("failed recoverable write = %v, reported = %t, want nil, false", err, episode.reported)
 	}
-	checkFindingEpisode(t, sup, state, &reported)
-	if got := w.buf.String(); !reported || strings.Count(got, "\n") != 1 || !strings.HasSuffix(got, "; supervise keeps running\n") {
-		t.Fatalf("retry = %q, reported = %t, want one recoverable line, true", got, reported)
+	checkFindingEpisode(t, sup, state, &episode)
+	if got := w.buf.String(); !episode.reported || strings.Count(got, "\n") != 1 || !strings.HasSuffix(got, "; supervise keeps running\n") {
+		t.Fatalf("retry = %q, reported = %t, want one recoverable line, true", got, episode.reported)
 	}
 }

@@ -30,18 +30,53 @@ type downJob struct {
 	st       eventlog.Job
 	restarts int
 	due      time.Time
+	lostOnce bool
 }
 
-// jobAlive checks running evidence first. Once jobs have no future supervised run;
+// findingEpisode tracks whether the active no-job-alive episode has emitted its
+// recoverable finding line or still has an admitted write in flight.
+type findingEpisode struct {
+	reported bool
+	pending  <-chan error
+}
+
+func (e *findingEpisode) reset() {
+	*e = findingEpisode{}
+}
+
+// settlePending checks an admitted write that timed out on an earlier tick.
+// It returns true when the write is still in flight.
+func (e *findingEpisode) settlePending() bool {
+	if e.pending == nil {
+		return false
+	}
+	select {
+	case err := <-e.pending:
+		e.pending = nil
+		e.reported = err == nil
+		return false
+	default:
+		return true
+	}
+}
+
+func (e *findingEpisode) shouldWrite(terminal bool) bool {
+	if e.settlePending() && !terminal {
+		return false
+	}
+	return terminal || !e.reported
+}
+
+// jobAlive checks running evidence first. Once jobs are alive only while their lock is held;
 // cron/event jobs remain armed, and an intentional stop excludes an always job.
 func (s *Supervisor) jobAlive(job config.JobConfig, st eventlog.Job, now time.Time) bool {
-	if s.statusFor(job, st).State == StateRunning || st.State == string(StateRunning) {
+	if s.statusFor(job, st).State == StateRunning {
 		return true
 	}
 	if job.Schedule == "once" {
 		return false
 	}
-	if job.Schedule != "always" {
+	if st.State == string(StateRunning) || job.Schedule != "always" {
 		return true
 	}
 	if st.State == string(StateStopped) {
@@ -56,8 +91,9 @@ func (s *Supervisor) jobAlive(job config.JobConfig, st eventlog.Job, now time.Ti
 // downJobsIfNoneAlive returns the down jobs, in config order, when at least one configured
 // job is down and none is alive; otherwise nil. A job an operator stopped is neither alive
 // nor down: a stop is intentional, not a failure. A non-running once job with no record
-// or a last end with exit code 0 is excluded: supervision never starts it, or it completed.
-// A stopped once job is excluded; every other once end is down with no recovery time.
+// or a last end with exit code 0 (other than deadline) is excluded: supervision never starts
+// it, or it completed. A stopped once job is excluded; every other once end is down with no
+// recovery time, including a once job whose replay still says running after its lock is free.
 func (s *Supervisor) downJobsIfNoneAlive(state eventlog.State, now time.Time) []downJob {
 	var down []downJob
 	for i := 0; i < len(s.cfg.Jobs); i++ {
@@ -73,7 +109,8 @@ func (s *Supervisor) downJobsIfNoneAlive(state eventlog.State, now time.Time) []
 					due = at
 				}
 			}
-			down = append(down, downJob{job: job, st: st, restarts: restartsInWindow(job, st, now), due: due})
+			lostOnce := job.Schedule == "once" && st.State == string(StateRunning)
+			down = append(down, downJob{job: job, st: st, restarts: restartsInWindow(job, st, now), due: due, lostOnce: lostOnce})
 		}
 	}
 	return down
@@ -83,18 +120,18 @@ func excludedFromFinding(job config.JobConfig, st eventlog.Job) bool {
 	if st.State == string(StateStopped) {
 		return true
 	}
-	return job.Schedule == "once" && (st.LastEvent == "" || (st.LastExitCode != nil && *st.LastExitCode == 0))
+	if job.Schedule != "once" || st.State == string(StateRunning) {
+		return false
+	}
+	return st.LastEvent == "" || (st.LastExitCode != nil && *st.LastExitCode == 0 && st.LastReason != "deadline")
 }
 
 // checkNoJobAlive replays only a candidate finding, closing the stale-reconcile gap.
-// An episode emits at most one non-terminal line; a terminal finding always emits its line.
+// An episode emits at most one non-terminal line; a terminal finding always attempts its line.
 // The episode ends when the finding no longer holds.
-// A concurrent start remains invisible until its shim holds the lock or records its start;
-// this gap ends at that evidence. The start caller's wait has a context and poll bound,
-// but it does not serialize other processes' starts with this judgment.
-func (s *Supervisor) checkNoJobAlive(ctx context.Context, state eventlog.State, reported *bool) error {
+func (s *Supervisor) checkNoJobAlive(ctx context.Context, state eventlog.State, episode *findingEpisode) error {
 	if len(s.downJobsIfNoneAlive(state, s.clk.Now())) == 0 {
-		*reported = false
+		episode.reset()
 		return nil
 	}
 	fresh, err := s.replayState(ctx)
@@ -103,10 +140,51 @@ func (s *Supervisor) checkNoJobAlive(ctx context.Context, state eventlog.State, 
 	}
 	down := s.downJobsIfNoneAlive(fresh, s.clk.Now())
 	if len(down) == 0 {
-		*reported = false
+		episode.reset()
 		return nil
 	}
-	return s.reportNoJobAlive(ctx, down, reported)
+	confirmed, err := s.confirmLostOnce(ctx, down)
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		episode.reset()
+		return nil
+	}
+	return s.reportNoJobAlive(ctx, down, episode)
+}
+
+// confirmLostOnce replays once more after a lock-free once candidate was seen, so a shim
+// that recorded its exit just before releasing its lock is not reported as lost.
+func (s *Supervisor) confirmLostOnce(ctx context.Context, down []downJob) (bool, error) {
+	if !hasLostOnce(down) {
+		return true, nil
+	}
+	if s.beforeConfirmReplay != nil {
+		s.beforeConfirmReplay()
+	}
+	confirmed, err := s.replayState(ctx)
+	if err != nil {
+		return false, err
+	}
+	for i := 0; i < len(down); i++ {
+		if down[i].lostOnce {
+			st := confirmed.Jobs[down[i].job.Name]
+			if st.State != string(StateRunning) || st.Since != down[i].st.Since {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
+func hasLostOnce(down []downJob) bool {
+	for i := 0; i < len(down); i++ {
+		if down[i].lostOnce {
+			return true
+		}
+	}
+	return false
 }
 
 // findingDetail preserves configuration order and marks recoverable jobs with their due time.
@@ -115,8 +193,12 @@ func findingDetail(down []downJob) (string, bool) {
 	terminal := true
 	for i := 0; i < len(down); i++ {
 		d := down[i]
+		exit := exitText(d.st)
+		if d.lostOnce {
+			exit = "lost"
+		}
 		part := fmt.Sprintf("%s dead (exit %s, restarts %d/%d in %ds",
-			foldWhitespace(d.job.Name), exitText(d.st), d.restarts, d.job.Restart.MaxRestarts, restartWindowSeconds(d.job))
+			foldWhitespace(d.job.Name), exit, d.restarts, d.job.Restart.MaxRestarts, restartWindowSeconds(d.job))
 		if !d.due.IsZero() {
 			terminal = false
 			part += ", restart due " + d.due.UTC().Format(time.RFC3339Nano)
@@ -128,29 +210,37 @@ func findingDetail(down []downJob) (string, bool) {
 
 // reportNoJobAlive emits once per episode plus any terminal finding.
 // Recoverable budgets keep supervision active.
-func (s *Supervisor) reportNoJobAlive(ctx context.Context, down []downJob, reported *bool) error {
+func (s *Supervisor) reportNoJobAlive(ctx context.Context, down []downJob, episode *findingEpisode) error {
 	detail, terminal := findingDetail(down)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !*reported || terminal {
-		tail := "supervise keeps running"
-		if terminal {
-			tail = fmt.Sprintf("supervise exits %d", NoJobAliveExitCode)
+	if episode.shouldWrite(terminal) {
+		line := fmt.Sprintf("epitrop supervisor: finding: no job alive: %s; %s", detail, findingTail(terminal))
+		pending, err := writeLine(ctx, s.errOut(), line, s.writeTimeout)
+		episode.pending = pending
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
-		line := fmt.Sprintf("epitrop supervisor: finding: no job alive: %s; %s", detail, tail)
-		if err := writeLine(s.errOut(), line, s.writeTimeout); err != nil {
+		if err != nil {
 			if !terminal {
 				return nil
 			}
 			return fmt.Errorf("%w: %s (%w: %w)", ErrNoJobAlive, detail, ErrFindingLineNotWritten, err)
 		}
-		*reported = true
+		episode.reported = true
 	}
 	if terminal {
 		return fmt.Errorf("%w: %s", ErrNoJobAlive, detail)
 	}
 	return nil
+}
+
+func findingTail(terminal bool) string {
+	if terminal {
+		return fmt.Sprintf("supervise exits %d", NoJobAliveExitCode)
+	}
+	return "supervise keeps running"
 }
 
 // exitText is how a down job's last end reads: its exit code, otherwise its reason (lost,

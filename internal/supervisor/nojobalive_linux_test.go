@@ -397,6 +397,7 @@ func TestNoJobAliveOnceEnds(t *testing.T) {
 		{"lost", nil, "lost", false, true},
 		{"refused", nil, "refused", false, true},
 		{"deadline", nil, "deadline", false, true},
+		{"deadline exit 0", intPtr(0), "deadline", false, true},
 		{"unknown", nil, "", false, true},
 		{"stopped", intPtr(1), "", true, false},
 	}
@@ -415,9 +416,12 @@ func TestNoJobAliveOnceEnds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			reported := false
-			err = sup.checkNoJobAlive(testContext(t), state, &reported)
-			assertOnceFinding(t, err, stderr.String(), reported, tc.down)
+			var episode findingEpisode
+			err = sup.checkNoJobAlive(testContext(t), state, &episode)
+			assertOnceFinding(t, err, stderr.String(), episode.reported, tc.down)
+			if tc.name == "deadline exit 0" && !strings.Contains(stderr.String(), "manual dead (exit 0,") {
+				t.Fatalf("deadline exit 0 line = %q, want exit 0 detail", stderr.String())
+			}
 		})
 	}
 }
@@ -446,12 +450,28 @@ func TestNoJobAliveUnrecordedOnceBesideSpentAlways(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reported := false
-	if err = sup.checkNoJobAlive(testContext(t), state, &reported); !errors.Is(err, ErrNoJobAlive) {
+	var episode findingEpisode
+	if err = sup.checkNoJobAlive(testContext(t), state, &episode); !errors.Is(err, ErrNoJobAlive) {
 		t.Fatalf("checkNoJobAlive = %v, want ErrNoJobAlive", err)
 	}
 	want := "epitrop supervisor: finding: no job alive: broken dead (exit 1, restarts 1/1 in 0s); supervise exits 3\n"
 	if got := stderr.String(); got != want {
 		t.Fatalf("stderr = %q, want only the spent always job: %q", got, want)
+	}
+}
+
+func TestNoJobAliveOnceDeadlineZeroBesideLiveJob(t *testing.T) {
+	once := testJob("manual", []string{"/bin/true"})
+	once.Schedule = "once"
+	sup := testSupervisor(t, once, testJob("live", []string{"/bin/true"}))
+	stderr := captureSupervisorStderr(sup)
+	plantExit(t, sup, "manual", intPtr(0), "deadline")
+	state, err := sup.replayState(testContext(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var episode findingEpisode
+	if err = sup.checkNoJobAlive(testContext(t), state, &episode); err != nil || stderr.String() != "" || episode.reported {
+		t.Fatalf("checkNoJobAlive = %v, stderr = %q, reported = %t; want no finding beside live job", err, stderr.String(), episode.reported)
 	}
 }
