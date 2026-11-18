@@ -375,6 +375,34 @@ func TestSupervisorStopMarksRunStartedInLastTick(t *testing.T) {
 	assertMarkerCarriesSince(t, sup, "daemon", wantSince)
 }
 
+// A stop that ends the start wait before a replay saw the start still observes a start the
+// shim recorded: the replay after the cancel binds the run, and it gets its stop marker.
+func TestSupervisorStopMarksRunStartedBeforeStartWaitEnded(t *testing.T) {
+	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
+	shim := exec.CommandContext(t.Context(), "/bin/sleep", "30")
+	if err := shim.Start(); err != nil {
+		t.Fatalf("Start(stub shim) = %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		_ = shim.Process.Kill()
+		_ = shim.Wait()
+	})
+	const since = "2026-11-18T08:00:00Z"
+	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "pid": shim.Process.Pid + 10, "shim_pid": shim.Process.Pid, "since": since})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := sup.waitStarted(ctx, "daemon", eventlog.Job{}, shim.Process.Pid); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitStarted(canceled) = %v, want context.Canceled", err)
+	}
+	if err := sup.markSupervisorStopped(); err != nil {
+		t.Fatalf("markSupervisorStopped() = %v, want nil", err)
+	}
+	if got := historyOne(t, sup, "daemon").SupervisorStops; got != 1 {
+		t.Fatalf("supervisor stop markers of run started before the wait ended = %d, want 1", got)
+	}
+	assertMarkerCarriesSince(t, sup, "daemon", since)
+}
+
 func startAndCollectStubShim(t *testing.T, sup *Supervisor, name string, script string) int {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", script)
