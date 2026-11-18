@@ -16,7 +16,8 @@
   <!-- 5 licence -->
   [![License](https://img.shields.io/badge/License-EUPL--1.2-3b82f6?style=for-the-badge&labelColor=111a35)](LICENSE)
   <!-- 6 support -->
-  [![Discussions](https://img.shields.io/badge/Support-Discussions-8b5cf6?style=for-the-badge&logo=github&labelColor=111a35)](https://github.com/tekmora/epitrop/discussions)
+  [![GitHub Sponsors](https://img.shields.io/badge/Sponsor-GitHub-8b5cf6?style=for-the-badge&logo=githubsponsors&logoColor=white&labelColor=111a35)](https://github.com/sponsors/lusoris)
+  [![Ko-fi](https://img.shields.io/badge/Support-Ko--fi-8b5cf6?style=for-the-badge&logo=kofi&logoColor=white&labelColor=111a35)](https://ko-fi.com/lusoris)
 
   **Agent runtime and task-graph engine for the Tekmora ecosystem**
 
@@ -79,8 +80,9 @@ task execution from the control plane (`docs/epitrop-description-v2.md`,
 ### The name
 
 The runtime is called **Epitrop** (eh-PEE-trop), from Greek *epitropos*, the
-appointed trustee. Tekmora (tek-MOH-ra), the family the name belongs to, comes
-from Greek *tekmerion*, "decisive proof". The repository was first named
+appointed trustee. Tekmora, the family the name belongs to, comes from Greek
+*tekmor* (Homeric *tekmor*): a set goal, and the sign that shows the way to it;
+said *TEK-mo-ra*. The repository was first named
 `tribunus`, in another organisation; its old address redirects.
 
 ## Get started
@@ -174,6 +176,11 @@ requirements, Conventional Commits and local verification. Read
 - [Ask a question or join discussions](https://github.com/tekmora/epitrop/discussions)
 - [Report a security vulnerability privately](SECURITY.md) (GitHub private
   vulnerability reporting)
+
+## Support
+
+Sponsor the work on [GitHub Sponsors](https://github.com/sponsors/lusoris) or
+[Ko-fi](https://ko-fi.com/lusoris), any amount; no support or priority is sold.
 
 ## Roadmap and releases
 
