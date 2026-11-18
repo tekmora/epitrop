@@ -85,7 +85,8 @@ func (s *Supervisor) downJobsIfNoneAlive(state eventlog.State, now time.Time) []
 }
 
 // checkNoJobAlive replays only a candidate finding, closing the stale-reconcile gap.
-// An episode emits at most one line and ends when the finding no longer holds.
+// An episode emits at most one non-terminal line; a terminal finding always emits its line.
+// The episode ends when the finding no longer holds.
 // A concurrent start remains invisible until its shim holds the lock or records its start;
 // this gap ends at that evidence. The start caller's wait has a context and poll bound,
 // but it does not serialize other processes' starts with this judgment.
@@ -125,13 +126,14 @@ func findingDetail(down []downJob) (string, bool) {
 	return strings.Join(parts, ", "), terminal
 }
 
-// reportNoJobAlive emits once per episode. Recoverable budgets keep supervision active.
+// reportNoJobAlive emits once per episode plus any terminal finding.
+// Recoverable budgets keep supervision active.
 func (s *Supervisor) reportNoJobAlive(ctx context.Context, down []downJob, reported bool) error {
 	detail, terminal := findingDetail(down)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !reported {
+	if !reported || terminal {
 		tail := "supervise keeps running"
 		if terminal {
 			tail = fmt.Sprintf("supervise exits %d", NoJobAliveExitCode)
@@ -150,6 +152,9 @@ func (s *Supervisor) reportNoJobAlive(ctx context.Context, down []downJob, repor
 // writeLine bounds the caller's wait even when a writer cannot be interrupted. A timed-out
 // write may finish later; its buffered result never leaves the goroutine blocked on send.
 func writeLine(w io.Writer, line string, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = defaultWriteTimeout
+	}
 	done := make(chan error, 1)
 	go func() {
 		_, err := fmt.Fprintln(w, line)

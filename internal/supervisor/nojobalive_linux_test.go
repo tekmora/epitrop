@@ -410,6 +410,11 @@ func TestRestartDueAt(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("restartDueAt panicked: %v", r)
+				}
+			}()
 			job := testJob("window", []string{"/bin/true"})
 			job.Restart = config.JobRestartConfig{Policy: tc.policy, WindowSeconds: tc.window, MaxRestarts: tc.max}
 			st := eventlog.Job{State: "dead", LastExitCode: intPtr(tc.code), RestartTimes: tc.times, Restarts: len(tc.times)}
@@ -460,7 +465,7 @@ func TestNoJobAliveReplaysCandidate(t *testing.T) {
 	if err = sup.appendJobEvent(testContext(t), "job.started", "changed", map[string]any{"state": "running"}); err != nil {
 		t.Fatal(err)
 	}
-	reported := false
+	reported := true
 	if err = sup.checkNoJobAlive(testContext(t), old, &reported); err != nil {
 		t.Fatalf("fresh judgment = %v, want nil after concurrent start", err)
 	}
@@ -635,5 +640,96 @@ func TestShimErrorWriteDeadline(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("shim error write exceeded 1s, want configured 20ms timeout")
+	}
+}
+
+func TestNoJobAliveTerminalAfterRecoverableFinding(t *testing.T) {
+	window := budgetJob("A", 1, []string{"/bin/false"})
+	window.Restart.WindowSeconds = 3600
+	spent := budgetJob("B", 1, []string{"/bin/false"})
+	sup := testSupervisor(t, window, spent)
+	now := time.Date(2026, 11, 18, 8, 0, 0, 0, time.UTC)
+	sup.clk = clockwork.NewFakeClockAt(now)
+	stderr := captureSupervisorStderr(sup)
+	plantSpentBudget(t, sup, "A", 1, intPtr(1), "")
+	plantSpentBudget(t, sup, "B", 1, intPtr(1), "")
+	state, err := sup.replayState(testContext(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported := false
+	checkFindingEpisode(t, sup, state, &reported)
+	want := "epitrop supervisor: finding: no job alive: A dead (exit 1, restarts 1/1 in 3600s, restart due 2026-11-18T09:00:00Z), B dead (exit 1, restarts 1/1 in 0s); supervise keeps running\n"
+	if got := stderr.String(); got != want || !reported {
+		t.Fatalf("first finding = %q, reported = %t, want %q, true", got, reported, want)
+	}
+	checkFindingEpisode(t, sup, state, &reported)
+	if got := stderr.String(); got != want {
+		t.Fatalf("unchanged episode = %q, want no second line after %q", got, want)
+	}
+	plantStopped(t, sup, "A")
+	if err = sup.checkNoJobAlive(testContext(t), state, &reported); !errors.Is(err, ErrNoJobAlive) {
+		t.Fatalf("terminal finding = %v, want ErrNoJobAlive", err)
+	}
+	want += "epitrop supervisor: finding: no job alive: B dead (exit 1, restarts 1/1 in 0s); supervise exits 3\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("terminal episode = %q, want %q", got, want)
+	}
+}
+
+type delayedFindingWriter struct{}
+
+func (delayedFindingWriter) Write(p []byte) (int, error) {
+	<-time.After(20 * time.Millisecond)
+	return len(p), nil
+}
+
+func TestFindingWriteDefaultTimeout(t *testing.T) {
+	for _, timeout := range []time.Duration{0, -time.Millisecond} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			if err := writeLine(delayedFindingWriter{}, "finding", timeout); err != nil {
+				t.Fatalf("writeLine(timeout %s) = %v, want default deadline to allow a 20ms write", timeout, err)
+			}
+		})
+	}
+}
+
+func TestUnrecordedAlwaysJobPreventsFinding(t *testing.T) {
+	down := budgetJob("down", 0, []string{"/bin/false"})
+	unrecorded := testJob("unrecorded", []string{"/bin/true"})
+	sup := testSupervisor(t, down, unrecorded)
+	state := eventlog.State{Jobs: map[string]eventlog.Job{
+		down.Name: {State: "dead", LastEvent: "job.exited", LastExitCode: intPtr(1)},
+	}}
+	if got := sup.downJobsIfNoneAlive(state, sup.clk.Now()); got != nil {
+		t.Fatalf("down jobs = %+v, want nil while an always job has no record", got)
+	}
+}
+
+func TestForbiddenRestartHasNoDueFinding(t *testing.T) {
+	for _, tc := range []struct {
+		policy string
+		code   int
+	}{{"never", 1}, {"on-failure", 0}} {
+		t.Run(tc.policy, func(t *testing.T) {
+			job := budgetJob("forbidden", 1, []string{"/bin/false"})
+			job.Restart.Policy, job.Restart.WindowSeconds = tc.policy, 3600
+			sup := testSupervisor(t, job)
+			sup.clk = clockwork.NewFakeClockAt(time.Date(2026, 11, 18, 8, 0, 0, 0, time.UTC))
+			stderr := captureSupervisorStderr(sup)
+			plantSpentBudget(t, sup, job.Name, 1, intPtr(tc.code), "")
+			state, err := sup.replayState(testContext(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			reported := false
+			if err = sup.checkNoJobAlive(testContext(t), state, &reported); !errors.Is(err, ErrNoJobAlive) {
+				t.Fatalf("finding = %v, want ErrNoJobAlive for a forbidden restart", err)
+			}
+			want := fmt.Sprintf("epitrop supervisor: finding: no job alive: forbidden dead (exit %d, restarts 1/1 in 3600s); supervise exits 3\n", tc.code)
+			if got := stderr.String(); got != want {
+				t.Fatalf("stderr = %q, want terminal line without restart due: %q", got, want)
+			}
+		})
 	}
 }

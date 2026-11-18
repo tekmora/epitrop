@@ -417,17 +417,15 @@ func restartDueAt(job config.JobConfig, st eventlog.Job, now time.Time) (time.Ti
 	}
 	cutoff := now.Add(-window)
 	parsed := make([]time.Time, 0, len(st.RestartTimes))
-	unreadable := 0
 	for i := 0; i < len(st.RestartTimes); i++ {
 		t, err := time.Parse(time.RFC3339Nano, st.RestartTimes[i])
-		if err != nil {
-			unreadable++
-		} else if t.After(cutoff) {
+		if err == nil && t.After(cutoff) {
 			parsed = append(parsed, t)
 		}
 	}
 	need := restartsInWindow(job, st, now) - job.Restart.MaxRestarts + 1
-	if unreadable >= job.Restart.MaxRestarts || need <= 0 || need > len(parsed) {
+	// Unparseable times never age out: only parsed times can free budget.
+	if need <= 0 || need > len(parsed) {
 		return time.Time{}, false
 	}
 	slices.SortFunc(parsed, time.Time.Compare)
