@@ -105,9 +105,9 @@ func section(changelog string, version string) (string, error) {
 	if !releaseVersion.MatchString(version) {
 		return "", fmt.Errorf("version %q is not of the form 1.2.3 or 1.2.3-rc.1", version)
 	}
-	lines := strings.Split(changelog, "\n")
-	if len(lines) > maxChangelogLines {
-		return "", fmt.Errorf("more than %d lines", maxChangelogLines)
+	lines, err := splitBoundedLines(changelog)
+	if err != nil {
+		return "", err
 	}
 	start, err := headingLine(lines, version)
 	if err != nil {
@@ -120,9 +120,87 @@ func section(changelog string, version string) (string, error) {
 	return strings.Join(body, "\n") + "\n", nil
 }
 
+func splitBoundedLines(text string) ([]string, error) {
+	lines := strings.Split(text, "\n")
+	if len(lines) > maxChangelogLines {
+		return nil, fmt.Errorf("more than %d lines", maxChangelogLines)
+	}
+	return lines, nil
+}
+
+// latestReleased returns the version of the newest "## [X.Y.Z...]" heading in a
+// changelog that is not "Unreleased".
+func latestReleased(changelog string) (string, error) {
+	lines, err := splitBoundedLines(changelog)
+	if err != nil {
+		return "", err
+	}
+	for i := 0; i < len(lines) && i < maxChangelogLines; i++ {
+		ver, ok := headingVersion(lines[i])
+		if !ok || ver == "Unreleased" {
+			continue
+		}
+		if !releaseVersion.MatchString(ver) {
+			return "", fmt.Errorf("version %q at line %d is not of the form 1.2.3 or 1.2.3-rc.1", ver, i+1)
+		}
+		return ver, nil
+	}
+	return "", errors.New("no released version in changelog")
+}
+
+// readmeReleaseBadge returns the version of the one label=release badge's
+// message=v<version> query parameter in a README.
+func readmeReleaseBadge(readme string) (string, error) {
+	lines, err := splitBoundedLines(readme)
+	if err != nil {
+		return "", err
+	}
+	found := -1
+	version := ""
+	for i := 0; i < len(lines) && i < maxChangelogLines; i++ {
+		ver, ok, err := badgeMessageVersion(lines[i])
+		if err != nil {
+			return "", fmt.Errorf("line %d: %w", i+1, err)
+		}
+		if !ok {
+			continue
+		}
+		if found >= 0 {
+			return "", fmt.Errorf("label=release badge at line %d and at line %d", found+1, i+1)
+		}
+		found = i
+		version = ver
+	}
+	if found < 0 {
+		return "", errors.New("no label=release badge")
+	}
+	return version, nil
+}
+
+func badgeMessageVersion(line string) (string, bool, error) {
+	if !strings.Contains(line, "label=release") {
+		return "", false, nil
+	}
+	if strings.Count(line, "label=release") > 1 {
+		return "", false, errors.New("more than one label=release badge on one line")
+	}
+	_, after, ok := strings.Cut(line, "message=v")
+	if !ok {
+		return "", false, errors.New("label=release badge has no message=v<version>")
+	}
+	ver := after
+	if end := strings.IndexAny(after, "&)\"' \t"); end >= 0 {
+		ver = after[:end]
+	}
+	if !releaseVersion.MatchString(ver) {
+		return "", false, fmt.Errorf("badge version %q is not of the form 1.2.3 or 1.2.3-rc.1", ver)
+	}
+	return ver, true, nil
+}
+
 func headingLine(lines []string, version string) (int, error) {
 	found := -1
-	for i := 0; i < len(lines); i++ {
+	for i := 0; i < len(lines) && i < maxChangelogLines; i++ {
 		if !isHeadingOf(lines[i], version) {
 			continue
 		}
@@ -137,11 +215,25 @@ func headingLine(lines []string, version string) (int, error) {
 	return found, nil
 }
 
+// headingVersion returns the bracketed name of a "## [<name>]" line when the closing
+// bracket stands at the end of the line or before a space, as in "## [1.2.3] - 2026-10-11".
+func headingVersion(line string) (string, bool) {
+	rest, ok := strings.CutPrefix(line, sectionPrefix+"[")
+	if !ok {
+		return "", false
+	}
+	version, after, ok := strings.Cut(rest, "]")
+	if !ok || version == "" || (after != "" && !strings.HasPrefix(after, " ")) {
+		return "", false
+	}
+	return version, true
+}
+
 // isHeadingOf matches "## [1.2.3]" alone or followed by a space, as in "## [1.2.3] - 2026-10-11".
 // The closing bracket keeps 1.2.3 from matching the heading of 1.2.3-rc.1.
 func isHeadingOf(line string, version string) bool {
-	rest, ok := strings.CutPrefix(line, sectionPrefix+"["+version+"]")
-	return ok && (rest == "" || strings.HasPrefix(rest, " "))
+	got, ok := headingVersion(line)
+	return ok && got == version
 }
 
 func sectionEnd(lines []string, from int) int {

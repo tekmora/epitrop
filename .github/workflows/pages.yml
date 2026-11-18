@@ -1,0 +1,143 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'overrides/**'
+      - 'tools/figures/**'
+      - '.github/workflows/pages.yml'
+  # The hosted gate shape: a pull request runs on every activity that can change
+  # what merges, and the build job fails a draft in its first step and runs once
+  # the draft is marked ready (ready_for_review). The deploying push to main and
+  # the dispatch stay.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'overrides/**'
+      - 'tools/figures/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ github.event.pull_request.number ||
+    github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Only the deploy job may write. The workflow also runs on pull_request, and a
+# workflow-level write scope would hand every documentation pull request -- a
+# fork branch included -- a token that can create a Pages deployment and mint
+# an OIDC identity token it never uses.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Skipped on a Renovate pull request opened from a renovate/ branch: the
+    # update is taken over on a signed-off branch whose own pull request builds
+    # the site. github.head_ref is empty on push and dispatch runs.
+    name: Build Documentation Site
+    # yamllint disable-line rule:line-length
+    if: "!(startsWith(github.head_ref, 'renovate/') && github.event.pull_request.user.login == 'renovate[bot]')"
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Stop on a draft pull request
+        if: github.event.pull_request.draft == true
+        shell: bash
+        env:
+          TITLE: Gate not run on a draft
+          MESSAGE: >-
+            The gate did not run because the pull request is a draft.
+            It runs when the pull request is marked ready for review.
+        run: |
+          echo "::error title=$TITLE::$MESSAGE"
+          echo "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Checkout Source Code
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Python
+        # yamllint disable-line rule:line-length
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.14'
+
+      - name: Install Documentation Dependencies
+        run: python -m pip install --require-hashes -r docs/requirements.txt
+
+      # No npm cache, bundle check or Playwright smoke step: tools/figures in an
+      # adopted repository ships the pre-bundled player without package.json or
+      # bundle.mjs (ADR-0016).
+      - name: Setup Node Toolchain
+        # yamllint disable-line rule:line-length
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version-file: .node-version
+
+      - name: Verify Committed Figures
+        run: node tools/figures/build.mjs check
+
+      - name: Build MkDocs Site (Strict Mode)
+        env:
+          DOCS_SITE_URL: https://tekmora.github.io/epitrop/
+        run: mkdocs build --strict
+
+      - name: Verify Diagrams Render
+        run: |
+          node tools/figures/build.mjs site --config mkdocs.yml \
+            --docs docs --site site
+          node tools/figures/build.mjs sources
+
+      - name: Setup Go
+        # yamllint disable-line rule:line-length
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: SEO Integrity Audit
+        run: go tool -modfile=tools/go/go.mod standardsctl seo audit site
+
+      - name: Upload Pages Artifact
+        # yamllint disable-line rule:line-length
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
+        with:
+          path: site
+          include-hidden-files: true
+
+  deploy:
+    concurrency:
+      group: github-pages-deploy
+      cancel-in-progress: false
+    name: Deploy to GitHub Pages
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy Site to GitHub Pages
+        id: deployment
+        # yamllint disable-line rule:line-length
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

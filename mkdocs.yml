@@ -1,0 +1,113 @@
+site_name: "Epitrop"
+# Operator configuration, not a shipped value: the URL the built site is served from.
+# Set DOCS_SITE_URL at build time (for example https://<owner>.github.io/<repo>/). Unset
+# or empty, the build writes no canonical links, no JSON-LD URLs and an empty sitemap.xml,
+# so Material's navigation.instant, which reads that sitemap, falls back to full page loads.
+site_url: !ENV DOCS_SITE_URL
+site_description: "Epitrop: agent runtime and task-graph engine for the Tekmora ecosystem"
+site_author: "Tekmora"
+repo_url: "https://github.com/tekmora/epitrop"
+repo_name: "tekmora/epitrop"
+edit_uri: edit/main/docs/
+
+# overrides/main.html reads every identity value from this file: the TechArticle author is
+# site_author (site_name when unset), and the site-wide SoftwareSourceCode block needs
+# repo_url (or source_code.repository) plus source_code.programming_language. Set them to
+# your project. Without programming_language no SoftwareSourceCode block is emitted, and
+# 404.html, which has no page and so no TechArticle, then carries no JSON-LD at all.
+extra:
+  source_code:
+    programming_language: "Go"
+    license: "https://spdx.org/licenses/EUPL-1.2.html"
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: en
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.code.annotate
+
+plugins:
+  - search
+  # No sitemap plugin: MkDocs core already writes site/sitemap.xml and sitemap.xml.gz from
+  # the nav, and the `mkdocs-sitemap-plugin` this block used to name does not exist on PyPI,
+  # so `pip install -r requirements.txt` failed and the preset aborted with a config error.
+  - minify:
+      minify_html: true
+      minify_js: true
+      minify_css: true
+
+# Figures: `praetorctl adopt` writes the figure engine to tools/figures/ with the docs:seo-portal
+# facet. The hook turns each ```figure fence into the figure rendered from
+# docs/assets/figures/<slug>.json and publishes the stylesheet and the player itself, so the site
+# build needs Python and MkDocs only. docs/figures/ holds the TypeScript specs, which are not
+# pages. tools/figures/README.md explains how to add a figure. The README's Quickstart puts the
+# preset's Python lock, requirements.in and requirements.txt, into docs/ beside the pages; they
+# are not published either.
+hooks:
+  - tools/figures/mkdocs_hook.py
+exclude_docs: |
+  /figures/
+  /requirements.in
+  /requirements.txt
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - tables
+  - attr_list
+
+# List only pages under docs/ in this preset: `mkdocs build --strict` fails on a nav entry
+# whose file is absent. Add a page file and its nav entry together.
+nav:
+  - Overview: index.md
+  - Architecture:
+      - Description: epitrop-description-v2.md
+      - Control Plane & Invariants: architecture-v2.md
+      - Repository Layout: repository-layout-v2.md
+      - Sources: sources-list-v2.md
+  - Guides & Operations:
+      - Agent Onboarding: agent-onboarding.md
+      - Catalog Data Sync: data-sync.md
+      - MCP Server: mcp-server.md
+      - Telemetry: telemetry.md
+      - Cutover 1: cutover-1.md
+      - Releasing: releasing.md
+      - Roadmap: roadmap.md
+  - Decisions (ADRs):
+      - ADR Index: adr/README.md
+      - ADR-0000 Template: adr/0000-template.md
+      - ADR-0004 Pinned golusoris Base: adr/0004-golusoris-pinned-base.md
+      - ADR-0005 Sandboxed Job Runner: adr/0005-sandboxed-job-runner.md
+      - ADR-0006 Proxy Socket Egress: adr/0006-proxy-socket-egress.md
+      - ADR-0007 Job Arguments Unchanged: adr/0007-job-arguments-unchanged.md
+      - ADR-0008 Sandbox Input Roots: adr/0008-sandbox-input-roots.md
+      - ADR-0009 Slot Client Home: adr/0009-slot-client-home.md
+      - ADR-0010 Event Log Segments: adr/0010-event-log-segments.md
+      - ADR-0011 Event Log Git Commits: adr/0011-event-log-git-commits.md
+      - ADR-0012 Event Log Compaction: adr/0012-event-log-compaction.md
