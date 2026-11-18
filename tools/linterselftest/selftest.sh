@@ -295,11 +295,13 @@ YAML
     ;;
   osv-scanner)
     # A: the real lock with fast-uri set back to 3.1.8 (GHSA-w74x-v6f9-j3xg, fixed in 3.1.9)
-    # must fail the scan under the repository's osv-scanner.toml. B: the real lock under a copy
-    # of osv-scanner.toml whose effectiveUntil lies in the past must report the picomatch advisory
-    # again. C: osv-scanner.toml effectiveUntil equals the .standards.yaml forge_alerts expires and
-    # no other advisory is exempt (checked first, offline). Exit 1 means advisories found; 0 or
-    # 2 and above (scanner error) fails the self-test.
+    # must fail the scan under the repository's osv-scanner.toml. B: the real lock under the real
+    # osv-scanner.toml must exit 0 without the picomatch advisory (the valid exemption works; any
+    # other advisory fails this case). B2: the real lock under a copy of osv-scanner.toml whose
+    # effectiveUntil lies in the past must report the picomatch advisory again. C:
+    # osv-scanner.toml effectiveUntil equals the .standards.yaml forge_alerts expires and no
+    # other advisory is exempt (checked first, offline). Exit 1 means advisories found in A and
+    # B2; B needs exit 0; any other exit (scanner error) fails the self-test.
     repo="$PWD"
     modfile="$repo/tools/osvscanner/go.mod"
     if ! shared_date="$(shared_exemption_date "$repo/osv-scanner.toml" "$repo/.standards.yaml")"; then
@@ -332,6 +334,20 @@ PY
     require_findings "$tool (fast-uri $old_version planted)" "$rc" "$log" "${expected[@]}"
     rm "$plant/package-lock.json"
 
+    valid_log="$plant/valid-scan.log"
+    set +e
+    go tool -modfile="$modfile" osv-scanner scan --lockfile "$repo/tools/spectral/package-lock.json" \
+      --config "$repo/osv-scanner.toml" > "$valid_log" 2>&1
+    rc=$?
+    set -e
+    # osv-scanner names a filtered advisory on its "have been filtered out" line; any other line
+    # naming it is a report.
+    if [[ "$rc" -ne 0 ]] || grep -F -- GHSA-fc5q-39xc-vjpf "$valid_log" | grep -qvF -- 'have been filtered out'; then
+      echo "$tool (valid exemption): exit $rc; the real lock under the real osv-scanner.toml must exit 0 without GHSA-fc5q-39xc-vjpf" >&2
+      cat "$valid_log" >&2
+      exit 1
+    fi
+
     expired_log="$plant/expired-scan.log"
     expired_config="$plant/osv-scanner.toml"
     sed 's/^effectiveUntil = .*/effectiveUntil = 2020-01-01/' "$repo/osv-scanner.toml" > "$expired_config"
@@ -346,7 +362,7 @@ PY
     rc=$?
     set -e
     require_findings "$tool (expired exemption)" "$rc" "$expired_log" "${expected[@]}"
-    echo "$tool: planted fast-uri $old_version reported (GHSA-w74x-v6f9-j3xg, exit 1), expired exemption reported (GHSA-fc5q-39xc-vjpf, exit 1), exemption dates agree on $shared_date"
+    echo "$tool: planted fast-uri $old_version reported (GHSA-w74x-v6f9-j3xg, exit 1), valid exemption honoured (GHSA-fc5q-39xc-vjpf absent, exit 0), expired exemption reported (GHSA-fc5q-39xc-vjpf, exit 1), exemption dates agree on $shared_date"
     exit 0
     ;;
   *)

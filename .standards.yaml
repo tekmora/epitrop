@@ -85,13 +85,14 @@ release:
     since: 011ac7d867c2a67e57bfe69355f6717b737af8e7
 
 # Exception for rule backlog.caps.forge_alerts, category C: GHSA-fc5q-39xc-vjpf in picomatch
-# (tools/spectral/package-lock.json) has no fixed release; it ends when a patched picomatch is
-# released. The osv-scanner gate (make lock-advisories) reads the same date through
+# (tools/spectral/package-lock.json) has no fixed release; the exception is fixed-date, until
+# 2026-11-27. A patched picomatch released before then does not end it: remove the entry by hand
+# in the Renovate pull request that takes the release. The osv-scanner gate (make lock-advisories) reads the same date through
 # osv-scanner.toml; the osv-scanner self-test fails when the two dates differ.
 exceptions:
   - rule: backlog.caps.forge_alerts
     tool: backlog
-    reason: "category C: GHSA-fc5q-39xc-vjpf in picomatch 2.3.2 (tools/spectral/package-lock.json) has no fixed release; ends when a patched picomatch is released"
+    reason: "category C: GHSA-fc5q-39xc-vjpf in picomatch 2.3.2 (tools/spectral/package-lock.json) has no fixed release; fixed-date exception until 2026-11-27, removed by hand in the Renovate pull request that takes a patched picomatch"
     category: C
     entered: "2026-11-17"
     expires: "2026-11-27"

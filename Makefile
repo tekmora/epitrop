@@ -126,7 +126,10 @@ gosec:
 # dependencies conflict with the root module's. It reads osv.dev online, like govulncheck, and
 # every severity fails: exit 1 on any advisory osv-scanner.toml does not exempt, and the one
 # exemption it holds expires by itself. The self-test plants an old fast-uri and an expired
-# exemption and must see both reported before the scan is trusted.
+# exemption and must see both reported before the scan is trusted. Neither target is gated by a
+# diff: the advisory database changes with no change in this repository, so a diff filter would
+# hide a new advisory until someone touched the lockfile. The self-test reads osv.dev too, so it
+# runs on every build as well.
 OSVSCANNER := go tool -modfile=tools/osvscanner/go.mod osv-scanner
 
 lock-advisories-selftest:
