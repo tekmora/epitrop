@@ -200,17 +200,28 @@ func badgeMessageVersion(line string) (string, bool, error) {
 		found = true
 		message = msg
 	}
+	if nextURLStart(rest) >= 0 {
+		return "", false, fmt.Errorf("line holds more than %d URLs", maxLineURLs)
+	}
 	if !found {
 		return "", false, nil
 	}
-	ver, ok := strings.CutPrefix(message, "v")
-	if !ok {
-		return "", false, errors.New("label=release badge has no message=v<version>")
-	}
-	if !releaseVersion.MatchString(ver) {
-		return "", false, fmt.Errorf("badge version %q is not of the form 1.2.3 or 1.2.3-rc.1", ver)
+	ver, err := parseReleaseBadgeVersion(message)
+	if err != nil {
+		return "", false, err
 	}
 	return ver, true, nil
+}
+
+func parseReleaseBadgeVersion(message string) (string, error) {
+	ver, ok := strings.CutPrefix(message, "v")
+	if !ok {
+		return "", errors.New("label=release badge has no message=v<version>")
+	}
+	if !releaseVersion.MatchString(ver) {
+		return "", fmt.Errorf("badge version %q is not of the form 1.2.3 or 1.2.3-rc.1", ver)
+	}
+	return ver, nil
 }
 
 func releaseBadgeMessage(rawURL string) (string, bool) {

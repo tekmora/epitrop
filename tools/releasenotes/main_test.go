@@ -273,6 +273,10 @@ func TestReadmeReleaseBadge(t *testing.T) {
 	badge010 := "[![Release](https://img.shields.io/static/v1?label=release&message=v0.1.0&style=for-the-badge&color=3b82f6&labelColor=111a35)](https://github.com/tekmora/epitrop/releases)"
 	docsBadge020 := "[![Docs](https://img.shields.io/static/v1?label=docs&message=v0.2.0&style=for-the-badge)](https://tekmora.github.io/epitrop/)"
 	releasesBadge020 := "[![Releases](https://img.shields.io/static/v1?label=releases&message=v0.2.0&style=for-the-badge)](https://github.com/tekmora/epitrop/releases)"
+	releaseURL020 := "https://img.shields.io/static/v1?label=release&message=v0.2.0"
+	releaseURLRC := "https://img.shields.io/static/v1?label=release&message=v0.2.0-rc.1"
+	plainURLs255 := strings.Repeat(" https://example.com", maxLineURLs-1)
+	plainURLs256 := strings.Repeat(" https://example.com", maxLineURLs)
 	cases := []struct {
 		name    string
 		readme  string
@@ -286,6 +290,9 @@ func TestReadmeReleaseBadge(t *testing.T) {
 		{name: "label=releases is not a release badge", readme: releasesBadge020, wantErr: "no label=release badge"},
 		{name: "https release badge before a plain http link on one line", readme: badge010 + " see http://example.com/notes", want: "0.1.0"},
 		{name: "message last before the closing parenthesis", readme: "[![Release](https://img.shields.io/static/v1?label=release&message=v0.3.0)](https://github.com/tekmora/epitrop/releases)", want: "0.3.0"},
+		{name: "release plus 255 plain URLs at line URL limit", readme: releaseURL020 + plainURLs255, want: "0.2.0"},
+		{name: "release plus 255 plain URLs plus second release URL over limit", readme: releaseURL020 + plainURLs255 + " " + releaseURLRC, wantErr: "more than 256 URLs"},
+		{name: "release plus 256 plain URLs over limit", readme: releaseURL020 + plainURLs256, wantErr: "more than 256 URLs"},
 		{name: "no badge", readme: "# Title\nNo release badge here.\n", wantErr: "no label=release badge"},
 		{name: "empty input", readme: "", wantErr: "no label=release badge"},
 		{name: "two badges on different lines", readme: badge020 + "\n" + badgeRC + "\n", wantErr: "label=release badge at line 1 and at line 2"},
@@ -352,11 +359,51 @@ func TestReadmeReleaseBadgeMatchesChangelog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readmeReleaseBadge(%s) = %v", readmePath, err)
 	}
-	planted := strings.Replace(readmeText, "message=v"+badge, "message=v0.0.0", 1)
+	planted := plantReleaseBadgeVersion(readmeText, badge, "0.0.0")
 	if planted == readmeText {
 		t.Fatalf("planted badge: message=v%s not found in %s", badge, readmePath)
 	}
 	if err := checkReadmeBadgeMatchesChangelog(planted, changelogText); err == nil || !strings.Contains(err.Error(), "message=v0.0.0 does not match CHANGELOG.md latest release "+badge) {
 		t.Fatalf("planted v0.0.0 badge = %v, want mismatch against %s", err, badge)
 	}
+	checkPrecedingNonReleaseBadgePlant(t)
+}
+
+func checkPrecedingNonReleaseBadgePlant(t *testing.T) {
+	t.Helper()
+	docsBadge := "[![Docs](https://img.shields.io/static/v1?label=docs&message=v0.2.0&style=for-the-badge)](https://tekmora.github.io/epitrop/)"
+	releaseBadge := "[![Release](https://img.shields.io/static/v1?label=release&message=v0.2.0&style=for-the-badge)](https://github.com/tekmora/epitrop/releases)"
+	synthetic := docsBadge + "\n" + releaseBadge + "\n"
+	if err := checkReadmeBadgeMatchesChangelog(synthetic, sampleChangelog); err != nil {
+		t.Fatalf("checkReadmeBadgeMatchesChangelog(synthetic) = %v, want nil", err)
+	}
+	planted := plantReleaseBadgeVersion(synthetic, "0.2.0", "0.0.0")
+	if !strings.HasPrefix(planted, docsBadge+"\n") {
+		t.Fatalf("plantReleaseBadgeVersion changed the preceding non-release badge:\n%s", planted)
+	}
+	if err := checkReadmeBadgeMatchesChangelog(planted, sampleChangelog); err == nil || !strings.Contains(err.Error(), "message=v0.0.0 does not match CHANGELOG.md latest release 0.2.0") {
+		t.Fatalf("planted synthetic v0.0.0 badge = %v, want mismatch against 0.2.0", err)
+	}
+}
+
+func plantReleaseBadgeVersion(readme string, fromVersion string, toVersion string) string {
+	rest := readme
+	for n := 0; n < maxLineURLs && rest != ""; n++ {
+		raw, tail, ok := nextURLToken(rest)
+		if !ok {
+			break
+		}
+		rest = tail
+		msg, isRelease := releaseBadgeMessage(raw)
+		if !isRelease || msg != "v"+fromVersion {
+			continue
+		}
+		planted := strings.Replace(raw, "message=v"+fromVersion, "message=v"+toVersion, 1)
+		if planted == raw {
+			return readme
+		}
+		prefix := readme[:len(readme)-len(raw)-len(tail)]
+		return prefix + planted + tail
+	}
+	return readme
 }
