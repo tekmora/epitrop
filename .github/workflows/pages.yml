@@ -9,6 +9,7 @@ on:
       - 'mkdocs.yml'
       - 'overrides/**'
       - 'tools/figures/**'
+      - 'tools/pagesguard/**'
       - '.github/workflows/pages.yml'
       - '.node-version'
       - 'go.mod'
@@ -27,6 +28,7 @@ on:
       - 'mkdocs.yml'
       - 'overrides/**'
       - 'tools/figures/**'
+      - 'tools/pagesguard/**'
       - '.github/workflows/pages.yml'
       - '.node-version'
       - 'go.mod'
@@ -35,8 +37,10 @@ on:
   workflow_dispatch:
 
 # Pull requests cancel earlier runs on the same number; main pushes and
-# dispatches share the ref group without cancellation so builds run in push
-# order and the newest pending run replaces any older queued one.
+# dispatches share the ref group without cancellation (newest pending run
+# replaces an older queued one). GitHub queues runs by arrival at the group
+# and a re-run reuses its original commit, so the deploy job refuses to move
+# the live site to an older commit (tools/pagesguard).
 concurrency:
   group: >-
     ${{ github.workflow }}-${{ github.event.pull_request.number ||
@@ -142,12 +146,30 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      deployments: read
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Checkout Source Code
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        # yamllint disable-line rule:line-length
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Refuse an older commit than the live site
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: go run ./tools/pagesguard
+
       - name: Deploy Site to GitHub Pages
         id: deployment
         # yamllint disable-line rule:line-length
