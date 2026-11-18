@@ -30,6 +30,7 @@ const (
 	defaultPollInterval = time.Second
 	maxJobRuntime       = 365 * 24 * time.Hour
 	maxStatusPolls      = 100
+	maxStopAttempts     = 3
 	// A start is awaited for 15 s (10 ms apart), longer than the shim may wait for the
 	// job's scope, so a slow start is never reported as failed while it can still succeed.
 	maxStartPolls     = 1500
@@ -410,31 +411,20 @@ func (s *Supervisor) stopOne(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if s.statusFor(job, eventlog.Job{}).State != StateRunning {
-		return s.stopNotRunning(ctx, job)
+	for attempt := 0; attempt < maxStopAttempts; attempt++ {
+		lock, target, waitErr := s.waitStopTarget(ctx, job)
+		if waitErr != nil {
+			return fmt.Errorf("supervisor: stop %s: %w", name, waitErr)
+		}
+		if lock != nil {
+			appendErr := s.appendJobEvent(ctx, "job.stopped", name, map[string]any{"state": string(StateStopped)})
+			return errors.Join(appendErr, lock.Close())
+		}
+		if err = s.terminateTarget(ctx, job, target); err != nil {
+			return err
+		}
 	}
-	if err = s.terminate(ctx, job); err != nil {
-		return err
-	}
-	return s.appendJobEvent(ctx, "job.stopped", job.Name, map[string]any{"state": string(StateStopped)})
-}
-
-func (s *Supervisor) stopNotRunning(ctx context.Context, job config.JobConfig) error {
-	lock, err := holdLock(s.lockPath(job.Name))
-	if err == nil {
-		appendErr := s.appendJobEvent(ctx, "job.stopped", job.Name, map[string]any{"state": string(StateStopped)})
-		return errors.Join(appendErr, lock.Close())
-	}
-	if !errors.Is(err, errLockBusy) {
-		return err
-	}
-	if !s.waitJobRecord(ctx, job) {
-		return fmt.Errorf("supervisor: stop %s: job lock is held without a record", job.Name)
-	}
-	if err = s.terminate(ctx, job); err != nil {
-		return err
-	}
-	return s.appendJobEvent(ctx, "job.stopped", job.Name, map[string]any{"state": string(StateStopped)})
+	return fmt.Errorf("supervisor: stop %s: lock remained busy after %d attempts", name, maxStopAttempts)
 }
 
 // terminate ends a running job: its stop signal to the process group, its grace period,
@@ -444,11 +434,15 @@ func (s *Supervisor) terminate(ctx context.Context, job config.JobConfig) error 
 	if err != nil {
 		return err
 	}
-	if err = signalProcessGroup(target, job.Stop.Signal); err != nil {
+	return s.terminateTarget(ctx, job, target)
+}
+
+func (s *Supervisor) terminateTarget(ctx context.Context, job config.JobConfig, target jobSignalTarget) error {
+	if err := signalProcessGroup(target, job.Stop.Signal); err != nil {
 		return s.refusalStands(job, err)
 	}
 	if !s.waitStopped(ctx, job) {
-		if err = killProcess(target); err != nil {
+		if err := killProcess(target); err != nil {
 			return s.refusalStands(job, err)
 		}
 		if !s.waitUnlocked(ctx, job, maxStatusPolls) {

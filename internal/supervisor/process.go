@@ -2,6 +2,8 @@ package supervisor
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"time"
@@ -42,18 +44,33 @@ func (s *Supervisor) shimCmdFor(ctx context.Context, job config.JobConfig, unles
 	return cmd
 }
 
-func (s *Supervisor) waitJobRecord(ctx context.Context, job config.JobConfig) bool {
-	path := s.recordPath(job.Name)
+// waitStopTarget retries the lock while a starting shim publishes its record.
+func (s *Supervisor) waitStopTarget(ctx context.Context, job config.JobConfig) (*heldLock, jobSignalTarget, error) {
+	last := errors.New("job lock is held without a record")
 	for i := 0; i < maxStatusPolls; i++ {
-		if _, ok := readJobRecord(path); ok {
-			return true
+		lock, err := holdLock(s.lockPath(job.Name))
+		if err == nil {
+			return lock, jobSignalTarget{}, nil
+		}
+		if !errors.Is(err, errLockBusy) {
+			return nil, jobSignalTarget{}, err
+		}
+		target, err := s.signalTarget(job)
+		if err == nil {
+			gone, probeErr := processGone(target.ShimPID)
+			if probeErr != nil {
+				return nil, jobSignalTarget{}, probeErr
+			}
+			if !gone {
+				return nil, target, nil
+			}
+			last = fmt.Errorf("stale record: shim %d is gone", target.ShimPID)
 		}
 		if !sleepContext(ctx, startPollInterval) {
-			return false
+			return nil, jobSignalTarget{}, errors.Join(last, ctx.Err())
 		}
 	}
-	_, ok := readJobRecord(path)
-	return ok
+	return nil, jobSignalTarget{}, last
 }
 
 func (s *Supervisor) isRunning(job config.JobConfig) (bool, error) {
