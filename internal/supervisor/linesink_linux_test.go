@@ -21,7 +21,6 @@ import (
 type blockedLineWriter struct {
 	entered   chan<- struct{}
 	release   <-chan struct{}
-	done      chan<- struct{}
 	failFirst bool
 	calls     atomic.Int32
 	buf       synchronizedFindingBuffer
@@ -38,14 +37,6 @@ func (w *blockedLineWriter) Write(p []byte) (int, error) {
 	if w.release != nil {
 		<-w.release
 	}
-	defer func() {
-		if w.done != nil {
-			select {
-			case w.done <- struct{}{}:
-			default:
-			}
-		}
-	}()
 	if call == 1 && w.failFirst {
 		return 0, errors.New("disk full")
 	}
@@ -219,8 +210,7 @@ func newPendingWriteSupervisor(t *testing.T, w *blockedLineWriter) (*Supervisor,
 
 func testPendingWriteLateSuccess(t *testing.T) {
 	release := make(chan struct{})
-	done := make(chan struct{}, 1)
-	w := &blockedLineWriter{release: release, done: done}
+	w := &blockedLineWriter{release: release}
 	sup, state := newPendingWriteSupervisor(t, w)
 	var episode findingEpisode
 	checkFindingEpisode(t, sup, state, &episode)
@@ -228,7 +218,7 @@ func testPendingWriteLateSuccess(t *testing.T) {
 	checkFindingEpisode(t, sup, state, &episode)
 	assertEpisodeInFlight(t, "tick 2 (still pending)", episode, w.calls.Load())
 	close(release)
-	<-done
+	awaitPendingResult(t, &episode)
 	checkFindingEpisode(t, sup, state, &episode)
 	if !episode.reported || episode.pending != nil || w.calls.Load() != 1 || strings.Count(w.buf.String(), "\n") != 1 {
 		t.Fatalf("tick 3 (late success): episode = %+v, calls = %d, buf = %q; want reported once", episode, w.calls.Load(), w.buf.String())
@@ -242,16 +232,28 @@ func assertEpisodeInFlight(t *testing.T, label string, episode findingEpisode, c
 	}
 }
 
+func awaitPendingResult(t *testing.T, episode *findingEpisode) {
+	t.Helper()
+	select {
+	case err := <-episode.pending:
+		ready := make(chan error, 1)
+		ready <- err
+		episode.pending = ready
+	case <-time.After(10 * time.Second):
+		t.Fatal("pending write did not finish within 10s")
+	}
+}
+
 func testPendingWriteLateFailure(t *testing.T) {
 	release := make(chan struct{})
-	done := make(chan struct{}, 1)
-	w := &blockedLineWriter{release: release, done: done, failFirst: true}
+	w := &blockedLineWriter{release: release, failFirst: true}
 	sup, state := newPendingWriteSupervisor(t, w)
 	var episode findingEpisode
 	checkFindingEpisode(t, sup, state, &episode)
 	assertEpisodeInFlight(t, "tick 1", episode, w.calls.Load())
 	close(release)
-	<-done
+	awaitPendingResult(t, &episode)
+	sup.writeTimeout = defaultWriteTimeout
 	checkFindingEpisode(t, sup, state, &episode)
 	if !episode.reported || episode.pending != nil || w.calls.Load() != 2 || strings.Count(w.buf.String(), "\n") != 1 {
 		t.Fatalf("tick 2 (retry): episode = %+v, calls = %d, buf = %q; want 2 calls and 1 line", episode, w.calls.Load(), w.buf.String())
@@ -268,6 +270,7 @@ func testPendingWriteSlotNeverAcquired(t *testing.T) {
 		t.Fatalf("tick 1 (no slot): episode = %+v, calls = %d; want un-admitted timeout", episode, w.calls.Load())
 	}
 	<-sup.errOut().slot
+	sup.writeTimeout = defaultWriteTimeout
 	checkFindingEpisode(t, sup, state, &episode)
 	if !episode.reported || w.calls.Load() != 1 || strings.Count(w.buf.String(), "\n") != 1 {
 		t.Fatalf("tick 2 (slot free): episode = %+v, calls = %d, buf = %q; want 1 line", episode, w.calls.Load(), w.buf.String())
@@ -295,6 +298,7 @@ func TestNoJobAliveLostOnce(t *testing.T) {
 	t.Run("lock free once and spent always is terminal finding", testLostOnceFinding)
 	t.Run("held lock once stays alive", testHeldLockOnceAlive)
 	t.Run("new start before confirm replay cancels finding", testLostOnceNewStartBeforeConfirm)
+	t.Run("exit recorded before confirm", testLostOnceExitBeforeConfirm)
 }
 
 func testLostOnceFinding(t *testing.T) {
@@ -347,5 +351,33 @@ func testLostOnceNewStartBeforeConfirm(t *testing.T) {
 	episode := findingEpisode{reported: true, pending: make(chan error)}
 	if err := sup.checkNoJobAlive(testContext(t), state, &episode); err != nil || stderr.String() != "" || episode.reported || episode.pending != nil {
 		t.Fatalf("checkNoJobAlive = %v, stderr = %q, episode = %+v; want no finding and cleared episode", err, stderr.String(), episode)
+	}
+}
+
+func testLostOnceExitBeforeConfirm(t *testing.T) {
+	once := testJob("manual", []string{"/bin/true"})
+	once.Schedule = "once"
+	sup := testSupervisor(t, once, budgetJob("broken", 1, []string{"/bin/true"}))
+	stderr := captureSupervisorStderr(sup)
+	plantSpentBudget(t, sup, "broken", 1, intPtr(1), "")
+	state := plantRunningOnce(t, sup, "manual", "2026-11-18T08:00:00Z")
+	sup.beforeConfirmReplay = func() {
+		plantExit(t, sup, "manual", intPtr(1), "")
+	}
+	episode := findingEpisode{reported: true, pending: make(chan error)}
+	if err := sup.checkNoJobAlive(testContext(t), state, &episode); err != nil || stderr.String() != "" || episode.reported || episode.pending != nil {
+		t.Fatalf("tick 1 (exit before confirm): err = %v, stderr = %q, episode = %+v; want nil, empty, reset", err, stderr.String(), episode)
+	}
+	sup.beforeConfirmReplay = nil
+	fresh, err := sup.replayState(testContext(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.checkNoJobAlive(testContext(t), fresh, &episode); !errors.Is(err, ErrNoJobAlive) {
+		t.Fatalf("tick 2 (after exit): checkNoJobAlive = %v, want ErrNoJobAlive", err)
+	}
+	want := "epitrop supervisor: finding: no job alive: manual dead (exit 1, restarts 0/0 in 0s), broken dead (exit 1, restarts 1/1 in 0s); supervise exits 3\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("tick 2 stderr = %q, want %q", got, want)
 	}
 }
