@@ -379,14 +379,7 @@ func TestSupervisorStopMarksRunStartedInLastTick(t *testing.T) {
 // shim recorded: the replay after the cancel binds the run, and it gets its stop marker.
 func TestSupervisorStopMarksRunStartedBeforeStartWaitEnded(t *testing.T) {
 	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
-	shim := exec.CommandContext(t.Context(), "/bin/sleep", "30")
-	if err := shim.Start(); err != nil {
-		t.Fatalf("Start(stub shim) = %v, want nil", err)
-	}
-	t.Cleanup(func() {
-		_ = shim.Process.Kill()
-		_ = shim.Wait()
-	})
+	shim := startSleep(t, false)
 	const since = "2026-11-18T08:00:00Z"
 	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "pid": shim.Process.Pid + 10, "shim_pid": shim.Process.Pid, "since": since})
 	ctx, cancel := context.WithCancel(t.Context())
