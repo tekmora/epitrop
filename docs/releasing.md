@@ -62,8 +62,9 @@ Praetor reads snapshots through the catalog package, pinned as a Go module: `git
    praetorctl release --version=<tag> --date=<YYYY-MM-DD>
    ```
 
-3. Merge that change through a pull request. The section it adds to `CHANGELOG.md` becomes the release notes.
-4. Tag the merged commit and push only the tag:
+3. Bump the `README.md` release badge `message=v<version>` in the same branch; `TestReadmeReleaseBadgeMatchesChangelog` in `tools/releasenotes` fails until it matches the newest released section in `CHANGELOG.md`.
+4. Merge that change through a pull request. The section it adds to `CHANGELOG.md` becomes the release notes.
+5. Tag the merged commit and push only the tag:
 
    ```bash
    git fetch origin
@@ -71,7 +72,7 @@ Praetor reads snapshots through the catalog package, pinned as a Go module: `git
    git push origin <tag>
    ```
 
-5. Check the run with `gh run list --workflow release.yml --limit 1` and the result with `gh release view <tag>`.
+6. Check the run with `gh run list --workflow release.yml --limit 1` and the result with `gh release view <tag>`.
 
 ## Upgrade fixtures
 

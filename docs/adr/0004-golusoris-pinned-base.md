@@ -23,8 +23,8 @@ Epitrop keeps no relational database ([ADR-001](../architecture-v2.md#adr-001-gr
 2. A capability golusoris ships is taken from golusoris. Epitrop writes only what the [gaps](#gaps-epitrop-writes) section lists.
 3. Modules that need Postgres, SQLite, Redis, NATS or another external state service stay out (see [Excluded modules](#excluded-modules)).
 4. Existing duplicates move now:
-   - [`internal/sources/httpfetch`](../../internal/sources/httpfetch/httpfetch.go) builds its client with `httpx/client.New` and caps bodies with `httpx/client.ReadAllBounded`. It gains `GetWithHeader` for authenticated sources.
-   - [`internal/sources/litellmgateway`](../../internal/sources/litellmgateway/source.go) drops its own copy of the bounded GET and calls `httpfetch.GetWithHeader`.
+   - [`internal/sources/httpfetch`](https://github.com/tekmora/epitrop/blob/main/internal/sources/httpfetch/httpfetch.go) builds its client with `httpx/client.New` and caps bodies with `httpx/client.ReadAllBounded`. It gains `GetWithHeader` for authenticated sources.
+   - [`internal/sources/litellmgateway`](https://github.com/tekmora/epitrop/blob/main/internal/sources/litellmgateway/source.go) drops its own copy of the bounded GET and calls `httpfetch.GetWithHeader`.
    - The token file and snapshot file reads use `ReadAllBounded`. Every deferred close that joined its error now uses `core/errors.CloseJoin`.
 
 Behaviour kept: no retry and no circuit breaker (zero `RetryOptions` and `BreakerOptions`), the same per-call deadlines and byte caps. Behaviour changed:
@@ -33,7 +33,7 @@ Behaviour kept: no retry and no circuit breaker (zero `RetryOptions` and `Breake
 - A non-positive byte cap is refused instead of accepting an empty body.
 - Close errors name the operation.
 
-Tests: `TestGet_Boundary` and `TestGetWithHeader` in [`httpfetch_test.go`](../../internal/sources/httpfetch/httpfetch_test.go), `TestListModels_ResponseCap` in [`source_test.go`](../../internal/sources/litellmgateway/source_test.go).
+Tests: `TestGet_Boundary` and `TestGetWithHeader` in [`httpfetch_test.go`](https://github.com/tekmora/epitrop/blob/main/internal/sources/httpfetch/httpfetch_test.go), `TestListModels_ResponseCap` in [`source_test.go`](https://github.com/tekmora/epitrop/blob/main/internal/sources/litellmgateway/source_test.go).
 
 ## Module map
 
@@ -107,8 +107,8 @@ The golusoris epic for v0.13.0, golusoris/golusoris#429, stays open after the re
 
 The `go` line moves from 1.27 to 1.27.2, because both golusoris modules require Go 1.27.2 or later. A Go 1.27.1 toolchain with `GOTOOLCHAIN=local` refuses the module (`go: go.mod requires go >= 1.27.2`). Both the `golang` builder image and `actions/setup-go` set `GOTOOLCHAIN=local`, so:
 
-- the [`Dockerfile`](../../Dockerfile) builder moves to the `golang:1.27.2-trixie` index digest;
-- [`ci.yml`](../../.github/workflows/ci.yml) reads the version from `go.mod` (`go-version-file`), as `security.yml` already does.
+- the [`Dockerfile`](https://github.com/tekmora/epitrop/blob/main/Dockerfile) builder moves to the `golang:1.27.2-trixie` index digest;
+- [`ci.yml`](https://github.com/tekmora/epitrop/blob/main/.github/workflows/ci.yml) reads the version from `go.mod` (`go-version-file`), as `security.yml` already does.
 
 `praetor-api.yml` asks for `stable`, which setup-go resolves through the actions/go-versions manifest; it needs that manifest to list Go 1.27.2.
 

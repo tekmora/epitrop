@@ -5,6 +5,7 @@ bin/
 
 # npm installs of the locked tools (tools/markdownlint, tools/spectral)
 node_modules/
+/site/
 
 # BEGIN praetor private artifacts (praetorctl adopt)
 .workingdir/

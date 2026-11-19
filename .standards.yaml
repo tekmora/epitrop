@@ -67,6 +67,7 @@ docs_surfaces:
       - "cmd/epitrop-server/*_test.go"
       - "internal/mcp/*_test.go"
     docs:
+      - "docs/mcp-server.md"
       - "README.md"
       - "docs/agent-onboarding.md"
   - name: "model catalog and sources"

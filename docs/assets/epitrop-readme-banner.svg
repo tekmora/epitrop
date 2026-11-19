@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 120" width="1200" height="120" role="img" aria-label="Epitrop — agent runtime and task-graph engine for the Tekmora ecosystem">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1020"/>
+      <stop offset="55%" stop-color="#111a35"/>
+      <stop offset="100%" stop-color="#0b1020"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#06b6d4"/>
+      <stop offset="50%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#06b6d4" stop-opacity="0.15"/>
+      <stop offset="50%" stop-color="#3b82f6" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#8b5cf6" stop-opacity="0.15"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="120" rx="12" fill="url(#bg)"/>
+  <rect x="24" y="26" width="4" height="68" rx="2" fill="url(#accent)"/>
+
+  <!-- directed task-graph traces converging on the event log -->
+  <g fill="none" stroke-linecap="round">
+    <path d="M680 76 C 750 46, 810 92, 880 66 S 1000 40, 1070 66 S 1130 88, 1164 58"
+          stroke="url(#wave)" stroke-width="14"/>
+    <path d="M680 76 C 750 46, 810 92, 880 66 S 1000 40, 1070 66 S 1130 88, 1164 58"
+          stroke="url(#accent)" stroke-width="2.5" opacity="0.95"/>
+    <path d="M680 84 C 750 56, 810 100, 880 74 S 1000 50, 1070 74 S 1130 94, 1164 66"
+          stroke="#06b6d4" stroke-width="1.6" stroke-dasharray="7 9" opacity="0.6"/>
+  </g>
+
+  <text x="44" y="76" font-family="ui-sans-serif,Segoe UI,Helvetica,Arial,sans-serif"
+        font-size="60" font-weight="700" fill="#e2e8f0" letter-spacing="-1">Epitrop</text>
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" fill="#94a3b8">
+    <text x="292" y="54">agent runtime · task-graph engine</text>
+    <text x="292" y="78">Tekmora</text>
+  </g>
+</svg>
