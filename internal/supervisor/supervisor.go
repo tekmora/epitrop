@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +28,7 @@ const (
 	StateStopped JobRunState = "stopped"
 
 	defaultPollInterval = time.Second
+	defaultWriteTimeout = 5 * time.Second
 	maxJobRuntime       = 365 * 24 * time.Hour
 	maxStatusPolls      = 100
 	// A start is awaited for 15 s (10 ms apart), longer than the shim may wait for the
@@ -78,6 +81,9 @@ type Options struct {
 	Clock        clock.Clock
 	ShimCommand  []string
 	PollInterval time.Duration
+	// Stderr receives what the supervisor reports to its operator: the no-job-alive finding
+	// and a shim that could not be collected. Nil means os.Stderr.
+	Stderr io.Writer
 }
 
 type Supervisor struct {
@@ -87,12 +93,27 @@ type Supervisor struct {
 	shimCommand  []string
 	pollInterval time.Duration
 	shimWaiters  atomic.Int32
+	stderr       io.Writer
+	stderrOnce   sync.Once
+	stderrSink   *lineSink
+	writeTimeout time.Duration
+	// afterTick and beforeConfirmReplay are test hooks; nil in production.
+	afterTick           func()
+	beforeConfirmReplay func()
 }
 
 // reportShimError tells the operator about a shim that could not be collected. Nothing
-// returns to a caller from the waiter, so it goes to stderr like the shim's own errors.
-var reportShimError = func(name string, err error) {
-	fmt.Fprintf(os.Stderr, "Error: collect shim of %s: %v\n", name, err)
+// returns to a caller from the waiter, so it goes to the supervisor's stderr like the
+// shim's own errors.
+var reportShimError = func(w *lineSink, timeout time.Duration, name string, err error) {
+	if _, werr := writeLine(context.Background(), w, fmt.Sprintf("Error: collect shim of %s: %v", foldWhitespace(name), err), timeout); werr != nil {
+		if w == defaultStderrSink {
+			return
+		}
+		if _, fallbackErr := writeLine(context.Background(), defaultStderrSink, fmt.Sprintf("Error: collect shim of %s: %v (stderr write: %v)", foldWhitespace(name), err, werr), timeout); fallbackErr != nil {
+			return
+		}
+	}
 }
 
 func New(cfg config.Config, opts Options) (*Supervisor, error) {
@@ -122,7 +143,7 @@ func New(cfg config.Config, opts Options) (*Supervisor, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Supervisor{cfg: cfg, signer: signer, clk: opts.Clock, shimCommand: opts.ShimCommand, pollInterval: opts.PollInterval}, nil
+	return &Supervisor{cfg: cfg, signer: signer, clk: opts.Clock, shimCommand: opts.ShimCommand, pollInterval: opts.PollInterval, stderr: opts.Stderr, writeTimeout: defaultWriteTimeout}, nil
 }
 
 func (s *Supervisor) PublicKey() string {
@@ -266,7 +287,7 @@ func (s *Supervisor) collectShim(cmd *exec.Cmd, name string) {
 	err := cmd.Wait()
 	var exit *exec.ExitError
 	if err != nil && !errors.As(err, &exit) {
-		reportShimError(name, err)
+		reportShimError(s.errOut(), s.writeTimeout, name, err)
 	}
 }
 
@@ -393,8 +414,17 @@ func (s *Supervisor) Supervise(ctx context.Context) error {
 	if _, err = writer.RepairTail(ctx); err != nil {
 		return fmt.Errorf("supervisor: repair event log tail %s: %w", s.cfg.EventLog.Dir, err)
 	}
+	var episode findingEpisode
 	for tick := 0; tick < maxSuperviseTicks; tick++ {
-		if err := s.Reconcile(ctx); err != nil {
+		state, err := s.reconcile(ctx)
+		if err != nil {
+			return err
+		}
+		err = s.checkNoJobAlive(ctx, state, &episode)
+		if s.afterTick != nil {
+			s.afterTick()
+		}
+		if err != nil {
 			return err
 		}
 		if !sleepContext(ctx, s.pollInterval) {
@@ -405,28 +435,35 @@ func (s *Supervisor) Supervise(ctx context.Context) error {
 }
 
 func (s *Supervisor) Reconcile(ctx context.Context) error {
+	_, err := s.reconcile(ctx)
+	return err
+}
+
+// reconcile is Reconcile that also returns the state it replayed, the state the tick acted
+// on; Supervise decides from it whether any job is alive.
+func (s *Supervisor) reconcile(ctx context.Context) (eventlog.State, error) {
 	if err := readyContext(ctx, "reconcile"); err != nil {
-		return err
+		return eventlog.State{}, err
 	}
 	collector := &eventMatchCollector{jobs: s.cfg.Jobs, matches: map[string][]uint64{}}
 	state, err := s.replayStateWithReducer(ctx, collector.reduce)
 	if err != nil {
-		return err
+		return eventlog.State{}, err
 	}
 	for i := 0; i < len(s.cfg.Jobs); i++ {
 		job := s.cfg.Jobs[i]
 		ended, err := s.endIfStale(ctx, job, state.Jobs[job.Name])
 		if err != nil {
-			return err
+			return eventlog.State{}, err
 		}
 		if ended {
 			continue
 		}
 		if err = s.reconcileJob(ctx, job, state.Jobs[job.Name], collector.matches[job.Name], collector.head); err != nil {
-			return err
+			return eventlog.State{}, err
 		}
 	}
-	return nil
+	return state, nil
 }
 
 // waitStarted waits until the event log records a start by the shim just spawned. It
