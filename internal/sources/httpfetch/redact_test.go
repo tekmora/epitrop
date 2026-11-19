@@ -96,7 +96,7 @@ func TestDoNon200OverCapReturnsStatus(t *testing.T) {
 	for _, tc := range cases {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(tc.status)
-			if _, err := io.WriteString(w, strings.Repeat("x", tc.size)); err != nil {
+			if _, err := io.Copy(w, strings.NewReader(strings.Repeat("x", tc.size))); err != nil {
 				t.Errorf("write: %v", err)
 			}
 		}))
