@@ -101,25 +101,21 @@ func TestSupervisorStopSkipsExitedShimWithoutStatus(t *testing.T) {
 // job.started and keep the cron next-fire unchanged; releasing the lock without an exit
 // record then writes no job.interrupted.
 func TestAdoptClearsStopMarkerOnNonAlwaysSchedules(t *testing.T) {
-	onceJob := testJob("once-job", []string{"/bin/true"})
+	onceJob := testJob("once-job", longJobCommand(t))
 	onceJob.Schedule = "once"
-	cronJob := testJob("cron-job", []string{"/bin/true"})
+	cronJob := testJob("cron-job", longJobCommand(t))
 	cronJob.Schedule = "0 2 * * *"
 	cronJob.Restart = config.JobRestartConfig{Policy: "never"}
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 11, 18, 1, 59, 0, 0, time.UTC))
 	sup := testSupervisorWithClock(t, testRuntime(t), clk, onceJob, cronJob)
 	reconcileOnce(t, sup, "arm cron-job")
 	clk.Advance(90 * time.Second)
-	onceLock := seedMarkedRunningNonAlwaysJob(t, sup, onceJob, false)
-	cronLock := seedMarkedRunningNonAlwaysJob(t, sup, cronJob, true)
+	onceStatus := seedMarkedRunningNonAlwaysJob(t, sup, onceJob, false)
+	cronStatus := seedMarkedRunningNonAlwaysJob(t, sup, cronJob, true)
 	reconcileOnce(t, sup, "adopt marked once and cron jobs")
 	assertAdoptedMarkedNonAlwaysJobs(t, sup)
-	if err := onceLock.Close(); err != nil {
-		t.Fatalf("Close(onceLock) = %v, want nil", err)
-	}
-	if err := cronLock.Close(); err != nil {
-		t.Fatalf("Close(cronLock) = %v, want nil", err)
-	}
+	killMarkedTestShim(t, sup, onceJob, onceStatus)
+	killMarkedTestShim(t, sup, cronJob, cronStatus)
 	clk.Advance(time.Minute)
 	reconcileOnce(t, sup, "after lock release with no exit record")
 	if got := countEvents(t, sup.cfg.EventLog.Dir, eventInterrupted); got != 0 {
@@ -132,23 +128,28 @@ func TestAdoptClearsStopMarkerOnNonAlwaysSchedules(t *testing.T) {
 	}
 }
 
-func seedMarkedRunningNonAlwaysJob(t *testing.T, sup *Supervisor, job config.JobConfig, triggered bool) *heldLock {
+func seedMarkedRunningNonAlwaysJob(t *testing.T, sup *Supervisor, job config.JobConfig, triggered bool) JobStatus {
 	t.Helper()
 	const since = "2026-11-18T02:00:00Z"
-	lock, err := holdLock(sup.lockPath(job.Name))
-	if err != nil {
-		t.Fatalf("holdLock(%s) = %v, want nil", job.Name, err)
-	}
-	cfg := shimConfig{Name: job.Name, RecordPath: sup.recordPath(job.Name), LogPath: job.LogPath}
-	if err = writeRecord(cfg, 400, since); err != nil {
-		t.Fatalf("writeRecord(%s) = %v, want nil", job.Name, err)
-	}
 	if triggered {
 		appendHistory(t, sup, "job.triggered", job.Name, map[string]any{"trigger": canonicalTrigger(job), "outcome": "started", "due": since})
 	}
-	appendHistory(t, sup, "job.started", job.Name, map[string]any{"state": "running", "pid": 400, "shim_pid": os.Getpid(), "since": since})
-	appendHistory(t, sup, eventSupervisorStopped, job.Name, map[string]any{"supervisor_pid": 1, "since": since})
-	return lock
+	if err := sup.Start(testContext(t), job.Name); err != nil {
+		t.Fatalf("Start(%s) = %v", job.Name, err)
+	}
+	status := statusOne(t, sup, job.Name)
+	appendHistory(t, sup, eventSupervisorStopped, job.Name, map[string]any{"supervisor_pid": 1, "since": status.Since})
+	return status
+}
+
+func killMarkedTestShim(t *testing.T, sup *Supervisor, job config.JobConfig, status JobStatus) {
+	t.Helper()
+	assertSafeSignalPID(t, status.ShimPID)
+	if err := syscall.Kill(status.ShimPID, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill shim %d: %v", status.ShimPID, err)
+	}
+	waitForProcessGone(t, status.PID)
+	waitForUnlock(t, sup, job)
 }
 
 func assertAdoptedMarkedNonAlwaysJobs(t *testing.T, sup *Supervisor) {

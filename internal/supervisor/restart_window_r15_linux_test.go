@@ -148,6 +148,7 @@ func TestR15RestartRejectsSupersededRun(t *testing.T) {
 }
 
 func TestR15MarkedShimMatches(t *testing.T) {
+	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
 	live, exited := os.Getpid(), exitedShimPID(t)
 	cases := []struct {
 		name   string
@@ -155,14 +156,14 @@ func TestR15MarkedShimMatches(t *testing.T) {
 		status JobStatus
 		want   bool
 	}{
-		{"matching live", eventlog.Job{Since: "a", ShimPID: live}, JobStatus{Since: "a", ShimPID: live}, true},
+		{"matching unrelated live", eventlog.Job{Since: "a", ShimPID: live}, JobStatus{Since: "a", ShimPID: live}, false},
 		{"different since", eventlog.Job{Since: "a", ShimPID: live}, JobStatus{Since: "b", ShimPID: live}, false},
 		{"different pid", eventlog.Job{Since: "a", ShimPID: live}, JobStatus{Since: "a", ShimPID: exited}, false},
 		{"exited", eventlog.Job{Since: "a", ShimPID: exited}, JobStatus{Since: "a", ShimPID: exited}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := markedShimMatches(tc.job, tc.status); got != tc.want {
+			if got := sup.markedShimMatches(tc.job, tc.status); got != tc.want {
 				t.Fatalf("markedShimMatches = %t, want %t", got, tc.want)
 			}
 		})

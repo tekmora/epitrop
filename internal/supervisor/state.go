@@ -470,7 +470,7 @@ func (s *Supervisor) adoptIfFreshStart(ctx context.Context, job config.JobConfig
 	// pid namespace): its adoption clears the marker, so a later end is not read as a
 	// supervisor stop.
 	markedRunning := st.State == string(StateRunning) && st.SupervisorStopped
-	if markedRunning && !markedShimMatches(st, status) {
+	if markedRunning && !s.markedShimMatches(st, status) {
 		return nil
 	}
 	if st.LastEvent != "job.started" && !markedRunning {
@@ -483,8 +483,13 @@ func (s *Supervisor) adoptIfFreshStart(ctx context.Context, job config.JobConfig
 	return err
 }
 
-func markedShimMatches(st eventlog.Job, status JobStatus) bool {
-	return status.Since == st.Since && status.ShimPID == st.ShimPID && !shimExited(status.ShimPID)
+func (s *Supervisor) markedShimMatches(st eventlog.Job, status JobStatus) bool {
+	if status.Since != st.Since || status.ShimPID != st.ShimPID {
+		return false
+	}
+	target := jobSignalTarget{Name: status.Name, PID: status.PID, ShimPID: status.ShimPID,
+		RecordPath: s.recordPath(status.Name), LockPath: s.lockPath(status.Name)}
+	return validateSignalTarget(target) == nil
 }
 
 // recordInterrupted records the end of a job that was recorded running, holds no lock, and

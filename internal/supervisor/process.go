@@ -71,7 +71,7 @@ func (s *Supervisor) waitStopTarget(ctx context.Context, job config.JobConfig) (
 			return nil, target, nil
 		} else if errors.Is(err, errSignalRefused) {
 			last = err
-			refused++
+			refused = stopTargetRefusals(target, refused)
 			if refused >= maxStatusPolls {
 				return nil, jobSignalTarget{}, last
 			}
@@ -83,6 +83,13 @@ func (s *Supervisor) waitStopTarget(ctx context.Context, job config.JobConfig) (
 		}
 	}
 	return nil, jobSignalTarget{}, last
+}
+
+func stopTargetRefusals(target jobSignalTarget, refused int) int {
+	if recordShimStale(target) {
+		return 0
+	}
+	return refused + 1
 }
 
 func (s *Supervisor) isRunning(job config.JobConfig) (bool, error) {

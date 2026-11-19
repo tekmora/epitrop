@@ -32,6 +32,8 @@ func validateSignalTarget(target jobSignalTarget) error {
 	return fmt.Errorf("%w: missing process-group signalling for pid %d", ErrNotSupported, target.PID)
 }
 
+func recordShimStale(jobSignalTarget) bool { return false }
+
 func killProcess(target jobSignalTarget) error {
 	return fmt.Errorf("%w: missing process-group SIGKILL for pid %d", ErrNotSupported, target.PID)
 }

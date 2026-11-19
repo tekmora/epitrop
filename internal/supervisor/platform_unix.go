@@ -184,6 +184,18 @@ func validateStartedProcessGroup(pid int) error {
 	return nil
 }
 
+func recordShimStale(target jobSignalTarget) bool {
+	gone, err := processGone(target.ShimPID)
+	if err != nil {
+		return false
+	}
+	if gone {
+		return true
+	}
+	reason, err := shimCmdlineMismatch(target)
+	return err == nil && reason != ""
+}
+
 func validateSignalTarget(target jobSignalTarget) error {
 	if err := validateStartedProcessGroup(target.PID); err != nil {
 		if errors.Is(err, errProcessGone) {
