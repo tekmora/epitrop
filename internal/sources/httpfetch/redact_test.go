@@ -16,7 +16,6 @@ import (
 
 func TestURLParseCause(t *testing.T) {
 	plain := errors.New("plain failure")
-	fixed := errors.New("missing protocol scheme")
 	_, invalidPort := url.Parse(strings.Join([]string{"https://user:s3cret", "@example.invalid/"}, "?"))
 	_, fixedParse := url.Parse(strings.Join([]string{" ", "http://x"}, ""))
 	cases := []struct {
@@ -27,7 +26,7 @@ func TestURLParseCause(t *testing.T) {
 	}{
 		{"nil", nil, "", nil},
 		{"plain", plain, "plain failure", plain},
-		{"fixed", &url.Error{Err: fixed}, fixed.Error(), fixed},
+		{"nil inner", &url.Error{Op: "parse", URL: "https://user:s3cret@example.invalid/"}, "invalid URL", nil},
 		{"unknown", &url.Error{Err: plain}, "invalid URL", nil},
 		{"escape", &url.Error{Err: url.EscapeError("%zz")}, "invalid URL escape", nil},
 		{"invalid port", invalidPort, "invalid URL", nil},
@@ -36,6 +35,22 @@ func TestURLParseCause(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			checkParseCause(t, URLParseCause(tc.input), tc.want, tc.same)
+		})
+	}
+	for _, text := range []string{
+		"missing protocol scheme",
+		"net/url: invalid control character in URL",
+		"empty url",
+		"invalid URI for request",
+		"first path segment in URL cannot contain colon",
+		"net/url: invalid userinfo",
+		"invalid IP-literal",
+		"missing ']' in host",
+	} {
+		t.Run(text, func(t *testing.T) {
+			cause := errors.New(text)
+			input := &url.Error{Op: "parse", URL: "https://user:s3cret@example.invalid/", Err: cause}
+			checkParseCause(t, URLParseCause(input), text, cause)
 		})
 	}
 }
