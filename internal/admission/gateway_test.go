@@ -268,3 +268,15 @@ func TestGatewayProber_TokenRedactedFromEndpointError(t *testing.T) {
 	}
 	assertTokenNotLeaked(t, err, secret)
 }
+
+func TestGatewayProber_ServerErrorOverCapNamesStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeResponse(t, w, http.StatusServiceUnavailable, strings.Repeat("x", maxProbeResponseBytes+1))
+	}))
+	defer srv.Close()
+	prober := &GatewayProber{BaseURL: srv.URL, Token: "secret", Client: srv.Client()}
+	_, err := prober.Probe(context.Background(), "cordana/auto")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 503") || strings.Contains(err.Error(), "exceeds byte cap") {
+		t.Fatalf("Probe() error = %v", err)
+	}
+}
