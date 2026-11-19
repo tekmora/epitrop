@@ -404,14 +404,8 @@ func (s *Supervisor) checkJobEvent(ctx context.Context, name string, check func(
 }
 
 func (s *Supervisor) reconcileJob(ctx context.Context, job config.JobConfig, st eventlog.Job, matches []uint64, replayHead uint64) error {
-	if st.State == string(StateRunning) && st.SupervisorStopped {
-		status := s.statusFor(job, st)
-		if status.State != StateRunning {
-			return s.recordInterruptedIfUnlocked(ctx, job, st)
-		}
-		if job.Schedule != "always" {
-			return s.adoptIfFreshStart(ctx, job, st, status)
-		}
+	if handled, err := s.reconcileMarkedJob(ctx, job, st); handled {
+		return err
 	}
 	switch job.Schedule {
 	case "always":
@@ -428,6 +422,23 @@ func (s *Supervisor) reconcileJob(ctx context.Context, job config.JobConfig, st 
 		return s.reconcileEventJob(ctx, job, armedState, matches)
 	}
 	return s.reconcileCronJob(ctx, job, armedState)
+}
+
+func (s *Supervisor) reconcileMarkedJob(ctx context.Context, job config.JobConfig, st eventlog.Job) (bool, error) {
+	if st.State != string(StateRunning) || !st.SupervisorStopped {
+		return false, nil
+	}
+	status := s.statusFor(job, st)
+	if status.State != StateRunning {
+		return true, s.recordInterruptedIfUnlocked(ctx, job, st)
+	}
+	if job.Schedule == "always" {
+		return false, nil
+	}
+	if err := s.adoptIfFreshStart(ctx, job, st, status); err != nil {
+		return true, err
+	}
+	return job.Schedule == "event" || job.Schedule == "once", nil
 }
 
 // recordInterruptedIfUnlocked records the interruption of a marked job that statusFor did

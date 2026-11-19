@@ -33,8 +33,8 @@ const (
 	maxJobRuntime       = 365 * 24 * time.Hour
 	maxStatusPolls      = 100
 	maxStopAttempts     = 3
-	// A start is awaited for 15 s (10 ms apart), longer than the shim may wait for the
-	// job's scope, so a slow start is never reported as failed while it can still succeed.
+	// Manual starts allow 15 s for the shim to start and confirm its scope. Automatic
+	// starts also allow the shim lock wait and its event-log replay deadline.
 	maxStartPolls     = 1500
 	startPollInterval = 10 * time.Millisecond
 	// Shims this supervisor started and has not collected yet. A job's lock allows one live
@@ -879,10 +879,17 @@ func (s *Supervisor) waitStarted(ctx context.Context, name string, before eventl
 	return s.waitStartedFor(ctx, name, before, shimPID, automatic, nil)
 }
 
+func startWaitPolls(automatic bool) int {
+	if automatic {
+		return maxStatusPolls + int((shimReplayTimeout+startPollInterval-1)/startPollInterval) + maxStartPolls
+	}
+	return maxStartPolls
+}
+
 func (s *Supervisor) waitStartedFor(ctx context.Context, name string, before eventlog.Job, shimPID int, automatic bool, result *shimStartResult) error {
 	var lastErr error
 	shimGone := false
-	for i := 0; i < maxStartPolls; i++ {
+	for i := 0; i < startWaitPolls(automatic); i++ {
 		state, err := s.replayState(ctx)
 		if err == nil {
 			if settled, startErr := s.settleStart(name, state.Jobs[name], before, shimPID, shimGone); settled {

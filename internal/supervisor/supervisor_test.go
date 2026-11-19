@@ -1279,9 +1279,12 @@ func TestStopRecordReadRetrySucceeds(t *testing.T) {
 	if err := sup.Start(testContext(t), "probe"); err != nil {
 		t.Fatal(err)
 	}
-	failNextJobRecordRead(t)
+	fired := failNextJobRecordRead(t)
 	if err := sup.Stop(testContext(t), "probe"); err != nil {
 		t.Fatalf("Stop(transient read failure) = %v", err)
+	}
+	if *fired != 1 {
+		t.Fatalf("transient read failure fired on read %d, want 1", *fired)
 	}
 	if got := eventlogJob(t, sup, "probe"); got.LastEvent != "job.stopped" {
 		t.Fatalf("last event = %s, want job.stopped", got.LastEvent)
@@ -1812,18 +1815,20 @@ func assertLockReleased(t *testing.T, path string) {
 	}
 }
 
-func failNextJobRecordRead(t *testing.T) {
+func failNextJobRecordRead(t *testing.T) *int {
 	t.Helper()
 	old := jobRecordReadFile
-	reads := 0
+	fired, reads := 0, 0
 	jobRecordReadFile = func(path string) ([]byte, error) {
 		reads++
-		if reads == 2 {
+		if reads == 1 {
+			fired = reads
 			return nil, os.ErrNotExist
 		}
 		return old(path)
 	}
 	t.Cleanup(func() { jobRecordReadFile = old })
+	return &fired
 }
 
 func withStopSignaller(t *testing.T, fail func(int, unix.Signal) error) *[]recordedSignal {

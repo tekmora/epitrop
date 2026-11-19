@@ -139,12 +139,10 @@ func TestSuperviseReturnsAMarkerWriteFailureWithItsOwnError(t *testing.T) {
 	}
 }
 
-// Each job's stop marker gets its own deadline: when the first job's marker append blocks
-// until its context expires, the second job still gets its marker and Supervise returns an
-// error naming the first job.
+// Each job's stop marker gets a fresh deadline after the preceding append fails.
 func TestSupervisorStopGivesEachMarkerAppendItsOwnDeadline(t *testing.T) {
 	oldTimeout := stopMarkTimeout
-	stopMarkTimeout = 50 * time.Millisecond
+	stopMarkTimeout = 5 * time.Second
 	t.Cleanup(func() { stopMarkTimeout = oldTimeout })
 	jobA := stopJob("always", 1, 0, longJobCommand(t))
 	jobA.Name = "job-a"
@@ -154,17 +152,12 @@ func TestSupervisorStopGivesEachMarkerAppendItsOwnDeadline(t *testing.T) {
 	if err := sup.Start(testContext(t), ""); err != nil {
 		t.Fatalf("Start(all) = %v, want nil", err)
 	}
-	interceptAppendEvent(t, func(cctx context.Context, ev eventlog.Event) error {
-		if ev.Type == eventSupervisorStopped && ev.TaskID == "job-a" {
-			<-cctx.Done()
-			return cctx.Err()
-		}
-		return nil
-	})
+	deadlines := interceptMarkerDeadlines(t)
 	ctx, cancel := context.WithTimeout(t.Context(), testWaitBound)
 	defer cancel()
 	sup.afterTick = cancel
 	err := sup.Supervise(ctx)
+	deadlines.assertFresh(t)
 	if !errors.Is(err, ErrStopMarkersNotWritten) || !strings.Contains(err.Error(), "job job-a") {
 		t.Fatalf("Supervise() = %v, want ErrStopMarkersNotWritten naming job-a", err)
 	}
@@ -173,6 +166,37 @@ func TestSupervisorStopGivesEachMarkerAppendItsOwnDeadline(t *testing.T) {
 	}
 	if got := historyOne(t, sup, "job-b").SupervisorStops; got != 1 || !eventlogJob(t, sup, "job-b").SupervisorStopped {
 		t.Fatalf("job-b after stop = %+v (markers %d), want 1 marker and SupervisorStopped true", eventlogJob(t, sup, "job-b"), got)
+	}
+}
+
+type markerDeadlines struct {
+	a, b time.Time
+	bSet bool
+	bErr error
+}
+
+func interceptMarkerDeadlines(t *testing.T) *markerDeadlines {
+	t.Helper()
+	d := &markerDeadlines{}
+	interceptAppendEvent(t, func(ctx context.Context, ev eventlog.Event) error {
+		if ev.Type == eventSupervisorStopped && ev.TaskID == "job-a" {
+			d.a, _ = ctx.Deadline()
+			time.Sleep(50 * time.Millisecond)
+			return context.DeadlineExceeded
+		}
+		if ev.Type == eventSupervisorStopped && ev.TaskID == "job-b" {
+			d.b, d.bSet = ctx.Deadline()
+			d.bErr = ctx.Err()
+		}
+		return nil
+	})
+	return d
+}
+
+func (d *markerDeadlines) assertFresh(t *testing.T) {
+	t.Helper()
+	if d.a.IsZero() || !d.bSet || d.bErr != nil || d.b.Sub(d.a) < 50*time.Millisecond {
+		t.Fatalf("marker deadlines: a=%v b=%v present=%v err=%v", d.a, d.b, d.bSet, d.bErr)
 	}
 }
 

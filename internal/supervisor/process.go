@@ -68,7 +68,7 @@ func (s *Supervisor) waitStopTarget(ctx context.Context, job config.JobConfig) (
 			last = err
 			refused = 0
 		} else if err = validateSignalTarget(target); err == nil {
-			return nil, target, nil
+			return stopTargetIfContextActive(ctx, target, last)
 		} else if errors.Is(err, errSignalRefused) {
 			last = err
 			refused = stopTargetRefusals(target, refused)
@@ -83,6 +83,13 @@ func (s *Supervisor) waitStopTarget(ctx context.Context, job config.JobConfig) (
 		}
 	}
 	return nil, jobSignalTarget{}, last
+}
+
+func stopTargetIfContextActive(ctx context.Context, target jobSignalTarget, last error) (*heldLock, jobSignalTarget, error) {
+	if ctx.Err() != nil {
+		return nil, jobSignalTarget{}, errors.Join(last, ctx.Err())
+	}
+	return nil, target, nil
 }
 
 func stopTargetRefusals(target jobSignalTarget, refused int) int {
