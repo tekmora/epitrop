@@ -4,8 +4,10 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"testing"
@@ -118,6 +120,14 @@ func TestR15MarkedStaleRecordNotAdopted(t *testing.T) {
 }
 
 func TestR15RestartRejectsSupersededRun(t *testing.T) {
+	originalStart := automaticShimStart
+	starts := 0
+	automaticShimStart = func(stage string) {
+		if stage == "before" {
+			starts++
+		}
+	}
+	t.Cleanup(func() { automaticShimStart = originalStart })
 	job := stopJob("on-failure", 2, 0, longJobCommand(t))
 	sup, _ := stopSupervisor(t, job)
 	appendHistory(t, sup, "job.started", job.Name, map[string]any{"state": "running", "pid": 10, "shim_pid": 11, "since": "a"})
@@ -128,8 +138,135 @@ func TestR15RestartRejectsSupersededRun(t *testing.T) {
 	if err := sup.restartJob(testContext(t), job, st); err != nil {
 		t.Fatal(err)
 	}
+	if starts != 0 {
+		t.Fatalf("superseded restart attempted %d shim starts", starts)
+	}
 	if got := eventlogJob(t, sup, job.Name); got.Restarts != st.Restarts || got.Since != "b" || got.LastEvent != "job.exited" {
 		t.Fatalf("superseded restart = %+v", got)
+	}
+}
+
+func TestR15MarkedShimMatches(t *testing.T) {
+	live, exited := os.Getpid(), exitedShimPID(t)
+	cases := []struct {
+		name   string
+		job    eventlog.Job
+		status JobStatus
+		want   bool
+	}{
+		{"matching live", eventlog.Job{Since: "a", ShimPID: live}, JobStatus{Since: "a", ShimPID: live}, true},
+		{"different since", eventlog.Job{Since: "a", ShimPID: live}, JobStatus{Since: "b", ShimPID: live}, false},
+		{"different pid", eventlog.Job{Since: "a", ShimPID: live}, JobStatus{Since: "a", ShimPID: exited}, false},
+		{"exited", eventlog.Job{Since: "a", ShimPID: exited}, JobStatus{Since: "a", ShimPID: exited}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := markedShimMatches(tc.job, tc.status); got != tc.want {
+				t.Fatalf("markedShimMatches = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestR15SameRestartEnd(t *testing.T) {
+	one, otherOne, two := 1, 1, 2
+	base := eventlog.Job{LastEvent: "job.exited", State: "dead", Since: "a", ShimPID: 12, LastReason: "exit", LastExitCode: &one}
+	changed := func(edit func(*eventlog.Job)) eventlog.Job {
+		job := base
+		edit(&job)
+		return job
+	}
+	noCode := changed(func(j *eventlog.Job) { j.LastExitCode = nil })
+	cases := []struct {
+		name string
+		a, b eventlog.Job
+		want bool
+	}{
+		{"identical", base, base, true},
+		{"both nil", noCode, noCode, true},
+		{"nil then one", noCode, base, false},
+		{"one then nil", base, noCode, false},
+		{"distinct equal codes", base, changed(func(j *eventlog.Job) { j.LastExitCode = &otherOne }), true},
+		{"different codes", base, changed(func(j *eventlog.Job) { j.LastExitCode = &two }), false},
+		{"event", base, changed(func(j *eventlog.Job) { j.LastEvent = "other" }), false},
+		{"state", base, changed(func(j *eventlog.Job) { j.State = "other" }), false},
+		{"since", base, changed(func(j *eventlog.Job) { j.Since = "b" }), false},
+		{"shim pid", base, changed(func(j *eventlog.Job) { j.ShimPID++ }), false},
+		{"reason", base, changed(func(j *eventlog.Job) { j.LastReason = "other" }), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameRestartEnd(tc.a, tc.b); got != tc.want {
+				t.Fatalf("sameRestartEnd = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestR15ShimStoppedBeforeStart(t *testing.T) {
+	closed := make(chan struct{})
+	close(closed)
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	cases := []struct {
+		name   string
+		ctx    context.Context
+		result *shimStartResult
+		want   bool
+	}{
+		{"nil", canceled, nil, false},
+		{"stopped", t.Context(), &shimStartResult{done: closed, stopped: true}, true},
+		{"not stopped", t.Context(), &shimStartResult{done: closed}, false},
+		{"canceled before completion", canceled, &shimStartResult{done: make(chan struct{}), stopped: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shimStoppedBeforeStart(tc.ctx, tc.result); got != tc.want {
+				t.Fatalf("shimStoppedBeforeStart = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestR15StopTargetRefusedRunResets(t *testing.T) {
+	job := stopJob("always", 1, 0, longJobCommand(t))
+	sup, _ := stopSupervisor(t, job)
+	pid := exitedShimPID(t)
+	body, err := json.Marshal(jobRecord{Name: job.Name, PID: pid, ShimPID: os.Getpid()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := holdLock(sup.lockPath(job.Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := lock.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	oldRead, reads := jobRecordReadFile, 0
+	jobRecordReadFile = func(string) ([]byte, error) {
+		reads++
+		if reads == 2*maxStatusPolls+50 {
+			cancel()
+		}
+		if reads%2 == 1 {
+			return nil, fs.ErrNotExist
+		}
+		return body, nil
+	}
+	t.Cleanup(func() { jobRecordReadFile = oldRead })
+	gotLock, _, err := sup.waitStopTarget(ctx, job)
+	if gotLock != nil {
+		if closeErr := gotLock.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	}
+	if !errors.Is(err, context.Canceled) || reads <= 2*maxStatusPolls {
+		t.Fatalf("waitStopTarget = %v after %d reads, want cancellation after alternating polls", err, reads)
 	}
 }
 
