@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"strconv"
 	"testing"
 	"time"
 
@@ -272,7 +273,7 @@ func TestR15StopTargetRefusedRunResets(t *testing.T) {
 
 func TestR15StoppedWaiterSurvivesReplacement(t *testing.T) {
 	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
-	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", fmt.Sprintf("exit %d", shimExitStopped))
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", `exit "$1"`, "sh", strconv.Itoa(shimExitStopped))
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
