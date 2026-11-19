@@ -110,10 +110,13 @@ func validateSourceURL(source schemaSource) error {
 	raw := sourceURL(source)
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("%s: invalid url %q: %w", source.ID, raw, err)
+		return fmt.Errorf("%s: invalid url %q: %w", source.ID, httpfetch.RedactedURL(raw), httpfetch.URLParseCause(err))
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("%s: url %q must not contain user info", source.ID, parsed.Redacted())
 	}
 	if parsed.Scheme != "https" || parsed.Host == "" {
-		return fmt.Errorf("%s: url %q must use https with a non-empty host", source.ID, raw)
+		return fmt.Errorf("%s: url %q must use https with a non-empty host", source.ID, parsed.Redacted())
 	}
 	return nil
 }
@@ -160,9 +163,10 @@ func check(ctx context.Context, manifest schemaManifest, root string) error {
 
 func fetchPinned(ctx context.Context, source schemaSource) ([]byte, error) {
 	rawURL := sourceURL(source)
+	safeURL := httpfetch.RedactedURL(rawURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%s: build request for %s: %w", source.ID, rawURL, err)
+		return nil, fmt.Errorf("%s: build request for %s: %w", source.ID, safeURL, httpfetch.URLParseCause(err))
 	}
 	httpClient := client.New(client.Options{Name: "epitrop.schemas", Timeout: fetchTimeout})
 	httpClient.CheckRedirect = checkHTTPSRedirect
@@ -171,14 +175,17 @@ func fetchPinned(ctx context.Context, source schemaSource) ([]byte, error) {
 		return nil, fmt.Errorf("%s: fetch: %w", source.ID, err)
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("%s: fetch: %s returned HTTP %d", source.ID, rawURL, status)
+		return nil, fmt.Errorf("%s: fetch: %s returned HTTP %d", source.ID, safeURL, status)
 	}
 	return body, nil
 }
 
 func checkHTTPSRedirect(req *http.Request, via []*http.Request) error {
+	if req.URL.User != nil {
+		return fmt.Errorf("redirect to url %q with user info refused", req.URL.Redacted())
+	}
 	if req.URL.Scheme != "https" {
-		return fmt.Errorf("redirect to non-https url %q refused", req.URL.String())
+		return fmt.Errorf("redirect to non-https url %q refused", req.URL.Redacted())
 	}
 	if len(via) >= 10 {
 		return errors.New("stopped after 10 redirects")
