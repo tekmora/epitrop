@@ -7,7 +7,43 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestLostOnceConfirmedBeforeCanceledFinding(t *testing.T) {
+	once := testJob("manual", []string{"/bin/true"})
+	once.Schedule = "once"
+	sup := testSupervisor(t, once)
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	defer close(release)
+	sup.stderr = &blockedLineWriter{entered: entered, release: release}
+	const since = "2026-11-18T08:00:00Z"
+	state := plantRunningOnce(t, sup, "manual", since)
+	sup.observeRunning("manual", since)
+	ctx, cancel := context.WithCancel(testContext(t))
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- sup.checkNoJobAlive(ctx, state, &findingEpisode{}) }()
+	select {
+	case <-entered:
+		cancel()
+	case err := <-done:
+		t.Fatalf("finding ended before write: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("finding write not reached")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("finding = %v, want canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("finding did not return after cancellation")
+	}
+	if sup.canMarkJobStopped("manual", state.Jobs["manual"]) {
+		t.Fatal("confirmed lost run eligible for stop marker")
+	}
+}
 
 func TestLostOnceTerminalDoesNotMarkStop(t *testing.T) {
 	once := testJob("manual", []string{"/bin/true"})

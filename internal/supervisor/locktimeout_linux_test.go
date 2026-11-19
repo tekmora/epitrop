@@ -57,6 +57,36 @@ func TestShimIsStartedWithTheConfiguredLockTimeout(t *testing.T) {
 	}
 }
 
+func TestShimCarriesConfiguredReplayLimit(t *testing.T) {
+	if got := shimEventLogLimits(shimConfig{}, clockwork.NewFakeClock()).MaxReplayRecords; got != 0 {
+		t.Fatalf("default shim replay limit = %d, want event log default", got)
+	}
+	job := testJob("replay-limit", []string{"/bin/true"})
+	sup := testSupervisor(t, job)
+	sup.cfg.EventLog.MaxReplayRecords = 200000
+	args := sup.shimCmd(testContext(t), job).Args
+	if !hasArgPair(args, "--event-log-max-replay-records", "200000") {
+		t.Fatalf("shim args = %q, want configured replay limit", args)
+	}
+	cfg, err := parseShimArgs(args[lastArgIndex(args, "__job-shim"):])
+	if err != nil {
+		t.Fatalf("parseShimArgs() = %v", err)
+	}
+	if got := shimEventLogLimits(cfg, clockwork.NewFakeClock()).MaxReplayRecords; got != 200000 {
+		t.Fatalf("shim replay limit = %d, want 200000", got)
+	}
+	appendShimTestEvent(t, cfg, "job.started", `{"state":"running","pid":10,"shim_pid":9,"since":"t1"}`)
+	appendShimTestEvent(t, cfg, "job.exited", `{"state":"dead","code":0}`)
+	cfg.UnlessStopped = true
+	if err := checkShimNotStopped(cfg); err != nil {
+		t.Fatalf("replay within configured limit = %v", err)
+	}
+	cfg.EventLogMaxReplayRecords = 1
+	if err := checkShimNotStopped(cfg); err == nil {
+		t.Fatal("replay beyond configured limit succeeded")
+	}
+}
+
 // A shim started without the flag keeps the log's default; one started with a negative value
 // is refused by the log, not run with a wait nobody chose.
 func TestShimLockTimeoutDefaultAndRefusal(t *testing.T) {

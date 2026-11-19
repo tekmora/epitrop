@@ -22,6 +22,7 @@ func (s *Supervisor) shimCmdFor(ctx context.Context, job config.JobConfig, unles
 		"__job-shim",
 		"--event-log-dir", s.cfg.EventLog.Dir,
 		"--event-log-lock-timeout-seconds", strconv.Itoa(s.cfg.EventLog.LockTimeoutSeconds),
+		"--event-log-max-replay-records", strconv.Itoa(s.cfg.EventLog.MaxReplayRecords),
 		"--signing-key", s.cfg.EventLog.SigningKeyPath,
 		"--name", job.Name,
 		"--lock", s.lockPath(job.Name),

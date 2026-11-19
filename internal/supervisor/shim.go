@@ -33,6 +33,8 @@ type shimConfig struct {
 	LogPath                    string
 	Command                    []string
 	Sandbox                    config.SandboxConfig
+	// EventLogMaxReplayRecords is the configured replay bound, 0 for the log's own default.
+	EventLogMaxReplayRecords int
 	// MaxRuntimeSeconds is the job's deadline, 0 for the longest any job may run. At the
 	// deadline the job gets StopSignal, then StopGraceSeconds to exit, then the kill.
 	MaxRuntimeSeconds int
@@ -73,6 +75,7 @@ func parseShimArgs(args []string) (shimConfig, error) {
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&cfg.EventLogDir, "event-log-dir", "", "")
 	fs.IntVar(&cfg.EventLogLockTimeoutSeconds, "event-log-lock-timeout-seconds", 0, "")
+	fs.IntVar(&cfg.EventLogMaxReplayRecords, "event-log-max-replay-records", 0, "")
 	fs.StringVar(&cfg.SigningKey, "signing-key", "", "")
 	fs.StringVar(&cfg.Name, "name", "", "")
 	fs.StringVar(&cfg.LockPath, "lock", "", "")
@@ -356,9 +359,9 @@ func shimWriter(cfg shimConfig) (*eventlog.Writer, error) {
 }
 
 // shimEventLogLimits are the limits under which the shim appends its job's events: the lock
-// timeout its supervisor was configured with.
+// timeout and replay bound its supervisor was configured with.
 func shimEventLogLimits(cfg shimConfig, clk clockwork.Clock) eventlog.Limits {
-	return eventlog.Limits{Clock: clk, LockTimeout: time.Duration(cfg.EventLogLockTimeoutSeconds) * time.Second}
+	return eventlog.Limits{Clock: clk, LockTimeout: time.Duration(cfg.EventLogLockTimeoutSeconds) * time.Second, MaxReplayRecords: cfg.EventLogMaxReplayRecords}
 }
 
 func appendStarted(writer *eventlog.Writer, cfg shimConfig, pid int, started string) error {

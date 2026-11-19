@@ -161,8 +161,7 @@ func (s *Supervisor) checkNoJobAlive(ctx context.Context, state eventlog.State, 
 }
 
 func (s *Supervisor) reportConfirmedDown(ctx context.Context, down []downJob, episode *findingEpisode) error {
-	err := s.reportNoJobAlive(ctx, down, episode)
-	if errors.Is(err, ErrNoJobAlive) && ctx.Err() == nil {
+	if ctx.Err() == nil {
 		lost := make(map[string]string, len(down))
 		for i := 0; i < len(down); i++ {
 			if down[i].lostOnce {
@@ -171,7 +170,7 @@ func (s *Supervisor) reportConfirmedDown(ctx context.Context, down []downJob, ep
 		}
 		s.rememberLostOnce(lost)
 	}
-	return err
+	return s.reportNoJobAlive(ctx, down, episode)
 }
 
 // confirmLostOnce replays once more after a lock-free once candidate was seen, so a shim
