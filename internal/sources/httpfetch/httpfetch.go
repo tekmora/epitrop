@@ -12,8 +12,11 @@ package httpfetch
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	neturl "net/url"
 	"time"
 
 	gerrors "github.com/golusoris/golusoris/core/errors"
@@ -23,6 +26,28 @@ import (
 // clientName labels the outbound client in golusoris breaker logs and OTel
 // spans.
 const clientName = "epitrop.httpfetch"
+
+// RedactedURL hides passwords because parse errors and URL.String can expose them.
+func RedactedURL(raw string) string {
+	parsed, err := neturl.Parse(raw)
+	if err != nil {
+		return "<unparseable url>"
+	}
+	return parsed.Redacted()
+}
+
+// URLParseCause removes URLs and escape bytes from parse errors to protect passwords.
+func URLParseCause(err error) error {
+	var urlErr *neturl.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	var escapeErr neturl.EscapeError
+	if errors.As(urlErr.Err, &escapeErr) {
+		return errors.New("invalid URL escape")
+	}
+	return urlErr.Err
+}
 
 // Get performs a GET against url with a per-call deadline (timeout) and a
 // bounded response read (maxBytes), so a source's HTTP call can neither hang
@@ -39,30 +64,31 @@ func Get(ctx context.Context, url string, timeout time.Duration, maxBytes int) (
 // authenticate (litellm-gateway's bearer token). Header values are sent,
 // never logged or wrapped into an error.
 func GetWithHeader(ctx context.Context, url string, header http.Header, timeout time.Duration, maxBytes int) (body []byte, err error) {
+	safeURL := RedactedURL(url)
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build request for %s: %w", url, err)
+		return nil, fmt.Errorf("build request for %s: %w", safeURL, URLParseCause(err))
 	}
 	if header != nil {
 		req.Header = header.Clone()
 	}
 	resp, err := client.New(client.Options{Name: clientName, Timeout: timeout}).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request %s: %w", url, err)
+		return nil, fmt.Errorf("request %s: %w", safeURL, err)
 	}
 	// Closure rather than a bare defer so the bodyclose linter sees the body
 	// reach a closer.
-	defer func() { gerrors.CloseJoin(resp.Body, &err, "close response body from "+url) }()
+	defer func() { gerrors.CloseJoin(resp.Body, &err, "close response body from "+safeURL) }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s returned HTTP %d", url, resp.StatusCode)
+		return nil, fmt.Errorf("%s returned HTTP %d", safeURL, resp.StatusCode)
 	}
 	body, err = client.ReadAllBounded(resp.Body, int64(maxBytes))
 	if err != nil {
-		return nil, fmt.Errorf("read response body from %s: %w", url, err)
+		return nil, fmt.Errorf("read response body from %s: %w", safeURL, err)
 	}
 	return body, nil
 }
@@ -70,7 +96,9 @@ func GetWithHeader(ctx context.Context, url string, header http.Header, timeout 
 // Do performs req with httpClient (defaulting to client.New with timeout if
 // httpClient is nil), enforcing a per-call deadline, and reading at most
 // maxBytes of response body. It returns the HTTP status code, response headers,
-// and bounded body without converting non-200 status codes into errors.
+// and bounded body without converting non-200 status codes into errors. A non-200
+// body is truncated at maxBytes without error; a 200 body exceeding maxBytes
+// returns an error wrapping client.ErrBodyTooLarge.
 func Do(ctx context.Context, httpClient *http.Client, req *http.Request, timeout time.Duration, maxBytes int) (statusCode int, header http.Header, body []byte, err error) {
 	if maxBytes <= 0 {
 		return 0, nil, nil, fmt.Errorf("httpfetch: non-positive maxBytes %d", maxBytes)
@@ -81,6 +109,7 @@ func Do(ctx context.Context, httpClient *http.Client, req *http.Request, timeout
 	if ctx == nil {
 		return 0, nil, nil, fmt.Errorf("httpfetch: nil context")
 	}
+	safeURL := req.URL.Redacted()
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -96,13 +125,17 @@ func Do(ctx context.Context, httpClient *http.Client, req *http.Request, timeout
 	// #nosec G704 -- caller supplies target URL and client; bounded transport utility.
 	resp, err := cl.Do(req)
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("request %s: %w", req.URL.String(), err)
+		return 0, nil, nil, fmt.Errorf("request %s: %w", safeURL, err)
 	}
-	defer func() { gerrors.CloseJoin(resp.Body, &err, "close response body from "+req.URL.String()) }()
+	defer func() { gerrors.CloseJoin(resp.Body, &err, "close response body from "+safeURL) }()
 
-	body, err = client.ReadAllBounded(resp.Body, int64(maxBytes))
+	reader := io.Reader(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		reader = io.LimitReader(resp.Body, int64(maxBytes))
+	}
+	body, err = client.ReadAllBounded(reader, int64(maxBytes))
 	if err != nil {
-		return resp.StatusCode, resp.Header.Clone(), nil, fmt.Errorf("read response body from %s: %w", req.URL.String(), err)
+		return resp.StatusCode, resp.Header.Clone(), nil, fmt.Errorf("read response body from %s: %w", safeURL, err)
 	}
 	return resp.StatusCode, resp.Header.Clone(), body, nil
 }
