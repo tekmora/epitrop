@@ -427,13 +427,16 @@ func (s *Supervisor) Stop(ctx context.Context, name string) error {
 	return s.stopOne(ctx, name)
 }
 
+var waitStopTargetForStop = (*Supervisor).waitStopTarget
+var terminateStopTarget = (*Supervisor).terminateTarget
+
 func (s *Supervisor) stopOne(ctx context.Context, name string) error {
 	job, err := s.job(name)
 	if err != nil {
 		return err
 	}
 	for attempt := 0; attempt < maxStopAttempts; attempt++ {
-		lock, target, waitErr := s.waitStopTarget(ctx, job)
+		lock, target, waitErr := waitStopTargetForStop(s, ctx, job)
 		if waitErr != nil {
 			return fmt.Errorf("supervisor: stop %s: %w", name, waitErr)
 		}
@@ -441,11 +444,19 @@ func (s *Supervisor) stopOne(ctx context.Context, name string) error {
 			appendErr := s.appendJobEvent(ctx, "job.stopped", name, map[string]any{"state": string(StateStopped)})
 			return errors.Join(appendErr, lock.Close())
 		}
-		if err = s.terminateTarget(ctx, job, target); err != nil {
+		if err = terminateStopTarget(s, ctx, job, target); err != nil {
 			return err
 		}
 	}
-	return fmt.Errorf("supervisor: stop %s: lock remained busy after %d attempts", name, maxStopAttempts)
+	lock, err := holdLock(s.lockPath(name))
+	if errors.Is(err, errLockBusy) {
+		return fmt.Errorf("supervisor: stop %s: lock remained busy after %d attempts", name, maxStopAttempts)
+	}
+	if err != nil {
+		return fmt.Errorf("supervisor: stop %s: %w", name, err)
+	}
+	appendErr := s.appendJobEvent(ctx, "job.stopped", name, map[string]any{"state": string(StateStopped)})
+	return errors.Join(appendErr, lock.Close())
 }
 
 // terminate ends a running job: its stop signal to the process group, its grace period,

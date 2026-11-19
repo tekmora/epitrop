@@ -201,6 +201,8 @@ func runShim(cfg shimConfig) error {
 // unsupported platforms never return it.
 var errLockBusy = errors.New("lock is held")
 
+var afterShimLockBusy = func() {}
+
 // holdShimLock takes the job lock. With --unless-stopped, a concurrent stopOne may hold the
 // lock briefly while appending job.stopped; waiting boundedly lets the shim acquire the lock
 // after that append and read the stopped record.
@@ -209,6 +211,7 @@ func holdShimLock(cfg shimConfig) (*heldLock, error) {
 	if !cfg.UnlessStopped || !errors.Is(err, errLockBusy) {
 		return lock, err
 	}
+	afterShimLockBusy()
 	for i := 0; i < maxStatusPolls; i++ {
 		time.Sleep(startPollInterval)
 		lock, err = holdLock(cfg.LockPath)

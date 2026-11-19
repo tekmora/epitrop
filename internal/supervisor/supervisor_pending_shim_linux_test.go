@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -250,28 +251,61 @@ func assertDelayedCollectorSkipsMarker(t *testing.T) {
 	t.Helper()
 	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
 	atSeam, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	releaseCollector := func() { once.Do(func() { close(release) }) }
+	defer releaseCollector()
 	oldSeam := beforeRecordCollectedShim
 	beforeRecordCollectedShim = func(string, int) {
 		close(atSeam)
 		<-release
 	}
-	defer func() { beforeRecordCollectedShim = oldSeam }()
-	startExitedStubShimWithDelayedCollector(t, sup, atSeam, "job.started")
+	t.Cleanup(func() { beforeRecordCollectedShim = oldSeam })
+	_, done := startExitedStubShimWithDelayedCollector(t, sup, atSeam, releaseCollector, "job.started")
 	realAppend := appendEvent
 	appendEvent = func(w *eventlog.Writer, c context.Context, check func(context.Context) (eventlog.Event, error)) (eventlog.Record, error) {
 		return realAppend(w, c, func(cctx context.Context) (eventlog.Event, error) {
 			appendEvent = realAppend
-			close(release)
+			releaseCollector()
 			return check(cctx)
 		})
 	}
 	defer func() { appendEvent = realAppend }()
-	if err := sup.markSupervisorStopped(); err != nil {
+	if err := runWithCollectorRelease(sup.markSupervisorStopped, releaseCollector, done); err != nil {
 		t.Fatalf("markSupervisorStopped(delayed collector) = %v, want nil", err)
 	}
 	if got := historyOne(t, sup, "daemon").SupervisorStops; got != 0 {
 		t.Fatalf("supervisor stop markers with delayed exit-1 collector = %d, want 0", got)
 	}
+}
+
+func runWithCollectorRelease(run func() error, release func(), done <-chan struct{}) error {
+	defer func() { release(); <-done }()
+	return run()
+}
+
+func TestCollectorReleasedWhenAppendFails(t *testing.T) {
+	release, done := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	go func() { <-release; close(done) }()
+	t.Cleanup(unblock)
+	want := errors.New("append failed before callback")
+	result := make(chan error, 1)
+	go func() { result <- runWithCollectorRelease(func() error { return want }, unblock, done) }()
+	select {
+	case err := <-result:
+		if !errors.Is(err, want) {
+			t.Fatalf("runWithCollectorRelease error = %v, want append failure", err)
+		}
+	case <-time.After(testWaitBound):
+		t.Fatal("collector was not released after append failure")
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("collector was not joined")
+	}
+	unblock()
 }
 
 func assertPendingCollectorPastTimeoutFailsSupervise(t *testing.T) {
@@ -281,14 +315,17 @@ func assertPendingCollectorPastTimeoutFailsSupervise(t *testing.T) {
 	t.Cleanup(func() { stopMarkTimeout = oldTimeout })
 	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
 	atSeam, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	releaseCollector := func() { once.Do(func() { close(release) }) }
+	defer releaseCollector()
 	oldSeam := beforeRecordCollectedShim
 	beforeRecordCollectedShim = func(string, int) {
 		close(atSeam)
 		<-release
 	}
 	t.Cleanup(func() { beforeRecordCollectedShim = oldSeam })
-	defer close(release)
-	shimPID := startExitedStubShimWithDelayedCollector(t, sup, atSeam, "job.adopted")
+	shimPID, done := startExitedStubShimWithDelayedCollector(t, sup, atSeam, releaseCollector, "job.adopted")
+	defer func() { releaseCollector(); <-done }()
 	lock := holdRunningRecordForShim(t, sup, "daemon", shimPID, "2026-11-18T08:00:00Z")
 	defer func() {
 		if closeErr := lock.Close(); closeErr != nil {
@@ -306,7 +343,7 @@ func assertPendingCollectorPastTimeoutFailsSupervise(t *testing.T) {
 	}
 }
 
-func startExitedStubShimWithDelayedCollector(t *testing.T, sup *Supervisor, atSeam <-chan struct{}, eventType string) int {
+func startExitedStubShimWithDelayedCollector(t *testing.T, sup *Supervisor, atSeam <-chan struct{}, release func(), eventType string) (int, <-chan struct{}) {
 	t.Helper()
 	const since = "2026-11-18T08:00:00Z"
 	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", "exit 1")
@@ -315,12 +352,40 @@ func startExitedStubShimWithDelayedCollector(t *testing.T, sup *Supervisor, atSe
 	}
 	shimPID := cmd.Process.Pid
 	sup.recordSpawnedShim("daemon", shimPID)
+	done := sup.spawnedShim["daemon"].done
 	sup.shimWaiters.Add(1)
 	appendHistory(t, sup, eventType, "daemon", map[string]any{"state": "running", "pid": shimPID + 1, "shim_pid": shimPID, "since": since})
 	sup.observeRunning("daemon", since)
 	go sup.collectShim(cmd, "daemon")
-	<-atSeam
-	return shimPID
+	t.Cleanup(func() { release(); <-done })
+	if err := waitForCollectorSeam(atSeam, done, time.After(testWaitBound)); err != nil {
+		t.Fatal(err)
+	}
+	return shimPID, done
+}
+
+func waitForCollectorSeam(atSeam, done <-chan struct{}, deadline <-chan time.Time) error {
+	select {
+	case <-atSeam:
+		return nil
+	case <-done:
+		return errors.New("collector finished before beforeRecordCollectedShim")
+	case <-deadline:
+		return errors.New("deadline waiting for beforeRecordCollectedShim")
+	}
+}
+
+func TestWaitForCollectorSeamMissing(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	if err := waitForCollectorSeam(make(chan struct{}), done, make(chan time.Time)); err == nil || !strings.Contains(err.Error(), "beforeRecordCollectedShim") {
+		t.Fatalf("missing seam error = %v", err)
+	}
+	deadline := make(chan time.Time)
+	close(deadline)
+	if err := waitForCollectorSeam(make(chan struct{}), make(chan struct{}), deadline); err == nil || !strings.Contains(err.Error(), "deadline") {
+		t.Fatalf("seam deadline error = %v", err)
+	}
 }
 
 func holdRunningRecordForShim(t *testing.T, sup *Supervisor, name string, shimPID int, since string) *heldLock {

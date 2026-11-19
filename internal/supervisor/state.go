@@ -406,7 +406,7 @@ func (s *Supervisor) reconcileJob(ctx context.Context, job config.JobConfig, st 
 	if st.State == string(StateRunning) && st.SupervisorStopped {
 		status := s.statusFor(job, st)
 		if status.State != StateRunning {
-			return s.recordInterrupted(ctx, job, st)
+			return s.recordInterruptedIfUnlocked(ctx, job, st)
 		}
 		if job.Schedule != "always" {
 			return s.adoptIfFreshStart(ctx, job, st, status)
@@ -427,6 +427,21 @@ func (s *Supervisor) reconcileJob(ctx context.Context, job config.JobConfig, st 
 		return s.reconcileEventJob(ctx, job, armedState, matches)
 	}
 	return s.reconcileCronJob(ctx, job, armedState)
+}
+
+// recordInterruptedIfUnlocked records the interruption of a marked job that statusFor did
+// not find running. statusFor needs a readable record before it probes the lock, so a held
+// lock behind an unreadable record reads as dead; the lock alone decides here, and a held
+// lock defers the interruption to a later pass.
+func (s *Supervisor) recordInterruptedIfUnlocked(ctx context.Context, job config.JobConfig, st eventlog.Job) error {
+	held, err := lockHeld(s.lockPath(job.Name))
+	if err != nil {
+		return fmt.Errorf("supervisor: check lock for %s: %w", job.Name, err)
+	}
+	if held {
+		return nil
+	}
+	return s.recordInterrupted(ctx, job, st)
 }
 
 func (s *Supervisor) reconcileAlwaysJob(ctx context.Context, job config.JobConfig, st eventlog.Job) error {

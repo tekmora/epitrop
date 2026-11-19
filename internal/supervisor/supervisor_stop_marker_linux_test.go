@@ -5,6 +5,7 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -495,5 +496,99 @@ func assertSpawnClearsCollectedShim(t *testing.T) {
 	}
 	if got := historyOne(t, sup, "daemon").SupervisorStops; got != 1 {
 		t.Fatalf("supervisor stop markers after spawn cleared collected pid = %d, want 1", got)
+	}
+}
+
+func TestMarkedSurvivorWithUnreadableRecordDefersInterruption(t *testing.T) {
+	sup, _ := stopSupervisor(t, stopJob("on-failure", 2, 0, longJobCommand(t)))
+	const since = "2026-11-18T08:00:00Z"
+	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "since": since})
+	appendHistory(t, sup, eventSupervisorStopped, "daemon", map[string]any{"supervisor_pid": 1, "since": since})
+	lock := holdRunningRecordForShim(t, sup, "daemon", os.Getpid(), since)
+	released := false
+	defer func() {
+		if !released {
+			if err := lock.Close(); err != nil {
+				t.Errorf("Close(lock) = %v", err)
+			}
+		}
+	}()
+	old := jobRecordReadFile
+	jobRecordReadFile = func(string) ([]byte, error) { return nil, errors.New("transient read failure") }
+	defer func() { jobRecordReadFile = old }()
+	reconcileOnce(t, sup, "unreadable survivor")
+	if got := eventlogJob(t, sup, "daemon"); !got.SupervisorStopped || got.State != string(StateRunning) {
+		t.Fatalf("job after unreadable record = %+v, want marked running", got)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	released = true
+	reconcileOnce(t, sup, "unreadable record with free lock")
+	assertInterruptedState(t, eventlogJob(t, sup, "daemon"))
+}
+
+func TestStopAcquiresLockAfterLastTermination(t *testing.T) {
+	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
+	oldWait, oldTerminate := waitStopTargetForStop, terminateStopTarget
+	defer func() { waitStopTargetForStop, terminateStopTarget = oldWait, oldTerminate }()
+	attempts := 0
+	heldDuringAppend := false
+	interceptAppendEvent(t, func(_ context.Context, ev eventlog.Event) error {
+		if ev.Type == "job.stopped" {
+			held, err := lockHeld(sup.lockPath("daemon"))
+			heldDuringAppend = err == nil && held
+		}
+		return nil
+	})
+	waitStopTargetForStop = func(s *Supervisor, _ context.Context, job config.JobConfig) (*heldLock, jobSignalTarget, error) {
+		if attempts < maxStopAttempts {
+			return nil, jobSignalTarget{}, nil
+		}
+		lock, err := holdLock(s.lockPath(job.Name))
+		return lock, jobSignalTarget{}, err
+	}
+	terminateStopTarget = func(_ *Supervisor, _ context.Context, _ config.JobConfig, _ jobSignalTarget) error {
+		attempts++
+		return nil
+	}
+	if err := sup.Stop(testContext(t), "daemon"); err != nil {
+		t.Fatalf("Stop after final termination = %v", err)
+	}
+	if attempts != maxStopAttempts || !heldDuringAppend {
+		t.Fatalf("terminations = %d, lock held during append = %t", attempts, heldDuringAppend)
+	}
+	if got := eventlogJob(t, sup, "daemon"); got.LastEvent != "job.stopped" {
+		t.Fatalf("last event = %s, want job.stopped", got.LastEvent)
+	}
+}
+
+func TestStopReportsBusyAfterLastTermination(t *testing.T) {
+	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
+	held, err := holdLock(sup.lockPath("daemon"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if closeErr := held.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	}()
+	oldWait, oldTerminate := waitStopTargetForStop, terminateStopTarget
+	defer func() { waitStopTargetForStop, terminateStopTarget = oldWait, oldTerminate }()
+	calls := 0
+	waitStopTargetForStop = func(_ *Supervisor, _ context.Context, _ config.JobConfig) (*heldLock, jobSignalTarget, error) {
+		return nil, jobSignalTarget{}, nil
+	}
+	terminateStopTarget = func(_ *Supervisor, _ context.Context, _ config.JobConfig, _ jobSignalTarget) error {
+		calls++
+		return nil
+	}
+	err = sup.Stop(testContext(t), "daemon")
+	if err == nil || !strings.Contains(err.Error(), "lock remained busy") || calls != maxStopAttempts {
+		t.Fatalf("Stop with busy lock = %v after %d terminations", err, calls)
+	}
+	if got := eventlogJob(t, sup, "daemon"); got.LastEvent == "job.stopped" {
+		t.Fatal("job.stopped recorded while lock held")
 	}
 }

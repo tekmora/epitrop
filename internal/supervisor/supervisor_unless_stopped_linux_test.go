@@ -5,13 +5,12 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"golang.org/x/sys/unix"
 
 	"github.com/tekmora/epitrop/internal/eventlog"
 )
@@ -112,12 +111,20 @@ func TestUnlessStoppedRestartBackoff(t *testing.T) {
 	}
 	t.Cleanup(func() { appendEvent = realAppend })
 	done := make(chan error, 1)
-	go func() { done <- sup.Reconcile(testContext(t)) }()
-	<-restarted
+	ctx, cancel := context.WithCancel(testContext(t))
+	finished := false
+	defer stopReconcileWorker(t, cancel, done, &finished)
+	go func() { done <- sup.Reconcile(ctx) }()
+	finished, err := waitForRestart(restarted, done, time.After(testWaitBound))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := sup.Stop(testContext(t), "daemon"); err != nil {
 		t.Fatalf("Stop(during backoff) = %v, want nil", err)
 	}
-	if err := <-done; err != nil {
+	err = <-done
+	finished = true
+	if err != nil {
 		t.Fatalf("Reconcile(stopped during backoff) = %v, want nil", err)
 	}
 	if starts := countEvents(t, sup.cfg.EventLog.Dir, "job.started"); starts != 1 {
@@ -125,6 +132,42 @@ func TestUnlessStoppedRestartBackoff(t *testing.T) {
 	}
 	if got := eventlogJob(t, sup, "daemon"); got.State != string(StateStopped) || got.LastEvent != "job.stopped" {
 		t.Fatalf("job after backoff stop = %+v, want stopped", got)
+	}
+}
+
+func stopReconcileWorker(t *testing.T, cancel context.CancelFunc, done <-chan error, finished *bool) {
+	t.Helper()
+	cancel()
+	if !*finished {
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("Reconcile cleanup = %v", err)
+		}
+	}
+}
+
+func waitForRestart(restarted <-chan struct{}, done <-chan error, deadline <-chan time.Time) (bool, error) {
+	select {
+	case <-restarted:
+		return false, nil
+	case err := <-done:
+		return true, fmt.Errorf("Reconcile ended before job.restarted: %w", err)
+	case <-deadline:
+		return false, errors.New("deadline waiting for job.restarted")
+	}
+}
+
+func TestWaitForRestartReportsEarlyFailure(t *testing.T) {
+	done := make(chan error, 1)
+	done <- errors.New("append failed")
+	finished, err := waitForRestart(make(chan struct{}), done, make(chan time.Time))
+	if !finished || err == nil || !strings.Contains(err.Error(), "append failed") {
+		t.Fatalf("waitForRestart = %t, %v; want early append failure", finished, err)
+	}
+	deadline := make(chan time.Time)
+	close(deadline)
+	finished, err = waitForRestart(make(chan struct{}), make(chan error), deadline)
+	if finished || err == nil || !strings.Contains(err.Error(), "deadline") {
+		t.Fatalf("waitForRestart deadline = %t, %v", finished, err)
 	}
 }
 
@@ -270,13 +313,30 @@ func assertHoldShimLockCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("holdLock(initial) = %v, want nil", err)
 	}
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			closeTestHeldLock(t, held)
+		}
+	})
 	start := time.Now()
 	if got, lockErr := holdShimLock(cfg); got != nil || !errors.Is(lockErr, errLockBusy) || time.Since(start) >= 200*time.Millisecond {
 		t.Fatalf("holdShimLock(flag absent, busy) = %v, %v in %s, want immediate errLockBusy", got, lockErr, time.Since(start))
 	}
 	cfg.UnlessStopped = true
-	releaseOnSecondOpen(t, cfg.LockPath, held)
+	oldBusy := afterShimLockBusy
+	t.Cleanup(func() { afterShimLockBusy = oldBusy })
+	called := false
+	afterShimLockBusy = func() {
+		called = true
+		released = true
+		closeTestHeldLock(t, held)
+	}
 	got, err := holdShimLock(cfg)
+	afterShimLockBusy = oldBusy
+	if !called {
+		t.Fatal("holdShimLock did not observe the initial busy lock")
+	}
 	if err != nil || got == nil {
 		t.Fatalf("holdShimLock(busy then free) = %v, %v, want lock", got, err)
 	}
@@ -286,34 +346,11 @@ func assertHoldShimLockCases(t *testing.T) {
 	assertHoldShimLockBusyPastBound(t, cfg)
 }
 
-func releaseOnSecondOpen(t *testing.T, lockPath string, held *heldLock) {
+func closeTestHeldLock(t *testing.T, held *heldLock) {
 	t.Helper()
-	ifd, err := unix.InotifyInit1(unix.IN_CLOEXEC)
-	if err != nil {
-		t.Fatalf("InotifyInit1() = %v, want nil", err)
+	if err := held.Close(); err != nil {
+		t.Errorf("Close(held) = %v", err)
 	}
-	if _, err = unix.InotifyAddWatch(ifd, lockPath, unix.IN_OPEN); err != nil {
-		t.Fatalf("InotifyAddWatch() = %v, want nil", err)
-	}
-	go func() {
-		defer func() {
-			if closeErr := unix.Close(ifd); closeErr != nil {
-				t.Errorf("Close(inotify) = %v, want nil", closeErr)
-			}
-		}()
-		buf := make([]byte, 256)
-		opens := 0
-		for i := 0; i < 16 && opens < 2; i++ {
-			n, readErr := unix.Read(ifd, buf)
-			if readErr != nil {
-				return
-			}
-			opens += n / unix.SizeofInotifyEvent
-		}
-		if closeErr := held.Close(); closeErr != nil {
-			t.Errorf("Close(held) = %v, want nil", closeErr)
-		}
-	}()
 }
 
 func assertHoldShimLockBusyPastBound(t *testing.T, cfg shimConfig) {
