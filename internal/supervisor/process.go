@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"github.com/tekmora/epitrop/internal/config"
+	"github.com/tekmora/epitrop/internal/eventlog"
 )
 
 func (s *Supervisor) shimCmd(ctx context.Context, job config.JobConfig) *exec.Cmd {
-	return s.shimCmdFor(ctx, job, false)
+	return s.shimCmdFor(ctx, job, false, nil)
 }
 
-func (s *Supervisor) shimCmdFor(ctx context.Context, job config.JobConfig, unlessStopped bool) *exec.Cmd {
+func (s *Supervisor) shimCmdFor(ctx context.Context, job config.JobConfig, unlessStopped bool, expected *eventlog.Job) *exec.Cmd {
 	args := make([]string, 0, len(s.shimCommand)+len(job.Command)+19)
 	args = append(args, s.shimCommand[1:]...)
 	args = append(args,
@@ -34,6 +35,9 @@ func (s *Supervisor) shimCmdFor(ctx context.Context, job config.JobConfig, unles
 	)
 	if unlessStopped {
 		args = append(args, "--unless-stopped")
+		if expected != nil {
+			args = append(args, "--check-generation", "--expected-since", expected.Since, "--expected-shim-pid", strconv.Itoa(expected.ShimPID))
+		}
 	}
 	args = append(args, sandboxFlagArgs(job.Sandbox)...)
 	args = append(args, "--")

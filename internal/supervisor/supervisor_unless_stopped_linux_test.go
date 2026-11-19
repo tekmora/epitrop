@@ -231,11 +231,11 @@ func TestUnlessStoppedOperatorStartAfterStop(t *testing.T) {
 	if lastArgIndex(sup.shimCmd(testContext(t), job).Args, "--unless-stopped") != -1 {
 		t.Fatalf("shimCmd args = %v, want no --unless-stopped", sup.shimCmd(testContext(t), job).Args)
 	}
-	if lastArgIndex(sup.shimCmdFor(testContext(t), job, false).Args, "--unless-stopped") != -1 {
-		t.Fatalf("shimCmdFor(false) args = %v, want no --unless-stopped", sup.shimCmdFor(testContext(t), job, false).Args)
+	if lastArgIndex(sup.shimCmdFor(testContext(t), job, false, nil).Args, "--unless-stopped") != -1 {
+		t.Fatalf("shimCmdFor(false) args = %v, want no --unless-stopped", sup.shimCmdFor(testContext(t), job, false, nil).Args)
 	}
-	if lastArgIndex(sup.shimCmdFor(testContext(t), job, true).Args, "--unless-stopped") == -1 {
-		t.Fatalf("shimCmdFor(true) args = %v, want --unless-stopped", sup.shimCmdFor(testContext(t), job, true).Args)
+	if lastArgIndex(sup.shimCmdFor(testContext(t), job, true, nil).Args, "--unless-stopped") == -1 {
+		t.Fatalf("shimCmdFor(true) args = %v, want --unless-stopped", sup.shimCmdFor(testContext(t), job, true, nil).Args)
 	}
 	if err := sup.Stop(testContext(t), "daemon"); err != nil {
 		t.Fatalf("Stop(initial) = %v, want nil", err)

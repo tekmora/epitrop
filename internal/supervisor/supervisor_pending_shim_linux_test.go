@@ -177,7 +177,7 @@ func assertAdoptedMarkedNonAlwaysJobs(t *testing.T, sup *Supervisor) {
 func TestPendingShimObserveStartedOnCancel(t *testing.T) {
 	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
 	okCtx, okPID := startStubShimUntilCancel(t, sup, "daemon")
-	err := sup.waitStarted(okCtx, "daemon", eventlog.Job{}, okPID)
+	err := sup.waitStarted(okCtx, "daemon", eventlog.Job{}, okPID, false)
 	if !errors.Is(err, context.Canceled) || !errors.Is(errors.Unwrap(err), context.Canceled) || strings.Contains(err.Error(), "last replay:") {
 		t.Fatalf("waitStarted(cancel, replay ok) = %v, want only context.Canceled leaf", err)
 	}
@@ -191,7 +191,7 @@ func TestPendingShimObserveStartedOnCancel(t *testing.T) {
 			t.Errorf("Remove(events) = %v, want nil", rmErr)
 		}
 	})
-	err = sup.waitStarted(failCtx, "daemon", eventlog.Job{}, failPID)
+	err = sup.waitStarted(failCtx, "daemon", eventlog.Job{}, failPID, false)
 	if !errors.Is(err, context.Canceled) || !errors.Is(err, syscall.ENOTDIR) || !strings.Contains(err.Error(), "last replay:") {
 		t.Fatalf("waitStarted(cancel, replay failed) = %v, want context.Canceled and ENOTDIR replay error", err)
 	}

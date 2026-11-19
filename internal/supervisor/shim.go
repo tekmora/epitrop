@@ -41,6 +41,9 @@ type shimConfig struct {
 	StopSignal        string
 	StopGraceSeconds  int
 	UnlessStopped     bool
+	CheckGeneration   bool
+	ExpectedSince     string
+	ExpectedShimPID   int
 }
 
 // shimExitStopped is the exit status of a shim started with --unless-stopped that found the
@@ -85,6 +88,9 @@ func parseShimArgs(args []string) (shimConfig, error) {
 	fs.StringVar(&cfg.StopSignal, "stop-signal", "TERM", "")
 	fs.IntVar(&cfg.StopGraceSeconds, "stop-grace-seconds", 0, "")
 	fs.BoolVar(&cfg.UnlessStopped, "unless-stopped", false, "")
+	fs.BoolVar(&cfg.CheckGeneration, "check-generation", false, "")
+	fs.StringVar(&cfg.ExpectedSince, "expected-since", "", "")
+	fs.IntVar(&cfg.ExpectedShimPID, "expected-shim-pid", 0, "")
 	fs.StringVar(&cfg.Sandbox.Mode, "sandbox-mode", "", "")
 	fs.StringVar(&cfg.Sandbox.Reason, "sandbox-reason", "", "")
 	fs.StringVar(&cfg.Sandbox.Workspace, "sandbox-workspace", "", "")
@@ -243,7 +249,8 @@ func checkShimNotStopped(cfg shimConfig) error {
 	if err != nil {
 		return err
 	}
-	if st.Jobs[cfg.Name].State == string(StateStopped) {
+	job := st.Jobs[cfg.Name]
+	if job.State == string(StateStopped) || (cfg.CheckGeneration && (job.Since != cfg.ExpectedSince || job.ShimPID != cfg.ExpectedShimPID)) {
 		return errShimStopped
 	}
 	return nil

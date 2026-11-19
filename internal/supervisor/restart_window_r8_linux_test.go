@@ -120,7 +120,7 @@ func startWaitingShim(t *testing.T, sup *Supervisor, name string) *exec.Cmd {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := sup.shimCmdFor(testContext(t), job, true)
+	cmd := sup.shimCmdFor(testContext(t), job, true, nil)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

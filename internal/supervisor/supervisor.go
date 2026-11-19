@@ -39,8 +39,9 @@ const (
 	startPollInterval = 10 * time.Millisecond
 	// Shims this supervisor started and has not collected yet. A job's lock allows one live
 	// shim per job, so twice the number of jobs a config may hold is never reached in order.
-	maxShimWaiters    = 2 * config.MaxJobs
-	maxSuperviseTicks = 1 << 30
+	maxShimWaiters      = 2 * config.MaxJobs
+	maxPriorShimRecords = 2 * maxShimWaiters
+	maxSuperviseTicks   = 1 << 30
 	// supervisorStopMarkTimeout bounds each stop-marker append.
 	supervisorStopMarkTimeout = 5 * time.Second
 )
@@ -108,6 +109,13 @@ type spawnedShim struct {
 type collectedShim struct {
 	pid     int
 	sigterm bool
+	stopped bool
+}
+
+type priorShim struct {
+	spawned spawnedShim
+	end     collectedShim
+	hasEnd  bool
 }
 
 type Supervisor struct {
@@ -122,6 +130,7 @@ type Supervisor struct {
 	lostOnceSince map[string]string
 	spawnedShim   map[string]spawnedShim
 	collectedShim map[string]collectedShim
+	priorShims    map[string]map[int]priorShim
 	stderr        io.Writer
 	stderrOnce    sync.Once
 	stderrSink    *lineSink
@@ -134,6 +143,14 @@ type Supervisor struct {
 // beforeRecordCollectedShim is a test seam called in collectShim after cmd.Wait returns and
 // before the collected status is recorded.
 var beforeRecordCollectedShim = func(string, int) {}
+
+// stopCollectorCheck is a test seam in the stop marker's collector check: "checked" after
+// the first check, "waiting" before it waits on a pending collector.
+var stopCollectorCheck = func(string) {}
+
+// automaticShimStart is a test seam around an automatic restart's shim start: "before"
+// ahead of cmd.Start, "spawned" once the shim runs and before it is recorded.
+var automaticShimStart = func(string) {}
 
 // reportShimError tells the operator about a shim that could not be collected. Nothing
 // returns to a caller from the waiter, so it goes to the supervisor's stderr like the
@@ -306,6 +323,8 @@ func (s *Supervisor) recordJobRun(ctx context.Context, err error) {
 }
 
 func (s *Supervisor) spawnAndAwait(ctx context.Context, job config.JobConfig, before eventlog.Job, unlessStopped bool) error {
+	// Only shims finished before replay cannot publish a later start after that replay.
+	finished := s.finishedShims(job.Name)
 	state, err := s.replayState(ctx)
 	if err != nil {
 		return err
@@ -318,25 +337,92 @@ func (s *Supervisor) spawnAndAwait(ctx context.Context, job config.JobConfig, be
 		s.shimWaiters.Add(-1)
 		return fmt.Errorf("supervisor: start shim for %s: %d shims are still uncollected", job.Name, maxShimWaiters)
 	}
-	cmd := s.shimCmdFor(ctx, job, unlessStopped)
+	if !s.priorShimCapacity(job.Name, prior.ShimPID, finished) {
+		s.shimWaiters.Add(-1)
+		return fmt.Errorf("supervisor: start shim for %s: prior shim tracking is full", job.Name)
+	}
+	cmd := s.shimCmdFor(ctx, job, unlessStopped, &before)
+	if unlessStopped {
+		automaticShimStart("before")
+	}
 	if err = cmd.Start(); err != nil {
 		s.shimWaiters.Add(-1)
 		return fmt.Errorf("supervisor: start shim for %s: %w", job.Name, err)
 	}
 	shimPID := cmd.Process.Pid
-	s.recordSpawnedShim(job.Name, shimPID)
+	if unlessStopped {
+		automaticShimStart("spawned")
+	}
+	s.recordSpawnedShimFor(job.Name, shimPID, prior.ShimPID, finished)
 	go s.collectShim(cmd, job.Name)
-	return s.waitStarted(ctx, job.Name, prior, shimPID)
+	return s.waitStarted(ctx, job.Name, prior, shimPID, unlessStopped)
+}
+
+func (s *Supervisor) priorShimCapacity(name string, keep int, finished map[int]bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prior := s.priorShims[name]
+	prunePriorShims(prior, keep, finished)
+	// At most maxShimWaiters starts can pass this check concurrently.
+	return len(prior) < maxShimWaiters
+}
+
+func (s *Supervisor) finishedShims(name string) map[int]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	finished := make(map[int]bool)
+	if current := s.spawnedShim[name]; current.pid != 0 && current.done == nil {
+		finished[current.pid] = true
+	}
+	checked := 0
+	for pid, old := range s.priorShims[name] {
+		if checked == maxPriorShimRecords {
+			break
+		}
+		checked++
+		if old.spawned.done == nil {
+			finished[pid] = true
+		}
+	}
+	return finished
 }
 
 func (s *Supervisor) recordSpawnedShim(name string, pid int) {
+	s.recordSpawnedShimFor(name, pid, 0, nil)
+}
+
+func (s *Supervisor) recordSpawnedShimFor(name string, pid, keep int, finished map[int]bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.spawnedShim == nil {
 		s.spawnedShim = make(map[string]spawnedShim, len(s.cfg.Jobs))
 	}
+	previous := s.spawnedShim[name]
+	if s.priorShims == nil {
+		s.priorShims = make(map[string]map[int]priorShim, len(s.cfg.Jobs))
+	}
+	if s.priorShims[name] == nil {
+		s.priorShims[name] = make(map[int]priorShim)
+	}
+	if previous.pid != 0 && (previous.pid == keep || !finished[previous.pid]) {
+		end, hasEnd := s.collectedShim[name]
+		s.priorShims[name][previous.pid] = priorShim{spawned: previous, end: end, hasEnd: hasEnd}
+	}
 	s.spawnedShim[name] = spawnedShim{pid: pid, done: make(chan struct{})}
 	delete(s.collectedShim, name)
+}
+
+func prunePriorShims(prior map[int]priorShim, keep int, finished map[int]bool) {
+	checked := 0
+	for pid := range prior {
+		if checked == maxPriorShimRecords {
+			break
+		}
+		checked++
+		if pid != keep && finished[pid] {
+			delete(prior, pid)
+		}
+	}
 }
 
 // collectShim waits for a started shim and takes its exit status. Without this the shim
@@ -368,6 +454,10 @@ func (s *Supervisor) finishShimCollector(name string, pid int) {
 		close(cur.done)
 		cur.done = nil
 		s.spawnedShim[name] = cur
+	} else if old, ok := s.priorShims[name][pid]; ok && old.spawned.done != nil {
+		close(old.spawned.done)
+		old.spawned.done = nil
+		s.priorShims[name][pid] = old
 	}
 	s.mu.Unlock()
 	s.shimWaiters.Add(-1)
@@ -380,12 +470,17 @@ func (s *Supervisor) recordCollectedShim(name string, state *os.ProcessState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.spawnedShim[name].pid != state.Pid() {
+		if old, ok := s.priorShims[name][state.Pid()]; ok {
+			old.end = collectedShim{pid: state.Pid(), sigterm: endedBySIGTERM(state), stopped: state.ExitCode() == shimExitStopped}
+			old.hasEnd = true
+			s.priorShims[name][state.Pid()] = old
+		}
 		return
 	}
 	if s.collectedShim == nil {
 		s.collectedShim = make(map[string]collectedShim, len(s.cfg.Jobs))
 	}
-	s.collectedShim[name] = collectedShim{pid: state.Pid(), sigterm: endedBySIGTERM(state)}
+	s.collectedShim[name] = collectedShim{pid: state.Pid(), sigterm: endedBySIGTERM(state), stopped: state.ExitCode() == shimExitStopped}
 }
 
 func endedBySIGTERM(state *os.ProcessState) bool {
@@ -474,14 +569,28 @@ func (s *Supervisor) terminateTarget(ctx context.Context, job config.JobConfig, 
 		return s.refusalStands(job, err)
 	}
 	if !s.waitStopped(ctx, job) {
+		if s.stopTargetReplaced(job, target) {
+			return nil
+		}
 		if err := killProcess(target); err != nil {
 			return s.refusalStands(job, err)
 		}
 		if !s.waitUnlocked(ctx, job, maxStatusPolls) {
+			if ctx.Err() == nil && s.stopTargetReplaced(job, target) {
+				return nil
+			}
 			return fmt.Errorf("supervisor: stop %s: lock stayed held after SIGKILL", job.Name)
 		}
 	}
 	return nil
+}
+
+func (s *Supervisor) stopTargetReplaced(job config.JobConfig, target jobSignalTarget) bool {
+	current, err := s.signalTarget(job)
+	if err != nil || (current.PID == target.PID && current.ShimPID == target.ShimPID) {
+		return false
+	}
+	return validateSignalTarget(current) == nil
 }
 
 // refusalStands is the result of a signal that was refused. A shim that exits releases the
@@ -648,6 +757,13 @@ func (s *Supervisor) markOneJobStopped(job config.JobConfig, pid int) error {
 		if err := s.waitPendingShimCollector(cctx, job.Name, st); err != nil {
 			return false, err
 		}
+		stopCollectorCheck("checked")
+		if s.canMarkJobStopped(job.Name, st) {
+			return true, nil
+		}
+		if err := s.waitPendingShimCollector(cctx, job.Name, st); err != nil {
+			return false, err
+		}
 		return s.canMarkJobStopped(job.Name, st), nil
 	})
 	return err
@@ -660,16 +776,24 @@ func (s *Supervisor) waitPendingShimCollector(ctx context.Context, name string, 
 	s.mu.Lock()
 	since := s.observedSince[name]
 	spawned, hasSpawned := s.spawnedShim[name]
+	if old, ok := s.priorShims[name][st.ShimPID]; ok && spawned.pid != st.ShimPID {
+		spawned, hasSpawned = old.spawned, true
+	}
 	s.mu.Unlock()
-	if !hasSpawned || spawned.done == nil || st.Since != since || st.ShimPID != spawned.pid || !shimExited(spawned.pid) {
+	if !pendingCollectorMatches(st, since, spawned, hasSpawned) {
 		return nil
 	}
+	stopCollectorCheck("waiting")
 	select {
 	case <-spawned.done:
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("wait shim collector: %w", ctx.Err())
 	}
+}
+
+func pendingCollectorMatches(st eventlog.Job, since string, spawned spawnedShim, found bool) bool {
+	return found && spawned.done != nil && st.Since == since && st.ShimPID == spawned.pid && shimExited(spawned.pid)
 }
 
 func (s *Supervisor) canMarkJobStopped(name string, st eventlog.Job) bool {
@@ -681,6 +805,9 @@ func (s *Supervisor) canMarkJobStopped(name string, st eventlog.Job) bool {
 	spawned := s.spawnedShim[name]
 	lostSince := s.lostOnceSince[name]
 	end, hasEnd := s.collectedShim[name]
+	if old, ok := s.priorShims[name][st.ShimPID]; ok && spawned.pid != st.ShimPID {
+		spawned, end, hasEnd = old.spawned, old.end, old.hasEnd
+	}
 	s.mu.Unlock()
 	if st.Since != since || st.Since == lostSince {
 		return false
@@ -732,7 +859,7 @@ func (s *Supervisor) reconcile(ctx context.Context) (eventlog.State, error) {
 // does not require the job to still be running: a job that started and already exited
 // did start, and polling for "running" would miss it between two polls. A shim that has
 // exited records nothing more, so the wait ends one replay after it is seen gone.
-func (s *Supervisor) waitStarted(ctx context.Context, name string, before eventlog.Job, shimPID int) error {
+func (s *Supervisor) waitStarted(ctx context.Context, name string, before eventlog.Job, shimPID int, automatic bool) error {
 	var lastErr error
 	shimGone := false
 	for i := 0; i < maxStartPolls; i++ {
@@ -757,10 +884,43 @@ func (s *Supervisor) waitStarted(ctx context.Context, name string, before eventl
 	if lastErr != nil {
 		return fmt.Errorf("supervisor: %s did not start: %w", name, lastErr)
 	}
-	if shimGone {
-		return fmt.Errorf("supervisor: %s did not start: its shim exited without recording a start; a refused job's log names the reason", name)
+	return s.startNotRecorded(ctx, name, shimPID, shimGone, automatic)
+}
+
+func (s *Supervisor) startNotRecorded(ctx context.Context, name string, pid int, gone, automatic bool) error {
+	if !gone {
+		return fmt.Errorf("supervisor: %s did not start", name)
 	}
-	return fmt.Errorf("supervisor: %s did not start", name)
+	if automatic && s.shimStoppedBeforeStart(ctx, name, pid) {
+		return fmt.Errorf("%w: %s", ErrStoppedBeforeStart, name)
+	}
+	return fmt.Errorf("supervisor: %s did not start: its shim exited without recording a start; a refused job's log names the reason", name)
+}
+
+func (s *Supervisor) shimStoppedBeforeStart(ctx context.Context, name string, pid int) bool {
+	s.mu.Lock()
+	spawned := s.spawnedShim[name]
+	if old, ok := s.priorShims[name][pid]; ok && spawned.pid != pid {
+		spawned = old.spawned
+	}
+	s.mu.Unlock()
+	if spawned.pid != pid {
+		return false
+	}
+	if spawned.done != nil {
+		select {
+		case <-spawned.done:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	end := s.collectedShim[name]
+	if old, ok := s.priorShims[name][pid]; ok && end.pid != pid {
+		end = old.end
+	}
+	return end.pid == pid && end.stopped
 }
 
 // lastReplayError keeps the result of the last replay that ran to its end. A replay the

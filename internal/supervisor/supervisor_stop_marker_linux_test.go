@@ -348,13 +348,13 @@ func TestSupervisorStopMarksRunStartedInLastTick(t *testing.T) {
 func TestSupervisorStopMarksRunStartedBeforeStartWaitEnded(t *testing.T) {
 	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
 	emptyCtx, emptyPID := startStubShimUntilCancel(t, sup, "daemon")
-	if err := sup.waitStarted(emptyCtx, "daemon", eventlog.Job{}, emptyPID); !errors.Is(err, context.Canceled) {
+	if err := sup.waitStarted(emptyCtx, "daemon", eventlog.Job{}, emptyPID, false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("waitStarted(canceled, exited without start) = %v, want context.Canceled", err)
 	}
 	ctx, shimPID := startStubShimUntilCancel(t, sup, "daemon")
 	const since = "2026-11-18T08:00:00Z"
 	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "pid": shimPID + 10, "shim_pid": shimPID, "since": since})
-	if err := sup.waitStarted(ctx, "daemon", eventlog.Job{}, shimPID); !errors.Is(err, context.Canceled) {
+	if err := sup.waitStarted(ctx, "daemon", eventlog.Job{}, shimPID, false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("waitStarted(canceled) = %v, want context.Canceled", err)
 	}
 	sup.mu.Lock()

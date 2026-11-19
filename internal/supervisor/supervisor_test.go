@@ -1158,7 +1158,7 @@ func TestWaitStartedReportsReplayError(t *testing.T) {
 	corruptEventLog(t, sup.cfg.EventLog.Dir)
 	// The wait follows the shim, so the shim must be one that is known to have exited: any
 	// fixed number may be a live process on the machine that runs the test.
-	err := sup.waitStarted(testContext(t), "probe", eventlog.Job{}, exitedPID(t))
+	err := sup.waitStarted(testContext(t), "probe", eventlog.Job{}, exitedPID(t), false)
 	if err == nil || !strings.Contains(err.Error(), "probe did not start: ") || !strings.Contains(err.Error(), "eventlog: seq 1 file ") {
 		t.Fatalf("waitStarted(corrupt log, exited shim) = %v, want did-not-start wrapping the replay error", err)
 	}
@@ -1345,7 +1345,7 @@ func TestStartAllStopAllAndWaitStartedBoundaries(t *testing.T) {
 	for ctx.Err() == nil {
 		time.Sleep(time.Millisecond)
 	}
-	if err := sup.waitStarted(ctx, "missing", eventlog.Job{}, 0); err == nil {
+	if err := sup.waitStarted(ctx, "missing", eventlog.Job{}, 0, false); err == nil {
 		t.Fatal("waitStarted(expired missing) = nil, want error")
 	}
 }
