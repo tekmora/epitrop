@@ -17,6 +17,7 @@ import (
 type decideCase struct {
 	name                string
 	sha                 string
+	ref                 string
 	fk                  *fakeGitHub
 	wantAllow           bool
 	wantReason          []string
@@ -24,6 +25,7 @@ type decideCase struct {
 	wantDeploymentsCall int32
 	wantStatusesCall    int32
 	wantCompareCall     int32
+	wantTipCall         int32
 }
 
 func TestDecidePositive(t *testing.T) {
@@ -179,19 +181,21 @@ func TestDecideBoundary(t *testing.T) {
 		},
 		{
 			name:                "boundary 300 deployments none success refuses",
-			fk:                  &fakeGitHub{deployments: deps300, statusesByID: stat300},
+			fk:                  &fakeGitHub{deployments: deps300, statusesByID: stat300, tipByRef: map[string]string{"heads/main": testLiveSHA}},
 			wantAllow:           false,
 			wantReason:          []string{"live deployment not among the newest 300"},
 			wantDeploymentsCall: 3,
 			wantStatusesCall:    300,
+			wantTipCall:         1,
 		},
 		{
 			name:                "boundary over 300 deployments makes at most 3 page requests and 300 statuses requests",
-			fk:                  &fakeGitHub{deployments: deps305, statusesByID: stat305},
+			fk:                  &fakeGitHub{deployments: deps305, statusesByID: stat305, tipByRef: map[string]string{"heads/main": testLiveSHA}},
 			wantAllow:           false,
 			wantReason:          []string{"live deployment not among the newest 300"},
 			wantDeploymentsCall: 3,
 			wantStatusesCall:    300,
+			wantTipCall:         1,
 		},
 	}
 	runDecideCases(t, cases)
@@ -269,21 +273,15 @@ func TestDecideNegativeErrors(t *testing.T) {
 			wantCompareCall:     1,
 		},
 		{
-			name: "successful deployment with empty sha returns error",
-			fk: &fakeGitHub{
-				deployments:  []deployment{{ID: 1, SHA: " ", CreatedAt: "2026-11-18T12:00:00Z"}},
-				statusesByID: liveSuccess,
-			},
+			name:                "successful deployment with empty sha returns error",
+			fk:                  &fakeGitHub{deployments: []deployment{{ID: 1, SHA: " ", CreatedAt: "2026-11-18T12:00:00Z"}}, statusesByID: liveSuccess},
 			wantErr:             "deployment 1 has an empty sha",
 			wantDeploymentsCall: 1,
 			wantStatusesCall:    1,
 		},
-		{
-			name:    "missing GITHUB_SHA returns error",
-			sha:     " ",
-			fk:      &fakeGitHub{},
-			wantErr: "GITHUB_SHA is required",
-		},
+		{name: "missing GITHUB_SHA returns error", sha: " ", fk: &fakeGitHub{}, wantErr: "GITHUB_SHA is required"},
+		{name: "missing GITHUB_REF returns error", ref: " ", fk: &fakeGitHub{}, wantErr: "GITHUB_REF is required"},
+		{name: "non-branch GITHUB_REF returns error", ref: "refs/tags/v1", fk: &fakeGitHub{}, wantErr: `GITHUB_REF "refs/tags/v1" is not a branch`},
 	}
 	runDecideCases(t, cases)
 }
@@ -346,10 +344,15 @@ func checkDecideCase(t *testing.T, tc decideCase) {
 	if tc.sha != "" {
 		sha = strings.TrimSpace(tc.sha)
 	}
+	ref := "refs/heads/main"
+	if tc.ref != "" {
+		ref = strings.TrimSpace(tc.ref)
+	}
 	cfg := config{
 		APIBase:    srv.URL,
 		Repository: testRepo,
 		SHA:        sha,
+		Ref:        ref,
 		Access:     testAccessVal,
 	}
 	allow, reason, err := decide(context.Background(), cfg)
@@ -360,8 +363,8 @@ func checkDecideCase(t *testing.T, tc decideCase) {
 func checkDecideOutcome(t *testing.T, tc decideCase, allow bool, reason string, err error) {
 	t.Helper()
 	if tc.wantErr != "" {
-		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-			t.Fatalf("decide() err = %v, want substring %q", err, tc.wantErr)
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) || allow {
+			t.Fatalf("decide() allow = %v, err = %v, want false with substring %q", allow, err, tc.wantErr)
 		}
 		return
 	}
@@ -389,6 +392,9 @@ func checkDecideCalls(t *testing.T, tc decideCase) {
 	if got := tc.fk.compareCalls.Load(); got != tc.wantCompareCall {
 		t.Fatalf("compare calls = %d, want %d", got, tc.wantCompareCall)
 	}
+	if got := tc.fk.tipCalls.Load(); got != tc.wantTipCall {
+		t.Fatalf("tip calls = %d, want %d", got, tc.wantTipCall)
+	}
 }
 
 func TestRunWritesStepSummaryAndEnforcesConfig(t *testing.T) {
@@ -404,6 +410,7 @@ func TestRunWritesStepSummaryAndEnforcesConfig(t *testing.T) {
 		"GITHUB_API_URL":      srv.URL,
 		"GITHUB_REPOSITORY":   testRepo,
 		"GITHUB_SHA":          testOurSHA,
+		"GITHUB_REF":          "refs/heads/main",
 		"GH_TOKEN":            testAccessVal,
 		"GITHUB_STEP_SUMMARY": summaryPath,
 	}
@@ -444,6 +451,7 @@ func TestRunRefusalFailsTheStep(t *testing.T) {
 		"GITHUB_API_URL":    srv.URL,
 		"GITHUB_REPOSITORY": testRepo,
 		"GITHUB_SHA":        testOurSHA,
+		"GITHUB_REF":        "refs/heads/main",
 		"GH_TOKEN":          testAccessVal,
 	}
 	var out bytes.Buffer

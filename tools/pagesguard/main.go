@@ -13,7 +13,9 @@
 // Refusing fails the deploy job before actions/deploy-pages runs so GitHub
 // marks the job's github-pages environment deployment failed; a step-level
 // skip would leave the environment deployment marked success without having
-// deployed.
+// deployed. When no successful deployment sits within the bounded 300-record
+// lookup window, pagesguard allows the deploy only if the run's commit matches
+// the current tip of the run's branch.
 package main
 
 import (
@@ -38,11 +40,13 @@ const (
 	deploymentsPerPage = 100
 	// List deployments caps per_page at 100 (default 30, page default 1).
 	// With maxDeploymentPages = 3 (bound 300 records), worst case is 3 list
-	// calls + 300 status calls = 303 requests, below the 1,000 requests per
-	// hour per repository GITHUB_TOKEN rate limit for one run.
+	// calls + 300 status calls + 1 ref or compare call = 304 requests, still
+	// below the 1,000 requests per hour per repository GITHUB_TOKEN rate limit
+	// for one run.
 	maxDeploymentPages = 3
 	maxDeployments     = deploymentsPerPage * maxDeploymentPages
 	maxStatuses        = 100
+	maxRefSegments     = 32
 	maxResponseBytes   = 4 << 20
 	requestTimeout     = 20 * time.Second
 	// The compare response lists up to 300 changed files with their patches
@@ -56,6 +60,7 @@ type config struct {
 	APIBase     string
 	Repository  string
 	SHA         string
+	Ref         string
 	Access      string
 	StepSummary string
 }
@@ -134,6 +139,7 @@ func configFromEnv(getenv func(string) string) (config, error) {
 		APIBase:     strings.TrimRight(apiBase, "/"),
 		Repository:  strings.TrimSpace(getenv("GITHUB_REPOSITORY")),
 		SHA:         strings.TrimSpace(getenv("GITHUB_SHA")),
+		Ref:         strings.TrimSpace(getenv("GITHUB_REF")),
 		Access:      strings.TrimSpace(getenv("GH_TOKEN")),
 		StepSummary: strings.TrimSpace(getenv("GITHUB_STEP_SUMMARY")),
 	}
@@ -149,6 +155,13 @@ func validateConfig(cfg config) error {
 	}
 	if strings.TrimSpace(cfg.SHA) == "" {
 		return errors.New("GITHUB_SHA is required")
+	}
+	ref := strings.TrimSpace(cfg.Ref)
+	if ref == "" {
+		return errors.New("GITHUB_REF is required")
+	}
+	if !strings.HasPrefix(ref, "refs/heads/") {
+		return fmt.Errorf("GITHUB_REF %q is not a branch", ref)
 	}
 	if strings.TrimSpace(cfg.Access) == "" {
 		return errors.New("GH_TOKEN is required")
@@ -175,7 +188,7 @@ func decide(ctx context.Context, cfg config) (allow bool, reason string, err err
 	}
 	if !found {
 		if len(deployments) >= maxDeployments {
-			return false, "live deployment not among the newest 300", nil
+			return decideBeyondWindow(ctx, apiBase, header, cfg)
 		}
 		return true, "no earlier successful deployment", nil
 	}
@@ -183,6 +196,53 @@ func decide(ctx context.Context, cfg config) (allow bool, reason string, err err
 		return true, fmt.Sprintf("live deployment is already at %s", cfg.SHA), nil
 	}
 	return compareWithLive(ctx, apiBase, cfg.Repository, header, liveSHA, cfg.SHA)
+}
+
+// decideBeyondWindow decides when the bounded window is full and holds no
+// successful deployment: only the tip of the run's branch may deploy.
+func decideBeyondWindow(ctx context.Context, apiBase string, header http.Header, cfg config) (bool, string, error) {
+	ref := strings.TrimSpace(cfg.Ref)
+	tip, err := fetchBranchTip(ctx, apiBase, cfg.Repository, header, ref)
+	if err != nil {
+		return false, "", err
+	}
+	if tip == cfg.SHA {
+		return true, fmt.Sprintf("live deployment not among the newest 300; commit %s is the tip of %s", cfg.SHA, ref), nil
+	}
+	branch := strings.TrimPrefix(ref, "refs/heads/")
+	return false, fmt.Sprintf(
+		"live deployment not among the newest 300 and commit %s is not the tip of %s (%s): re-run the newest Pages run on %s or dispatch the workflow on %s",
+		cfg.SHA, ref, tip, branch, branch,
+	), nil
+}
+
+func fetchBranchTip(ctx context.Context, apiBase, repo string, header http.Header, ref string) (string, error) {
+	branch := strings.TrimPrefix(strings.TrimSpace(ref), "refs/heads/")
+	segments := strings.Split(branch, "/")
+	if len(segments) > maxRefSegments {
+		return "", fmt.Errorf("ref %s has more than %d segments", ref, maxRefSegments)
+	}
+	for i := 0; i < len(segments) && i < maxRefSegments; i++ {
+		segments[i] = url.PathEscape(segments[i])
+	}
+	endpoint := fmt.Sprintf("%s/repos/%s/git/ref/heads/%s", apiBase, repo, strings.Join(segments, "/"))
+	body, err := httpfetch.GetWithHeader(ctx, endpoint, header, requestTimeout, maxResponseBytes)
+	if err != nil {
+		return "", fmt.Errorf("fetch tip of %s: %w", ref, err)
+	}
+	var payload struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", fmt.Errorf("decode tip of %s: %w", ref, err)
+	}
+	sha := strings.TrimSpace(payload.Object.SHA)
+	if sha == "" {
+		return "", fmt.Errorf("ref %s has an empty tip sha", ref)
+	}
+	return sha, nil
 }
 
 func githubHeader(access string) http.Header {

@@ -390,6 +390,7 @@ func runDeployStep(t *testing.T, apiBase string, gh *statefulGitHub, sha string)
 		APIBase:    apiBase,
 		Repository: testRepo,
 		SHA:        sha,
+		Ref:        "refs/heads/main",
 		Access:     testAccessVal,
 	}
 	allow, _, err := decide(context.Background(), cfg)

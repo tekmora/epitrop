@@ -37,9 +37,13 @@ type fakeGitHub struct {
 	compareStatus          int
 	compareBadJSON         bool
 	compareByPair          map[string]string
+	tipStatus              int
+	tipBadJSON             bool
+	tipByRef               map[string]string
 	deploymentsCalls       atomic.Int32
 	statusesCalls          atomic.Int32
 	compareCalls           atomic.Int32
+	tipCalls               atomic.Int32
 }
 
 func newFakeGitHubServer(t *testing.T, fk *fakeGitHub) *httptest.Server {
@@ -69,6 +73,8 @@ func (fk *fakeGitHub) serve(t *testing.T, w http.ResponseWriter, r *http.Request
 		fk.serveStatuses(t, w, r)
 	case strings.HasPrefix(r.URL.Path, prefix+"/compare/"):
 		fk.serveCompare(t, w, r)
+	case strings.HasPrefix(r.URL.Path, prefix+"/git/ref/"):
+		fk.serveTip(t, w, r)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -161,6 +167,26 @@ func (fk *fakeGitHub) serveCompare(t *testing.T, w http.ResponseWriter, r *http.
 		return
 	}
 	writeJSON(t, w, compareResponse{Status: state})
+}
+
+func (fk *fakeGitHub) serveTip(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	fk.tipCalls.Add(1)
+	if fk.tipStatus != 0 {
+		w.WriteHeader(fk.tipStatus)
+		return
+	}
+	if fk.tipBadJSON {
+		writeJSON(t, w, []string{"invalid-tip"})
+		return
+	}
+	ref := strings.TrimPrefix(r.URL.Path, "/repos/"+testRepo+"/git/ref/")
+	sha, ok := fk.tipByRef[ref]
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	writeJSON(t, w, map[string]any{"object": map[string]string{"sha": sha}})
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
