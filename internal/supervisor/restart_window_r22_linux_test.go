@@ -45,10 +45,7 @@ func r22Stop(t *testing.T, mode string, grace int) ([]timedStopSignal, int, time
 	if err := sup.Start(testContext(t), job.Name); err != nil {
 		t.Fatal(err)
 	}
-	if !waitUntil(func() bool {
-		b, err := os.ReadFile(job.LogPath)
-		return err == nil && strings.Contains(string(b), mode+" ready")
-	}) {
+	if !waitUntil(func() bool { return jobLogHasLines(job.LogPath, mode+" ready") }) {
 		t.Fatalf("helper %s did not become ready", mode)
 	}
 	pid := eventlogJob(t, sup, job.Name).PID
