@@ -36,6 +36,30 @@ func TestRunRejectsWhitespaceRef(t *testing.T) {
 	}
 }
 
+func TestRunWithinEndsAtDeadline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/deployments") {
+			writeJSON(t, w, []deployment{{ID: 1, SHA: testOurSHA, CreatedAt: "2026-11-18T13:00:00Z"}})
+			return
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	env := map[string]string{
+		"GITHUB_API_URL": srv.URL, "GITHUB_REPOSITORY": testRepo, "GITHUB_SHA": testOurSHA,
+		"GITHUB_REF": "refs/heads/main", "GH_TOKEN": testAccessVal,
+	}
+	start := time.Now()
+	err := runWithin(context.Background(), 200*time.Millisecond, func(k string) string { return env[k] }, &bytes.Buffer{})
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("runWithin() = %v, want deadline exceeded", err)
+	}
+	if elapsed >= requestTimeout {
+		t.Errorf("runWithin() took %v, want less than %v", elapsed, requestTimeout)
+	}
+}
+
 func TestStatusHistoryBoundary(t *testing.T) {
 	for _, n := range []int{99, 100} {
 		statuses := make([]deploymentStatus, n)

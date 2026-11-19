@@ -94,7 +94,11 @@ func main() {
 }
 
 func run(ctx context.Context, getenv func(string) string, out io.Writer) error {
-	ctx, cancel := context.WithTimeout(ctx, guardDeadline)
+	return runWithin(ctx, guardDeadline, getenv, out)
+}
+
+func runWithin(ctx context.Context, deadline time.Duration, getenv func(string) string, out io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	cfg, err := configFromEnv(getenv)
 	if err != nil {
