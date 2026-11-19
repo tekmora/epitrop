@@ -346,7 +346,7 @@ func checkDecideCase(t *testing.T, tc decideCase) {
 	}
 	ref := "refs/heads/main"
 	if tc.ref != "" {
-		ref = strings.TrimSpace(tc.ref)
+		ref = tc.ref
 	}
 	cfg := config{
 		APIBase:    srv.URL,

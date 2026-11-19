@@ -47,8 +47,10 @@ const (
 	maxDeployments     = deploymentsPerPage * maxDeploymentPages
 	maxStatuses        = 100
 	maxRefSegments     = 32
-	maxResponseBytes   = 4 << 20
-	requestTimeout     = 20 * time.Second
+	// This is a chosen bound, not a git or GitHub limit; the deploy job runs only on main.
+	maxRefBytes      = 255
+	maxResponseBytes = 4 << 20
+	requestTimeout   = 20 * time.Second
 	// The compare response lists up to 300 changed files with their patches
 	// even with per_page=1 (GitHub REST compare, "Working with large
 	// comparisons"), so a large gap between live and ours needs more room
@@ -156,14 +158,16 @@ func validateConfig(cfg config) error {
 	if strings.TrimSpace(cfg.SHA) == "" {
 		return errors.New("GITHUB_SHA is required")
 	}
-	ref := strings.TrimSpace(cfg.Ref)
-	if ref == "" {
+	if strings.TrimSpace(cfg.Ref) == "" {
 		return errors.New("GITHUB_REF is required")
 	}
-	if !strings.HasPrefix(ref, "refs/heads/") {
-		return fmt.Errorf("GITHUB_REF %q is not a branch", ref)
+	if cfg.Ref != strings.TrimSpace(cfg.Ref) {
+		return fmt.Errorf("GITHUB_REF %q has surrounding whitespace", cfg.Ref)
 	}
-	if err := validateBranchRef(ref); err != nil {
+	if !strings.HasPrefix(cfg.Ref, "refs/heads/") {
+		return fmt.Errorf("GITHUB_REF %q is not a branch", cfg.Ref)
+	}
+	if err := validateBranchRef(cfg.Ref); err != nil {
 		return err
 	}
 	if strings.TrimSpace(cfg.Access) == "" {
@@ -177,6 +181,9 @@ func validateConfig(cfg config) error {
 
 // validateBranchRef uses an allow-list stricter than git because the deploy job runs only on main.
 func validateBranchRef(ref string) error {
+	if len(ref) > maxRefBytes {
+		return fmt.Errorf("GITHUB_REF %q has more than %d bytes", ref, maxRefBytes)
+	}
 	branch := strings.TrimPrefix(ref, "refs/heads/")
 	segments := strings.Split(branch, "/")
 	if len(segments) > maxRefSegments {
@@ -195,7 +202,7 @@ func validBranchSegment(segment string) bool {
 	if segment == "" || strings.HasPrefix(segment, ".") || strings.HasSuffix(segment, ".lock") {
 		return false
 	}
-	for i := 0; i < len(segment); i++ {
+	for i := 0; i < len(segment) && i < maxRefBytes; i++ {
 		c := segment[i]
 		switch {
 		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '.', c == '_', c == '-':
@@ -235,7 +242,7 @@ func decide(ctx context.Context, cfg config) (allow bool, reason string, err err
 // decideBeyondWindow decides when the bounded window is full and holds no
 // successful deployment: only the tip of the run's branch may deploy.
 func decideBeyondWindow(ctx context.Context, apiBase string, header http.Header, cfg config) (bool, string, error) {
-	ref := strings.TrimSpace(cfg.Ref)
+	ref := cfg.Ref
 	tip, err := fetchBranchTip(ctx, apiBase, cfg.Repository, header, ref)
 	if err != nil {
 		return false, "", err
@@ -251,7 +258,7 @@ func decideBeyondWindow(ctx context.Context, apiBase string, header http.Header,
 }
 
 func fetchBranchTip(ctx context.Context, apiBase, repo string, header http.Header, ref string) (string, error) {
-	branch := strings.TrimPrefix(strings.TrimSpace(ref), "refs/heads/")
+	branch := strings.TrimPrefix(ref, "refs/heads/")
 	segments := strings.Split(branch, "/")
 	if len(segments) > maxRefSegments {
 		return "", fmt.Errorf("ref %s has more than %d segments", ref, maxRefSegments)

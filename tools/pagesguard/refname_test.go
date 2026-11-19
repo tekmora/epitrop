@@ -19,6 +19,10 @@ func TestValidateBranchRef(t *testing.T) {
 		{"refs/heads/", false}, {"refs/heads/topic/../main", false}, {"refs/heads/./main", false},
 		{"refs/heads/a//b", false}, {"refs/heads/a/", false}, {"refs/heads/.hidden", false},
 		{"refs/heads/x.lock", false}, {"refs/heads/a%2Fb", false}, {"refs/heads/a b", false},
+		{"refs/heads/main ", false}, {" refs/heads/main", false},
+		{"refs/heads/main\t", false}, {"refs/heads/main\n", false},
+		{"refs/heads/" + strings.Repeat("a", maxRefBytes-len("refs/heads/")), true},
+		{"refs/heads/" + strings.Repeat("a", maxRefBytes+1-len("refs/heads/")), false},
 		{"refs/heads/" + strings.Repeat("a/", maxRefSegments) + "a", false},
 		{"refs/pull/1/merge", false}, {"refs/tags/v1", false},
 	}
@@ -43,6 +47,51 @@ func TestDecideInvalidRefBeforeRequests(t *testing.T) {
 	cases := []decideCase{
 		{name: "dot segment", ref: "refs/heads/topic/../main", fk: &fakeGitHub{deployments: deps, statusesByID: statuses}, wantErr: "invalid branch segment"},
 		{name: "over segment bound", ref: "refs/heads/" + strings.Repeat("a/", maxRefSegments) + "a", fk: &fakeGitHub{deployments: deps, statusesByID: statuses}, wantErr: "more than 32 segments"},
+		{name: "over byte bound", ref: "refs/heads/" + strings.Repeat("a", maxRefBytes), fk: &fakeGitHub{deployments: deps, statusesByID: statuses}, wantErr: "more than 255 bytes"},
+		{name: "surrounding whitespace", ref: "refs/heads/main ", fk: &fakeGitHub{deployments: deps, statusesByID: statuses}, wantErr: "surrounding whitespace"},
 	}
 	runDecideCases(t, cases)
+}
+
+func TestValidateConfigRefWhitespaceErrors(t *testing.T) {
+	cases := []struct{ ref, want string }{
+		{"", "GITHUB_REF is required"}, {" \t\n", "GITHUB_REF is required"},
+		{"refs/heads/main ", `GITHUB_REF "refs/heads/main " has surrounding whitespace`},
+	}
+	for i := 0; i < len(cases) && i < maxTestCases; i++ {
+		tc := cases[i]
+		cfg := config{Repository: testRepo, SHA: testOurSHA, Ref: tc.ref}
+		if err := validateConfig(cfg); err == nil || err.Error() != tc.want {
+			t.Errorf("validateConfig(%q) = %v, want %q", tc.ref, err, tc.want)
+		}
+	}
+}
+
+func TestFetchBranchTipBoundAndEscaping(t *testing.T) {
+	cases := []struct {
+		name, branch, wantErr string
+		wantCalls             int32
+	}{
+		{"too many segments", strings.Repeat("a/", maxRefSegments) + "a", "more than 32 segments", 0},
+		{"segment limit", strings.Repeat("a/", maxRefSegments-1) + "a", "", 1},
+		{"escaped question mark", "topic/a?b", "", 1},
+	}
+	for i := 0; i < len(cases) && i < maxTestCases; i++ {
+		tc := cases[i]
+		t.Run(tc.name, func(t *testing.T) {
+			fk := &fakeGitHub{tipByRef: map[string]string{"heads/" + tc.branch: testOurSHA}}
+			srv := newFakeGitHubServer(t, fk)
+			tip, err := fetchBranchTip(t.Context(), srv.URL, testRepo, githubHeader(testAccessVal), "refs/heads/"+tc.branch)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("fetchBranchTip() err = %v, want %q", err, tc.wantErr)
+				}
+			} else if err != nil || tip != testOurSHA {
+				t.Fatalf("fetchBranchTip() = %q, %v; want %q", tip, err, testOurSHA)
+			}
+			if got := fk.tipCalls.Load(); got != tc.wantCalls {
+				t.Errorf("tip calls = %d, want %d", got, tc.wantCalls)
+			}
+		})
+	}
 }
