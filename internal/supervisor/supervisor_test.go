@@ -2140,7 +2140,18 @@ func runHelperJob() {
 		os.Exit(7)
 	case "ignore-term":
 		signal.Ignore(syscall.SIGTERM)
+		fmt.Println("ignore-term ready")
 		time.Sleep(30 * time.Second)
+	case "term-delay":
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGTERM)
+		fmt.Println("term-delay ready")
+		select {
+		case <-ch:
+			time.Sleep(300 * time.Millisecond)
+		case <-time.After(30 * time.Second):
+		}
+		signal.Stop(ch)
 	case "spawn-child":
 		runChildJob(false)
 	case "spawn-child-ignore-term":

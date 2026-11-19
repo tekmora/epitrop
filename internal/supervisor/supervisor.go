@@ -541,23 +541,53 @@ func (s *Supervisor) Stop(ctx context.Context, name string) error {
 var waitStopTargetForStop = (*Supervisor).waitStopTarget
 var terminateStopTarget = (*Supervisor).terminateTarget
 
+// stopCommitTimeout budgets each attempt's grace and bounded target/lock polls,
+// plus a final stop-marker append deadline.
+func stopCommitTimeout(job config.JobConfig) time.Duration {
+	grace := max(job.Stop.GraceSeconds, 0)
+	return maxStopAttempts*(time.Duration(grace)*time.Second+
+		time.Duration(maxStatusPolls+maxStopTargetPolls+1)*startPollInterval) + supervisorStopMarkTimeout
+}
+
 func (s *Supervisor) stopOne(ctx context.Context, name string) error {
 	job, err := s.job(name)
 	if err != nil {
 		return err
 	}
+	lock, target, err := waitStopTargetForStop(s, ctx, job)
+	if err != nil {
+		return fmt.Errorf("supervisor: stop %s: %w", name, err)
+	}
+	if lock != nil {
+		appendErr := s.appendJobEvent(ctx, "job.stopped", name, map[string]any{"state": string(StateStopped)})
+		return errors.Join(appendErr, lock.Close())
+	}
+	if err = ctx.Err(); err != nil {
+		return fmt.Errorf("supervisor: stop %s: %w", name, err)
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopCommitTimeout(job))
+	defer cancel()
+	return s.stopCommitted(ctx, job, target)
+}
+
+func (s *Supervisor) stopCommitted(ctx context.Context, job config.JobConfig, target jobSignalTarget) error {
+	name := job.Name
 	for attempt := 0; attempt < maxStopAttempts; attempt++ {
-		lock, target, waitErr := waitStopTargetForStop(s, ctx, job)
-		if waitErr != nil {
-			return fmt.Errorf("supervisor: stop %s: %w", name, waitErr)
+		if err := terminateStopTarget(s, ctx, job, target); err != nil {
+			return err
+		}
+		if attempt+1 == maxStopAttempts {
+			break
+		}
+		lock, next, err := waitStopTargetForStop(s, ctx, job)
+		if err != nil {
+			return fmt.Errorf("supervisor: stop %s: %w", name, err)
 		}
 		if lock != nil {
 			appendErr := s.appendJobEvent(ctx, "job.stopped", name, map[string]any{"state": string(StateStopped)})
 			return errors.Join(appendErr, lock.Close())
 		}
-		if err = terminateStopTarget(s, ctx, job, target); err != nil {
-			return err
-		}
+		target = next
 	}
 	lock, err := holdLock(s.lockPath(name))
 	if errors.Is(err, errLockBusy) {
