@@ -121,13 +121,12 @@ func TestStopDoesNotEscalateWhenTermStopsWithinGrace(t *testing.T) {
 	if err := sup.Start(testContext(t), "gentle"); err != nil {
 		t.Fatalf("Start() = %v, want nil", err)
 	}
+	pid := eventlogJob(t, sup, job.Name).PID
 	if err := sup.Stop(testContext(t), "gentle"); err != nil {
 		t.Fatalf("Stop() = %v, want nil", err)
 	}
-	for i := 0; i < len(*rec); i++ {
-		if (*rec)[i].sig == unix.SIGKILL {
-			t.Fatalf("signals = %+v, want no SIGKILL after graceful TERM", *rec)
-		}
+	if len(*rec) != 1 || (*rec)[0] != (recordedSignal{pid: -pid, sig: unix.SIGTERM}) {
+		t.Fatalf("signals = %+v, want one SIGTERM to group %d", *rec, pid)
 	}
 }
 

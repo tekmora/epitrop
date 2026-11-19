@@ -5,6 +5,7 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,33 @@ func TestR21StartWaitBounds(t *testing.T) {
 	}
 	if got := startWaitPolls(false); got != maxStartPolls {
 		t.Fatalf("manual polls = %d, want %d", got, maxStartPolls)
+	}
+}
+
+func TestR21StartWaitUsesPollLimit(t *testing.T) {
+	for _, automatic := range []bool{true, false} {
+		t.Run(map[bool]string{true: "automatic", false: "manual"}[automatic], func(t *testing.T) {
+			old := startWaitPollLimit
+			var calls []bool
+			startWaitPollLimit = func(got bool) int { calls = append(calls, got); return 3 }
+			t.Cleanup(func() { startWaitPollLimit = old })
+			sup := testSupervisor(t)
+			pid := startSleep(t, true).Process.Pid
+			ctx, cancel := context.WithTimeout(testContext(t), 2*time.Second)
+			defer cancel()
+			start := time.Now()
+			err := sup.waitStartedFor(ctx, "daemon", eventlog.Job{}, pid, automatic, nil)
+			elapsed := time.Since(start)
+			if err == nil || !strings.Contains(err.Error(), "did not start") {
+				t.Errorf("waitStartedFor = %v, want did not start", err)
+			}
+			if ctx.Err() != nil || elapsed >= time.Second {
+				t.Errorf("wait took %v, context error = %v", elapsed, ctx.Err())
+			}
+			if len(calls) == 0 || calls[0] != automatic {
+				t.Errorf("poll limit arguments = %v, want %v", calls, automatic)
+			}
+		})
 	}
 }
 

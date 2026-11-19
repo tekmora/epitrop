@@ -886,10 +886,13 @@ func startWaitPolls(automatic bool) int {
 	return maxStartPolls
 }
 
+// Tests shorten the start wait through this limit.
+var startWaitPollLimit = startWaitPolls
+
 func (s *Supervisor) waitStartedFor(ctx context.Context, name string, before eventlog.Job, shimPID int, automatic bool, result *shimStartResult) error {
 	var lastErr error
 	shimGone := false
-	for i := 0; i < startWaitPolls(automatic); i++ {
+	for i := 0; i < startWaitPollLimit(automatic); i++ {
 		state, err := s.replayState(ctx)
 		if err == nil {
 			if settled, startErr := s.settleStart(name, state.Jobs[name], before, shimPID, shimGone); settled {
