@@ -30,6 +30,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tekmora/epitrop/internal/sources/httpfetch"
@@ -46,7 +47,11 @@ const (
 	maxDeploymentPages = 3
 	maxDeployments     = deploymentsPerPage * maxDeploymentPages
 	maxStatuses        = 100
-	maxRefSegments     = 32
+	// statusBatch is the chosen bound on concurrent status requests.
+	statusBatch = 8
+	// guardDeadline leaves the rest of the 10-minute job for checkout, Go setup and deploy-pages.
+	guardDeadline  = 4 * time.Minute
+	maxRefSegments = 32
 	// This is a chosen bound, not a git or GitHub limit; the deploy job runs only on main.
 	maxRefBytes      = 255
 	maxResponseBytes = 4 << 20
@@ -89,6 +94,8 @@ func main() {
 }
 
 func run(ctx context.Context, getenv func(string) string, out io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, guardDeadline)
+	defer cancel()
 	cfg, err := configFromEnv(getenv)
 	if err != nil {
 		return err
@@ -141,7 +148,7 @@ func configFromEnv(getenv func(string) string) (config, error) {
 		APIBase:     strings.TrimRight(apiBase, "/"),
 		Repository:  strings.TrimSpace(getenv("GITHUB_REPOSITORY")),
 		SHA:         strings.TrimSpace(getenv("GITHUB_SHA")),
-		Ref:         strings.TrimSpace(getenv("GITHUB_REF")),
+		Ref:         getenv("GITHUB_REF"),
 		Access:      strings.TrimSpace(getenv("GH_TOKEN")),
 		StepSummary: strings.TrimSpace(getenv("GITHUB_STEP_SUMMARY")),
 	}
@@ -340,21 +347,47 @@ func compareDeployments(a, b deployment) int {
 	return cmp.Compare(b.ID, a.ID)
 }
 
+type statusResult struct {
+	succeeded bool
+	err       error
+}
+
+func fetchStatusBatch(ctx context.Context, apiBase, repo string, header http.Header, deps []deployment) []statusResult {
+	results := make([]statusResult, len(deps))
+	var wg sync.WaitGroup
+	for i := 0; i < len(deps) && i < statusBatch; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i].succeeded, results[i].err = deploymentSucceeded(ctx, apiBase, repo, header, deps[i].ID)
+		}(i)
+	}
+	wg.Wait()
+	return results
+}
+
 func findLiveDeploymentSHA(ctx context.Context, apiBase, repo string, header http.Header, deployments []deployment) (string, bool, error) {
-	for i := 0; i < len(deployments) && i < maxDeployments; i++ {
-		dep := deployments[i]
-		ok, err := deploymentSucceeded(ctx, apiBase, repo, header, dep.ID)
-		if err != nil {
-			return "", false, err
+	limit := min(len(deployments), maxDeployments)
+	for start := 0; start < limit; start += statusBatch {
+		end := min(start+statusBatch, limit)
+		results := fetchStatusBatch(ctx, apiBase, repo, header, deployments[start:end])
+		if err := ctx.Err(); err != nil {
+			return "", false, fmt.Errorf("status lookup: %w", err)
 		}
-		if !ok {
-			continue
+		for i := 0; i < len(results) && i < statusBatch; i++ {
+			if results[i].err != nil {
+				return "", false, results[i].err
+			}
+			if !results[i].succeeded {
+				continue
+			}
+			dep := deployments[start+i]
+			sha := strings.TrimSpace(dep.SHA)
+			if sha == "" {
+				return "", false, fmt.Errorf("deployment %d has an empty sha", dep.ID)
+			}
+			return sha, true, nil
 		}
-		sha := strings.TrimSpace(dep.SHA)
-		if sha == "" {
-			return "", false, fmt.Errorf("deployment %d has an empty sha", dep.ID)
-		}
-		return sha, true, nil
 	}
 	return "", false, nil
 }
@@ -373,6 +406,9 @@ func deploymentSucceeded(ctx context.Context, apiBase, repo string, header http.
 		if statuses[i].State == "success" {
 			return true, nil
 		}
+	}
+	if len(statuses) >= maxStatuses {
+		return false, fmt.Errorf("status history incomplete for deployment %d", deploymentID)
 	}
 	return false, nil
 }

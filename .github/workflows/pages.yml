@@ -169,6 +169,8 @@ jobs:
           go-version-file: go.mod
 
       - name: Refuse an older commit than the live site
+        # A second bound over the guard's own deadline.
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
         run: go run ./tools/pagesguard

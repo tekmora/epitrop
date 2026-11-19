@@ -116,7 +116,7 @@ func TestDecideOrderingAndStatuses(t *testing.T) {
 			wantAllow:           true,
 			wantReason:          []string{"ahead", testLiveSHA},
 			wantDeploymentsCall: 1,
-			wantStatusesCall:    1,
+			wantStatusesCall:    2,
 			wantCompareCall:     1,
 		},
 	}
@@ -129,21 +129,21 @@ func TestDecideSortsShuffledDeployments(t *testing.T) {
 			name: "response order shuffled is sorted by created_at desc then id desc",
 			fk: &fakeGitHub{
 				deployments: []deployment{
-					{ID: 1, SHA: testOlderSHA, CreatedAt: "2026-11-18T10:00:00Z"},
+					{ID: 4, SHA: testOlderSHA, CreatedAt: "2026-11-18T10:00:00Z"},
 					{ID: 2, SHA: testOlderSHA, CreatedAt: "2026-11-18T12:00:00Z"},
 					{ID: 3, SHA: testLiveSHA, CreatedAt: "2026-11-18T12:00:00Z"},
 				},
 				statusesByID: map[int64][]deploymentStatus{
 					3: {{State: "success"}},
 					2: {{State: "success"}},
-					1: {{State: "success"}},
+					4: {{State: "success"}},
 				},
 				compareByPair: map[string]string{testLiveSHA + "..." + testOurSHA: "ahead"},
 			},
 			wantAllow:           true,
 			wantReason:          []string{"ahead", testLiveSHA},
 			wantDeploymentsCall: 1,
-			wantStatusesCall:    1,
+			wantStatusesCall:    3,
 			wantCompareCall:     1,
 		},
 	}

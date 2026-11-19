@@ -128,8 +128,10 @@ The contract is described by `catalog/snapshot.schema.json`, and
 `epitropctl schema` prints the embedded copy for downstream pin checks.
 `epitropctl version` prints the release version, or `dev` for a source build.
 `epitropctl jobs supervise` runs until SIGTERM or an interrupt, which end it
-with exit 0, so a host service unit can hold it. When at least one job is down
-and none is alive, it writes at most one recoverable `no job alive` finding line
+with exit 0, so a host service unit can hold it. After 365 days it returns a
+deadline error and exits 1; a host unit configured to restart on that exit (for
+example, `Restart=on-failure`) keeps supervision running. When at least one job
+is down and none is alive, it writes at most one recoverable `no job alive` finding line
 per episode to stderr and always attempts a terminal line if the finding becomes
 terminal. Running jobs and armed cron/event jobs are alive; stopped cron and
 event jobs remain armed and alive. A once job with no record or whose last run
