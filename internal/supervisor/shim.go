@@ -50,6 +50,8 @@ type shimConfig struct {
 // job recorded stopped under the job lock and exited without starting it.
 const shimExitStopped = 3
 
+const shimReplayTimeout = 30 * time.Second
+
 var errShimStopped = errors.New("job-shim: job is stopped")
 
 func RunShim(args []string) int {
@@ -238,7 +240,7 @@ func checkShimNotStopped(cfg shimConfig) error {
 	} else if err != nil {
 		return fmt.Errorf("job-shim: stat %s: %w", events, err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), shimReplayTimeout)
 	defer cancel()
 	clk := clockwork.NewRealClock()
 	signer, err := eventlog.NewSignerFromKeyFile(ctx, cfg.SigningKey, cfg.EventLogDir, clk)

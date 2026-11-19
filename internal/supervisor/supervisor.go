@@ -106,6 +106,11 @@ type spawnedShim struct {
 	done chan struct{}
 }
 
+type shimStartResult struct {
+	done    chan struct{}
+	stopped bool
+}
+
 type collectedShim struct {
 	pid     int
 	sigterm bool
@@ -353,9 +358,10 @@ func (s *Supervisor) spawnAndAwait(ctx context.Context, job config.JobConfig, be
 	if unlessStopped {
 		automaticShimStart("spawned")
 	}
+	result := &shimStartResult{done: make(chan struct{})}
 	s.recordSpawnedShimFor(job.Name, shimPID, prior.ShimPID, finished)
-	go s.collectShim(cmd, job.Name)
-	return s.waitStarted(ctx, job.Name, prior, shimPID, unlessStopped)
+	go s.collectShimFor(cmd, job.Name, result)
+	return s.waitStartedFor(ctx, job.Name, prior, shimPID, unlessStopped, result)
 }
 
 func (s *Supervisor) priorShimCapacity(name string, keep int, finished map[int]bool) bool {
@@ -431,6 +437,13 @@ func prunePriorShims(prior map[int]priorShim, keep int, finished map[int]bool) {
 // exit status other than 0 is no error here, the shim reports its own failures through the
 // event log and the job's log.
 func (s *Supervisor) collectShim(cmd *exec.Cmd, name string) {
+	s.collectShimFor(cmd, name, nil)
+}
+
+func (s *Supervisor) collectShimFor(cmd *exec.Cmd, name string, result *shimStartResult) {
+	if result != nil {
+		defer close(result.done)
+	}
 	var pid int
 	if cmd.Process != nil {
 		pid = cmd.Process.Pid
@@ -443,6 +456,9 @@ func (s *Supervisor) collectShim(cmd *exec.Cmd, name string) {
 		return
 	}
 	if cmd.ProcessState != nil {
+		if result != nil {
+			result.stopped = cmd.ProcessState.ExitCode() == shimExitStopped
+		}
 		beforeRecordCollectedShim(name, cmd.ProcessState.Pid())
 	}
 	s.recordCollectedShim(name, cmd.ProcessState)
@@ -860,6 +876,10 @@ func (s *Supervisor) reconcile(ctx context.Context) (eventlog.State, error) {
 // did start, and polling for "running" would miss it between two polls. A shim that has
 // exited records nothing more, so the wait ends one replay after it is seen gone.
 func (s *Supervisor) waitStarted(ctx context.Context, name string, before eventlog.Job, shimPID int, automatic bool) error {
+	return s.waitStartedFor(ctx, name, before, shimPID, automatic, nil)
+}
+
+func (s *Supervisor) waitStartedFor(ctx context.Context, name string, before eventlog.Job, shimPID int, automatic bool, result *shimStartResult) error {
 	var lastErr error
 	shimGone := false
 	for i := 0; i < maxStartPolls; i++ {
@@ -884,43 +904,29 @@ func (s *Supervisor) waitStarted(ctx context.Context, name string, before eventl
 	if lastErr != nil {
 		return fmt.Errorf("supervisor: %s did not start: %w", name, lastErr)
 	}
-	return s.startNotRecorded(ctx, name, shimPID, shimGone, automatic)
+	return s.startNotRecorded(ctx, name, shimGone, automatic, result)
 }
 
-func (s *Supervisor) startNotRecorded(ctx context.Context, name string, pid int, gone, automatic bool) error {
+func (s *Supervisor) startNotRecorded(ctx context.Context, name string, gone, automatic bool, result *shimStartResult) error {
 	if !gone {
 		return fmt.Errorf("supervisor: %s did not start", name)
 	}
-	if automatic && s.shimStoppedBeforeStart(ctx, name, pid) {
+	if automatic && shimStoppedBeforeStart(ctx, result) {
 		return fmt.Errorf("%w: %s", ErrStoppedBeforeStart, name)
 	}
 	return fmt.Errorf("supervisor: %s did not start: its shim exited without recording a start; a refused job's log names the reason", name)
 }
 
-func (s *Supervisor) shimStoppedBeforeStart(ctx context.Context, name string, pid int) bool {
-	s.mu.Lock()
-	spawned := s.spawnedShim[name]
-	if old, ok := s.priorShims[name][pid]; ok && spawned.pid != pid {
-		spawned = old.spawned
-	}
-	s.mu.Unlock()
-	if spawned.pid != pid {
+func shimStoppedBeforeStart(ctx context.Context, result *shimStartResult) bool {
+	if result == nil {
 		return false
 	}
-	if spawned.done != nil {
-		select {
-		case <-spawned.done:
-		case <-ctx.Done():
-			return false
-		}
+	select {
+	case <-result.done:
+		return result.stopped
+	case <-ctx.Done():
+		return false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	end := s.collectedShim[name]
-	if old, ok := s.priorShims[name][pid]; ok && end.pid != pid {
-		end = old.end
-	}
-	return end.pid == pid && end.stopped
 }
 
 // lastReplayError keeps the result of the last replay that ran to its end. A replay the

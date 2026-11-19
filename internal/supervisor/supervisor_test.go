@@ -854,7 +854,7 @@ func TestRestartAndShouldRestartBoundaries(t *testing.T) {
 	job := testJob("daemon", []string{"/bin/true"})
 	job.Restart = config.JobRestartConfig{Policy: "always", MaxRestarts: 2, BackoffSeconds: 1}
 	sup := &Supervisor{cfg: config.Config{EventLog: config.EventLogConfig{Dir: t.TempDir()}}}
-	err := sup.restartJob(canceledContext(t), job)
+	err := sup.restartJob(canceledContext(t), job, eventlog.Job{})
 	if err == nil || !strings.Contains(err.Error(), "signer is required") {
 		t.Fatalf("restartJob(canceled) = %v, want append signer error", err)
 	}
@@ -863,7 +863,7 @@ func TestRestartAndShouldRestartBoundaries(t *testing.T) {
 	sup = testSupervisorAt(t, rt, withRestartCommand(job, []string{os.Args[0], "-test.run=TestHelperProcessJob"}))
 	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	defer cancel()
-	err = sup.restartJob(ctx, sup.cfg.Jobs[0])
+	err = sup.restartJob(ctx, sup.cfg.Jobs[0], eventlog.Job{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("restartJob(backoff canceled) = %v, want deadline before restart", err)
 	}
@@ -1252,16 +1252,21 @@ func TestStopRecordReadFailures(t *testing.T) {
 	if err := sup.Start(testContext(t), "probe"); err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithCancel(testContext(t))
+	defer cancel()
 	old := jobRecordReadFile
 	reads := 0
 	jobRecordReadFile = func(string) ([]byte, error) {
 		reads++
+		if reads == maxStatusPolls {
+			cancel()
+		}
 		return nil, os.ErrNotExist
 	}
 	t.Cleanup(func() { jobRecordReadFile = old })
 	signals := withRecordingSignaller(t)
-	err := sup.Stop(testContext(t), "probe")
-	if err == nil || !strings.Contains(err.Error(), "probe") || !strings.Contains(err.Error(), "missing or invalid") {
+	err := sup.Stop(ctx, "probe")
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "probe") || !strings.Contains(err.Error(), "missing or invalid") {
 		t.Fatalf("Stop(record failures) = %v, want job and last cause", err)
 	}
 	if reads < maxStatusPolls || len(*signals) != 0 || countEvents(t, sup.cfg.EventLog.Dir, "job.stopped") != 0 {

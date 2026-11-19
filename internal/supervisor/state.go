@@ -374,7 +374,8 @@ func (s *Supervisor) appendCheckedJobEvent(ctx context.Context, typ string, name
 		}
 		return eventlog.Event{Type: typ, TaskID: name, Payload: body}, nil
 	})
-	if errors.Is(err, errSkipJobEvent) {
+	var multi interface{ Unwrap() []error }
+	if errors.Is(err, errSkipJobEvent) && !errors.As(err, &multi) {
 		return false, nil
 	}
 	if err != nil {
@@ -459,7 +460,7 @@ func (s *Supervisor) reconcileAlwaysJob(ctx context.Context, job config.JobConfi
 		if endedBySupervisorStop(st) {
 			return s.startUnlessStopped(ctx, job.Name, st)
 		}
-		return s.restartJob(ctx, job)
+		return s.restartJob(ctx, job, st)
 	}
 	return nil
 }
@@ -469,6 +470,9 @@ func (s *Supervisor) adoptIfFreshStart(ctx context.Context, job config.JobConfig
 	// pid namespace): its adoption clears the marker, so a later end is not read as a
 	// supervisor stop.
 	markedRunning := st.State == string(StateRunning) && st.SupervisorStopped
+	if markedRunning && !markedShimMatches(st, status) {
+		return nil
+	}
 	if st.LastEvent != "job.started" && !markedRunning {
 		return nil
 	}
@@ -477,6 +481,10 @@ func (s *Supervisor) adoptIfFreshStart(ctx context.Context, job config.JobConfig
 		return curr.LastEvent == st.LastEvent && curr.State == st.State && curr.Since == st.Since && curr.SupervisorStopped == st.SupervisorStopped
 	})
 	return err
+}
+
+func markedShimMatches(st eventlog.Job, status JobStatus) bool {
+	return status.Since == st.Since && status.ShimPID == st.ShimPID && !shimExited(status.ShimPID)
 }
 
 // recordInterrupted records the end of a job that was recorded running, holds no lock, and
@@ -505,19 +513,28 @@ func endedBySupervisorStop(st eventlog.Job) bool {
 	return st.LastEvent == eventInterrupted && st.State != string(StateStopped)
 }
 
-func (s *Supervisor) restartJob(ctx context.Context, job config.JobConfig) error {
-	before, err := s.replayState(ctx)
-	if err != nil {
-		return err
-	}
+func (s *Supervisor) restartJob(ctx context.Context, job config.JobConfig, before eventlog.Job) error {
 	payload := map[string]any{"state": string(StateDead)}
-	if err = s.appendJobEvent(ctx, "job.restarted", job.Name, payload); err != nil {
+	appended, err := s.appendJobEventIf(ctx, "job.restarted", job.Name, payload, func(curr eventlog.Job) bool {
+		return sameRestartEnd(curr, before)
+	})
+	if err != nil || !appended {
 		return err
 	}
 	if job.Restart.BackoffSeconds > 0 && !sleepContext(ctx, time.Duration(job.Restart.BackoffSeconds)*time.Second) {
 		return ctx.Err()
 	}
-	return s.startUnlessStopped(ctx, job.Name, before.Jobs[job.Name])
+	return s.startUnlessStopped(ctx, job.Name, before)
+}
+
+func sameRestartEnd(curr, before eventlog.Job) bool {
+	if curr.LastEvent != before.LastEvent || curr.State != before.State || curr.Since != before.Since || curr.ShimPID != before.ShimPID || curr.LastReason != before.LastReason {
+		return false
+	}
+	if curr.LastExitCode == nil || before.LastExitCode == nil {
+		return curr.LastExitCode == nil && before.LastExitCode == nil
+	}
+	return *curr.LastExitCode == *before.LastExitCode
 }
 
 // restartsInWindow counts the restarts the cap bounds: those newer than now minus the

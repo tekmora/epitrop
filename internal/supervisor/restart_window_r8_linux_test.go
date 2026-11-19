@@ -68,7 +68,7 @@ func TestStopWaitingAutomaticShimReplaysStopped(t *testing.T) {
 		t.Fatal("running record missing")
 	}
 	cmd := startWaitingShim(t, sup, job.Name)
-	heldDuringAppend := resumeAfterStoppedAppend(t, sup, cmd)
+	heldDuringAppend := checkStoppedAppendLock(t, sup)
 	reads := 0
 	oldRead := jobRecordReadFile
 	jobRecordReadFile = func(path string) ([]byte, error) {
@@ -85,12 +85,20 @@ func TestStopWaitingAutomaticShimReplaysStopped(t *testing.T) {
 	if !*heldDuringAppend {
 		t.Fatal("job.stopped appended without the job lock")
 	}
+	resumeWaitingShim(t, cmd)
 	assertShimStoppedExit(t, cmd)
 	if got := eventlogJob(t, sup, job.Name); got.State != string(StateStopped) || got.LastEvent != "job.stopped" {
 		t.Fatalf("job after stop = %+v, want stopped", got)
 	}
 	if fresh, ok := readJobRecord(sup.recordPath(job.Name)); !ok || fresh.PID != running.PID {
 		t.Fatalf("record after stop = %+v, valid %t, want original run", fresh, ok)
+	}
+}
+
+func resumeWaitingShim(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	if err := guardedKill(cmd.Process.Pid, unix.SIGCONT, unix.Kill); err != nil {
+		t.Fatalf("resume waiting shim: %v", err)
 	}
 }
 
@@ -153,7 +161,7 @@ func waitShimLockOpen(t *testing.T, fd int, pid int) {
 	}
 }
 
-func resumeAfterStoppedAppend(t *testing.T, sup *Supervisor, cmd *exec.Cmd) *bool {
+func checkStoppedAppendLock(t *testing.T, sup *Supervisor) *bool {
 	t.Helper()
 	realAppend := appendEvent
 	held := false
@@ -164,9 +172,6 @@ func resumeAfterStoppedAppend(t *testing.T, sup *Supervisor, cmd *exec.Cmd) *boo
 			held, lockErr = lockHeld(sup.lockPath("daemon"))
 			if lockErr != nil {
 				t.Errorf("check job lock: %v", lockErr)
-			}
-			if err = guardedKill(cmd.Process.Pid, unix.SIGCONT, unix.Kill); err != nil {
-				t.Errorf("resume waiting shim: %v", err)
 			}
 		}
 		return rec, err

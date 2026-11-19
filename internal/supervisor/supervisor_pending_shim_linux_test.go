@@ -332,8 +332,9 @@ func assertPendingCollectorPastTimeoutFailsSupervise(t *testing.T) {
 			t.Fatalf("Close(lock) = %v, want nil", closeErr)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), testWaitBound)
 	defer cancel()
+	sup.afterTick = cancel
 	err := sup.Supervise(ctx)
 	if !errors.Is(err, ErrStopMarkersNotWritten) || !strings.Contains(err.Error(), "job daemon") {
 		t.Fatalf("Supervise(collector past timeout) = %v, want ErrStopMarkersNotWritten naming daemon", err)

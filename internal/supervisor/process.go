@@ -49,10 +49,13 @@ func (s *Supervisor) shimCmdFor(ctx context.Context, job config.JobConfig, unles
 	return cmd
 }
 
+const maxStopTargetPolls = int((shimReplayTimeout + 2*time.Second) / startPollInterval)
+
 // waitStopTarget retries the lock while a starting shim publishes its record.
 func (s *Supervisor) waitStopTarget(ctx context.Context, job config.JobConfig) (*heldLock, jobSignalTarget, error) {
 	last := errors.New("job lock is held without a record")
-	for i := 0; i < maxStatusPolls; i++ {
+	refused := 0
+	for i := 0; i < maxStopTargetPolls; i++ {
 		lock, err := holdLock(s.lockPath(job.Name))
 		if err == nil {
 			return lock, jobSignalTarget{}, nil
@@ -63,10 +66,15 @@ func (s *Supervisor) waitStopTarget(ctx context.Context, job config.JobConfig) (
 		target, err := s.signalTarget(job)
 		if err != nil {
 			last = err
+			refused = 0
 		} else if err = validateSignalTarget(target); err == nil {
 			return nil, target, nil
 		} else if errors.Is(err, errSignalRefused) {
 			last = err
+			refused++
+			if refused >= maxStatusPolls {
+				return nil, jobSignalTarget{}, last
+			}
 		} else {
 			return nil, jobSignalTarget{}, fmt.Errorf("validate stop target: %w", err)
 		}

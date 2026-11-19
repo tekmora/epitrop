@@ -128,11 +128,12 @@ func TestSuperviseReturnsAMarkerWriteFailureWithItsOwnError(t *testing.T) {
 		}
 		return nil
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), testWaitBound)
 	defer cancel()
+	sup.afterTick = cancel
 	err := sup.Supervise(ctx)
-	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, errDisk) || !errors.Is(err, ErrStopMarkersNotWritten) {
-		t.Fatalf("Supervise() = %v, want an error wrapping the deadline, ErrStopMarkersNotWritten and the marker failure", err)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, errDisk) || !errors.Is(err, ErrStopMarkersNotWritten) {
+		t.Fatalf("Supervise() = %v, want an error wrapping cancellation, ErrStopMarkersNotWritten and the marker failure", err)
 	}
 	if !strings.Contains(err.Error(), eventSupervisorStopped) {
 		t.Fatalf("Supervise() error = %q, want it to name %s", err.Error(), eventSupervisorStopped)
@@ -161,8 +162,9 @@ func TestSupervisorStopGivesEachMarkerAppendItsOwnDeadline(t *testing.T) {
 		}
 		return nil
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), testWaitBound)
 	defer cancel()
+	sup.afterTick = cancel
 	err := sup.Supervise(ctx)
 	if !errors.Is(err, ErrStopMarkersNotWritten) || !strings.Contains(err.Error(), "job job-a") {
 		t.Fatalf("Supervise() = %v, want ErrStopMarkersNotWritten naming job-a", err)
