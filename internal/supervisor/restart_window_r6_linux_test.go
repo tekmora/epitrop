@@ -37,12 +37,11 @@ func TestStopStaleReusedShimPID(t *testing.T) {
 	}
 }
 
-// startUnrelatedGroupLeader starts a long-running process in its own process group that is
+// startUnrelatedGroupLeader starts a sleep process in its own process group that is
 // not a shim of any job, and ends it when the test ends.
 func startUnrelatedGroupLeader(t *testing.T) int {
 	t.Helper()
-	args := longJobCommand(t)
-	cmd := exec.CommandContext(t.Context(), args[0], args[1:]...)
+	cmd := exec.CommandContext(t.Context(), "/usr/bin/sleep", "60")
 	prepareProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
