@@ -77,12 +77,43 @@ func TestLostOnceHeldUntilStopGetsMarker(t *testing.T) {
 	defer closeLockForShim(lock)
 	ctx, cancel := context.WithCancel(testContext(t))
 	defer cancel()
-	sup.afterTick = cancel
+	ticks := 0
+	sup.afterTick = func() {
+		ticks++
+		if ticks == 2 {
+			cancel()
+		}
+	}
 	if err = sup.Supervise(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Supervise = %v", err)
 	}
 	if st := eventlogJob(t, sup, "manual"); !st.SupervisorStopped {
 		t.Fatal("held once missing marker")
+	}
+}
+
+func TestLostOnceProbeErrorGetsMarker(t *testing.T) {
+	once := testJob("manual", []string{"/bin/true"})
+	once.Schedule = "once"
+	sup := testSupervisor(t, once)
+	plantRunningOnce(t, sup, "manual", "2026-11-18T08:00:00Z")
+	old := probeJobLock
+	probeJobLock = func(string) (bool, error) { return false, errors.New("probe failed") }
+	t.Cleanup(func() { probeJobLock = old })
+	ctx, cancel := context.WithCancel(testContext(t))
+	defer cancel()
+	ticks := 0
+	sup.afterTick = func() {
+		ticks++
+		if ticks == 2 {
+			cancel()
+		}
+	}
+	if err := sup.Supervise(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Supervise = %v", err)
+	}
+	if st := eventlogJob(t, sup, "manual"); !st.SupervisorStopped {
+		t.Fatal("once with probe error missing marker")
 	}
 }
 
