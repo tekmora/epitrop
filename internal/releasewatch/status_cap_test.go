@@ -6,6 +6,7 @@ package releasewatch
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +18,7 @@ import (
 func TestFetchSourceNon200OverCapReportsStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		if _, err := w.Write([]byte(strings.Repeat("x", maxSourceResponseBytes+1))); err != nil {
+		if _, err := io.WriteString(w, strings.Repeat("x", maxSourceResponseBytes+1)); err != nil {
 			t.Errorf("write response: %v", err)
 		}
 	}))
