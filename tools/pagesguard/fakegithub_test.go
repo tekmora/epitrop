@@ -39,6 +39,7 @@ type fakeGitHub struct {
 	compareByPair          map[string]string
 	tipStatus              int
 	tipBadJSON             bool
+	tipWrongType           bool
 	tipByRef               map[string]string
 	deploymentsCalls       atomic.Int32
 	statusesCalls          atomic.Int32
@@ -177,6 +178,13 @@ func (fk *fakeGitHub) serveTip(t *testing.T, w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if fk.tipBadJSON {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(`{"object":`)); err != nil {
+			t.Errorf("write malformed response: %v", err)
+		}
+		return
+	}
+	if fk.tipWrongType {
 		writeJSON(t, w, []string{"invalid-tip"})
 		return
 	}

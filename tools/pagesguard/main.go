@@ -163,6 +163,9 @@ func validateConfig(cfg config) error {
 	if !strings.HasPrefix(ref, "refs/heads/") {
 		return fmt.Errorf("GITHUB_REF %q is not a branch", ref)
 	}
+	if err := validateBranchRef(ref); err != nil {
+		return err
+	}
 	if strings.TrimSpace(cfg.Access) == "" {
 		return errors.New("GH_TOKEN is required")
 	}
@@ -170,6 +173,37 @@ func validateConfig(cfg config) error {
 		return errors.New("GITHUB_API_URL is required")
 	}
 	return nil
+}
+
+// validateBranchRef uses an allow-list stricter than git because the deploy job runs only on main.
+func validateBranchRef(ref string) error {
+	branch := strings.TrimPrefix(ref, "refs/heads/")
+	segments := strings.Split(branch, "/")
+	if len(segments) > maxRefSegments {
+		return fmt.Errorf("GITHUB_REF %q has more than %d segments", ref, maxRefSegments)
+	}
+	for i := 0; i < len(segments) && i < maxRefSegments; i++ {
+		segment := segments[i]
+		if !validBranchSegment(segment) {
+			return fmt.Errorf("GITHUB_REF %q has an invalid branch segment %q", ref, segment)
+		}
+	}
+	return nil
+}
+
+func validBranchSegment(segment string) bool {
+	if segment == "" || strings.HasPrefix(segment, ".") || strings.HasSuffix(segment, ".lock") {
+		return false
+	}
+	for i := 0; i < len(segment); i++ {
+		c := segment[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '.', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func decide(ctx context.Context, cfg config) (allow bool, reason string, err error) {

@@ -58,19 +58,18 @@ func TestDecideBeyondWindowRecovery(t *testing.T) {
 			wantCompareCall:     0,
 		},
 		{
-			name: "positive branch with a reserved character is escaped per segment",
-			ref:  "refs/heads/feat/a#b",
-			fk: &fakeGitHub{
-				deployments:  depsPage4,
-				statusesByID: statPage4,
-				tipByRef:     map[string]string{"heads/feat/a#b": testOurSHA},
-			},
-			wantAllow:           true,
-			wantReason:          []string{"is the tip of refs/heads/feat/a#b"},
-			wantDeploymentsCall: 3,
-			wantStatusesCall:    300,
-			wantTipCall:         1,
+			name:    "branch with a reserved character fails closed",
+			ref:     "refs/heads/feat/a#b",
+			fk:      &fakeGitHub{deployments: depsPage4, statusesByID: statPage4},
+			wantErr: "invalid branch segment",
 		},
+	}
+	runDecideCases(t, cases)
+}
+
+func TestDecideBeyondWindowRecoveryRefusals(t *testing.T) {
+	depsPage4, statPage4 := makePageFourSuccessDeployments()
+	cases := []decideCase{
 		{
 			name: "negative slashed branch names its own branch in the hint",
 			ref:  "refs/heads/release/v1",
@@ -169,6 +168,13 @@ func TestDecideBeyondWindowFailClosed(t *testing.T) {
 			wantStatusesCall:    300,
 			wantTipCall:         1,
 		},
+	}
+	runDecideCases(t, cases)
+}
+
+func TestDecideBeyondWindowInvalidTip(t *testing.T) {
+	depsPage4, statPage4 := makePageFourSuccessDeployments()
+	cases := []decideCase{
 		{
 			name: "tip endpoint malformed JSON fails closed",
 			fk: &fakeGitHub{
@@ -176,6 +182,14 @@ func TestDecideBeyondWindowFailClosed(t *testing.T) {
 				statusesByID: statPage4,
 				tipBadJSON:   true,
 			},
+			wantErr:             "decode tip of refs/heads/main",
+			wantDeploymentsCall: 3,
+			wantStatusesCall:    300,
+			wantTipCall:         1,
+		},
+		{
+			name:                "tip endpoint wrong JSON type fails closed",
+			fk:                  &fakeGitHub{deployments: depsPage4, statusesByID: statPage4, tipWrongType: true},
 			wantErr:             "decode tip of refs/heads/main",
 			wantDeploymentsCall: 3,
 			wantStatusesCall:    300,
@@ -192,18 +206,6 @@ func TestDecideBeyondWindowFailClosed(t *testing.T) {
 			wantDeploymentsCall: 3,
 			wantStatusesCall:    300,
 			wantTipCall:         1,
-		},
-		{
-			name: "ref with one segment over the bound fails closed without a tip call",
-			ref:  "refs/heads/" + strings.Repeat("a/", maxRefSegments) + "a",
-			fk: &fakeGitHub{
-				deployments:  depsPage4,
-				statusesByID: statPage4,
-			},
-			wantErr:             "more than 32 segments",
-			wantDeploymentsCall: 3,
-			wantStatusesCall:    300,
-			wantTipCall:         0,
 		},
 		{
 			name: "ref at the segment bound reaches the tip endpoint",
