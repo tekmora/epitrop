@@ -128,7 +128,20 @@ The contract is described by `catalog/snapshot.schema.json`, and
 `epitropctl schema` prints the embedded copy for downstream pin checks.
 `epitropctl version` prints the release version, or `dev` for a source build.
 `epitropctl jobs supervise` runs until SIGTERM or an interrupt, which end it
-with exit 0, so a host service unit can hold it.
+with exit 0, so a host service unit can hold it. When at least one job is down
+and none is alive, it writes at most one recoverable `no job alive` finding line
+per episode to stderr and always attempts a terminal line if the finding becomes
+terminal. Running jobs and armed cron/event jobs are alive; stopped cron and
+event jobs remain armed and alive. A once job with no record or whose last run
+exited 0 without reason `deadline` is excluded, as are stopped always and once
+jobs; any other once end, including a `deadline` end with exit code 0 or a
+lock-free `running` record confirmed lost, counts as down and cannot recover. If
+a windowed restart budget can recover, the line includes
+`restart due <RFC3339Nano UTC>` and ends `supervise keeps running`; otherwise it
+ends `supervise exits 3` and the command exits 3. A job becoming alive ends the
+episode. `jobs stop` also keeps an on-failure always job stopped. Put
+`RestartPreventExitStatus=3` in the unit to make a terminal finding fail it at
+once instead of restarting.
 Releases, their signed artefacts and how to verify them are described in
 [Releasing](docs/releasing.md).
 

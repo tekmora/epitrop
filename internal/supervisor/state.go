@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/tekmora/epitrop/internal/config"
@@ -373,10 +374,10 @@ func (s *Supervisor) restartJob(ctx context.Context, job config.JobConfig) error
 // window, otherwise those newer than now minus the window. A time that does not
 // parse counts, so an unreadable record never frees budget.
 func restartsInWindow(job config.JobConfig, st eventlog.Job, now time.Time) int {
-	if job.Restart.WindowSeconds <= 0 {
+	if restartWindowSeconds(job) <= 0 {
 		return st.Restarts
 	}
-	cutoff := now.Add(-time.Duration(job.Restart.WindowSeconds) * time.Second)
+	cutoff := now.Add(-time.Duration(restartWindowSeconds(job)) * time.Second)
 	count := 0
 	for _, raw := range st.RestartTimes {
 		t, err := time.Parse(time.RFC3339Nano, raw)
@@ -388,14 +389,46 @@ func restartsInWindow(job config.JobConfig, st eventlog.Job, now time.Time) int 
 }
 
 func shouldRestart(job config.JobConfig, st eventlog.Job, now time.Time) bool {
+	if st.State == string(StateStopped) {
+		return false
+	}
 	if restartsInWindow(job, st, now) >= job.Restart.MaxRestarts {
 		return false
 	}
-	if job.Restart.Policy == "always" && st.State != string(StateStopped) {
+	if job.Restart.Policy == "always" {
 		return true
 	}
 	if job.Restart.Policy != "on-failure" {
 		return false
 	}
 	return st.LastExitCode == nil || *st.LastExitCode != 0 || st.LastReason == "lost"
+}
+
+func restartWindowSeconds(job config.JobConfig) int {
+	return job.Restart.WindowSeconds
+}
+
+// restartDueAt predicts when a spent budget frees. Unreadable times never expire.
+// The policy must still permit a restart after enough parsed times have aged out.
+func restartDueAt(job config.JobConfig, st eventlog.Job, now time.Time) (time.Time, bool) {
+	window := time.Duration(restartWindowSeconds(job)) * time.Second
+	if window <= 0 {
+		return time.Time{}, false
+	}
+	cutoff := now.Add(-window)
+	parsed := make([]time.Time, 0, len(st.RestartTimes))
+	for i := 0; i < len(st.RestartTimes); i++ {
+		t, err := time.Parse(time.RFC3339Nano, st.RestartTimes[i])
+		if err == nil && t.After(cutoff) {
+			parsed = append(parsed, t)
+		}
+	}
+	need := restartsInWindow(job, st, now) - job.Restart.MaxRestarts + 1
+	// Unparseable times never age out: only parsed times can free budget.
+	if need <= 0 || need > len(parsed) {
+		return time.Time{}, false
+	}
+	slices.SortFunc(parsed, time.Time.Compare)
+	due := parsed[need-1].Add(window)
+	return due, shouldRestart(job, st, due.Add(time.Nanosecond))
 }
