@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block extrahead %}
+  {#- base.html already writes <link rel="canonical"> from site_url. Static templates such
+      as 404.html render with page = None, so every page.* read sits behind this guard.
+      site_url is operator configuration (DOCS_SITE_URL in mkdocs.yml): unset, the page has
+      no canonical_url, so the article carries no URL rather than a guessed one.
+      dateModified is page.update_date: MkDocs sets it to the build date (SOURCE_DATE_EPOCH
+      when exported) and writes the same value as the page's sitemap.xml <lastmod>.
+      Every identity value comes from the site's mkdocs.yml, never from this template, so
+      the site that renders it (an adopter's fork, or this repository's own docs) names
+      itself: author is site_author, or site_name when site_author is unset.
+      `praetorctl seo audit site` validates the rendered blocks. -#}
+  {% if page %}
+  <!-- Pre-wired Schema.org JSON-LD structured data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": {{ (page.title or config.site_name) | tojson }},
+    "description": {{ ((page.meta and page.meta.description) or config.site_description) | tojson }},
+    {%- if page.canonical_url %}
+    "url": {{ page.canonical_url | tojson }},
+    {%- endif %}
+    "author": {{ (config.site_author or config.site_name) | tojson }},
+    "dateModified": {{ page.update_date | tojson }},
+    "inLanguage": "en",
+    "proficiencyLevel": "Expert"
+  }
+  </script>
+  {% endif %}
+
+  {#- The site-wide SoftwareSourceCode block describes the repository the docs belong to.
+      It renders only when mkdocs.yml names that repository (extra.source_code.repository,
+      else repo_url) and its programming language (extra.source_code.programming_language);
+      a site that sets neither emits no block rather than one naming another project. -#}
+  {%- set source_code = config.extra.source_code or {} %}
+  {%- set repository = source_code.repository or config.repo_url %}
+  {%- if repository and source_code.programming_language %}
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareSourceCode",
+    "name": {{ (source_code.name or config.site_name) | tojson }},
+    "programmingLanguage": {{ source_code.programming_language | tojson }},
+    {%- if source_code.runtime_platform %}
+    "runtimePlatform": {{ source_code.runtime_platform | tojson }},
+    {%- endif %}
+    {%- if source_code.license %}
+    "license": {{ source_code.license | tojson }},
+    {%- endif %}
+    "codeRepository": {{ repository | tojson }}
+  }
+  </script>
+  {%- endif %}
+{% endblock %}

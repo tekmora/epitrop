@@ -235,3 +235,175 @@ func TestReadBoundedRefusesAnOversizedFile(t *testing.T) {
 		t.Fatalf("readBounded(%d bytes) = %v, want a size error", maxChangelogBytes+1, err)
 	}
 }
+
+func TestLatestReleased(t *testing.T) {
+	cases := []struct {
+		name      string
+		changelog string
+		want      string
+		wantErr   string
+	}{
+		{name: "newest release after Unreleased", changelog: sampleChangelog, want: "0.2.0"},
+		{name: "prerelease heading as newest", changelog: "## [Unreleased]\n\n## [0.2.0-rc.1] - 2026-10-18\n\n- rc\n\n## [0.1.0] - 2026-10-11\n", want: "0.2.0-rc.1"},
+		{name: "single release at boundary", changelog: "## [0.1.0]", want: "0.1.0"},
+		{name: "Unreleased only", changelog: "# Changelog\n\n## [Unreleased]\n\n- pending\n", wantErr: "no released version in changelog"},
+		{name: "empty input", changelog: "", wantErr: "no released version in changelog"},
+		{name: "malformed heading version", changelog: "## [v0.2.0] - 2026-10-18\n", wantErr: "is not of the form"},
+		{name: "over line limit", changelog: "## [0.2.0]\n" + strings.Repeat("\n", maxChangelogLines), wantErr: "more than"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := latestReleased(tc.changelog)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("latestReleased = (%q, %v), want error containing %q", got, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("latestReleased = (%q, %v), want (%q, nil)", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadmeReleaseBadge(t *testing.T) {
+	badge020 := "[![Release](https://img.shields.io/static/v1?label=release&message=v0.2.0&style=for-the-badge&color=3b82f6&labelColor=111a35)](https://github.com/tekmora/epitrop/releases)"
+	badgeRC := "[![Release](https://img.shields.io/static/v1?label=release&message=v0.2.0-rc.1&style=for-the-badge&color=3b82f6&labelColor=111a35)](https://github.com/tekmora/epitrop/releases)"
+	badge010 := "[![Release](https://img.shields.io/static/v1?label=release&message=v0.1.0&style=for-the-badge&color=3b82f6&labelColor=111a35)](https://github.com/tekmora/epitrop/releases)"
+	docsBadge020 := "[![Docs](https://img.shields.io/static/v1?label=docs&message=v0.2.0&style=for-the-badge)](https://tekmora.github.io/epitrop/)"
+	releasesBadge020 := "[![Releases](https://img.shields.io/static/v1?label=releases&message=v0.2.0&style=for-the-badge)](https://github.com/tekmora/epitrop/releases)"
+	releaseURL020 := "https://img.shields.io/static/v1?label=release&message=v0.2.0"
+	releaseURLRC := "https://img.shields.io/static/v1?label=release&message=v0.2.0-rc.1"
+	plainURLs255 := strings.Repeat(" https://example.com", maxLineURLs-1)
+	plainURLs256 := strings.Repeat(" https://example.com", maxLineURLs)
+	cases := []struct {
+		name    string
+		readme  string
+		want    string
+		wantErr string
+	}{
+		{name: "one release badge", readme: "# Title\n" + badge020 + "\n", want: "0.2.0"},
+		{name: "prerelease badge at boundary", readme: badgeRC, want: "0.2.0-rc.1"},
+		{name: "docs badge before release badge on one line", readme: docsBadge020 + " " + badge010, want: "0.1.0"},
+		{name: "release badge before docs badge on one line", readme: badge010 + " " + docsBadge020, want: "0.1.0"},
+		{name: "label=releases is not a release badge", readme: releasesBadge020, wantErr: "no label=release badge"},
+		{name: "https release badge before a plain http link on one line", readme: badge010 + " see http://example.com/notes", want: "0.1.0"},
+		{name: "message last before the closing parenthesis", readme: "[![Release](https://img.shields.io/static/v1?label=release&message=v0.3.0)](https://github.com/tekmora/epitrop/releases)", want: "0.3.0"},
+		{name: "release plus 255 plain URLs at line URL limit", readme: releaseURL020 + plainURLs255, want: "0.2.0"},
+		{name: "release plus 255 plain URLs plus second release URL over limit", readme: releaseURL020 + plainURLs255 + " " + releaseURLRC, wantErr: "more than 256 URLs"},
+		{name: "release plus 256 plain URLs over limit", readme: releaseURL020 + plainURLs256, wantErr: "more than 256 URLs"},
+		{name: "no badge", readme: "# Title\nNo release badge here.\n", wantErr: "no label=release badge"},
+		{name: "empty input", readme: "", wantErr: "no label=release badge"},
+		{name: "two badges on different lines", readme: badge020 + "\n" + badgeRC + "\n", wantErr: "label=release badge at line 1 and at line 2"},
+		{name: "two badges on one line", readme: badge020 + " " + badgeRC, wantErr: "more than one label=release badge on one line"},
+		{name: "badge without message=v", readme: "https://img.shields.io/static/v1?label=release&message=0.2.0", wantErr: "no message=v<version>"},
+		{name: "badge with malformed version", readme: "https://img.shields.io/static/v1?label=release&message=v0.2&style=for-the-badge", wantErr: "is not of the form"},
+		{name: "over line limit", readme: badge020 + strings.Repeat("\n", maxChangelogLines), wantErr: "more than"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := readmeReleaseBadge(tc.readme)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("readmeReleaseBadge = (%q, %v), want error containing %q", got, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("readmeReleaseBadge = (%q, %v), want (%q, nil)", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func checkReadmeBadgeMatchesChangelog(readmeText string, changelogText string) error {
+	badge, err := readmeReleaseBadge(readmeText)
+	if err != nil {
+		return err
+	}
+	latest, err := latestReleased(changelogText)
+	if err != nil {
+		return err
+	}
+	if badge != latest {
+		return &badgeMismatchError{badge: badge, latest: latest}
+	}
+	return nil
+}
+
+type badgeMismatchError struct {
+	badge  string
+	latest string
+}
+
+func (e *badgeMismatchError) Error() string {
+	return "README.md release badge message=v" + e.badge + " does not match CHANGELOG.md latest release " + e.latest
+}
+
+func TestReadmeReleaseBadgeMatchesChangelog(t *testing.T) {
+	readmePath := filepath.Join("..", "..", "README.md")
+	readmeText, err := readBounded(readmePath)
+	if err != nil {
+		t.Fatalf("readBounded(%s) = %v", readmePath, err)
+	}
+	changelogPath := filepath.Join("..", "..", "CHANGELOG.md")
+	changelogText, err := readBounded(changelogPath)
+	if err != nil {
+		t.Fatalf("readBounded(%s) = %v", changelogPath, err)
+	}
+	if err := checkReadmeBadgeMatchesChangelog(readmeText, changelogText); err != nil {
+		t.Fatal(err)
+	}
+	badge, err := readmeReleaseBadge(readmeText)
+	if err != nil {
+		t.Fatalf("readmeReleaseBadge(%s) = %v", readmePath, err)
+	}
+	planted := plantReleaseBadgeVersion(readmeText, badge, "0.0.0")
+	if planted == readmeText {
+		t.Fatalf("planted badge: message=v%s not found in %s", badge, readmePath)
+	}
+	if err := checkReadmeBadgeMatchesChangelog(planted, changelogText); err == nil || !strings.Contains(err.Error(), "message=v0.0.0 does not match CHANGELOG.md latest release "+badge) {
+		t.Fatalf("planted v0.0.0 badge = %v, want mismatch against %s", err, badge)
+	}
+	checkPrecedingNonReleaseBadgePlant(t)
+}
+
+func checkPrecedingNonReleaseBadgePlant(t *testing.T) {
+	t.Helper()
+	docsBadge := "[![Docs](https://img.shields.io/static/v1?label=docs&message=v0.2.0&style=for-the-badge)](https://tekmora.github.io/epitrop/)"
+	releaseBadge := "[![Release](https://img.shields.io/static/v1?label=release&message=v0.2.0&style=for-the-badge)](https://github.com/tekmora/epitrop/releases)"
+	synthetic := docsBadge + "\n" + releaseBadge + "\n"
+	if err := checkReadmeBadgeMatchesChangelog(synthetic, sampleChangelog); err != nil {
+		t.Fatalf("checkReadmeBadgeMatchesChangelog(synthetic) = %v, want nil", err)
+	}
+	planted := plantReleaseBadgeVersion(synthetic, "0.2.0", "0.0.0")
+	if !strings.HasPrefix(planted, docsBadge+"\n") {
+		t.Fatalf("plantReleaseBadgeVersion changed the preceding non-release badge:\n%s", planted)
+	}
+	if err := checkReadmeBadgeMatchesChangelog(planted, sampleChangelog); err == nil || !strings.Contains(err.Error(), "message=v0.0.0 does not match CHANGELOG.md latest release 0.2.0") {
+		t.Fatalf("planted synthetic v0.0.0 badge = %v, want mismatch against 0.2.0", err)
+	}
+}
+
+func plantReleaseBadgeVersion(readme string, fromVersion string, toVersion string) string {
+	rest := readme
+	for n := 0; n < maxLineURLs && rest != ""; n++ {
+		raw, tail, ok := nextURLToken(rest)
+		if !ok {
+			break
+		}
+		rest = tail
+		msg, isRelease := releaseBadgeMessage(raw)
+		if !isRelease || msg != "v"+fromVersion {
+			continue
+		}
+		planted := strings.Replace(raw, "message=v"+fromVersion, "message=v"+toVersion, 1)
+		if planted == raw {
+			return readme
+		}
+		prefix := readme[:len(readme)-len(raw)-len(tail)]
+		return prefix + planted + tail
+	}
+	return readme
+}
