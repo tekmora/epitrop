@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	neturl "net/url"
+	"strings"
 	"time"
 
 	gerrors "github.com/golusoris/golusoris/core/errors"
@@ -36,7 +37,7 @@ func RedactedURL(raw string) string {
 	return parsed.Redacted()
 }
 
-// URLParseCause removes URLs and escape bytes from parse errors to protect passwords.
+// URLParseCause allows only fixed parse causes; causes quoting input can expose passwords.
 func URLParseCause(err error) error {
 	var urlErr *neturl.Error
 	if !errors.As(err, &urlErr) {
@@ -46,7 +47,55 @@ func URLParseCause(err error) error {
 	if errors.As(urlErr.Err, &escapeErr) {
 		return errors.New("invalid URL escape")
 	}
-	return urlErr.Err
+
+	if urlErr.Err == nil {
+		return errors.New("invalid URL")
+	}
+	switch urlErr.Err.Error() {
+	case "missing protocol scheme", "net/url: invalid control character in URL", "empty url",
+		"invalid URI for request", "first path segment in URL cannot contain colon",
+		"net/url: invalid userinfo", "invalid IP-literal", "missing ']' in host":
+		return urlErr.Err
+	default:
+		return errors.New("invalid URL")
+	}
+}
+
+// withheldRequestError hides the text of a request error that may echo a URL
+// password, while it still unwraps to that error and reports its timeout.
+type withheldRequestError struct{ err error }
+
+func (e withheldRequestError) Error() string {
+	return "request failed; detail withheld because it may carry URL credentials"
+}
+
+func (e withheldRequestError) Unwrap() error { return e.err }
+
+func (e withheldRequestError) Timeout() bool {
+	var timeout interface{ Timeout() bool }
+	return errors.As(e.err, &timeout) && timeout.Timeout()
+}
+
+// sanitizeRequestError redacts the URL of an http.Client.Do error and
+// withholds any inner text containing '@', because a URL password always
+// sits before an '@'. A redirect error carries the raw Location as its URL,
+// and a bad Location header is quoted in the inner text.
+func sanitizeRequestError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var urlErr *neturl.Error
+	if errors.As(err, &urlErr) {
+		inner := urlErr.Err
+		if inner != nil && strings.Contains(inner.Error(), "@") {
+			inner = withheldRequestError{err: inner}
+		}
+		return &neturl.Error{Op: urlErr.Op, URL: RedactedURL(urlErr.URL), Err: inner}
+	}
+	if strings.Contains(err.Error(), "@") {
+		return withheldRequestError{err: err}
+	}
+	return err
 }
 
 // Get performs a GET against url with a per-call deadline (timeout) and a
@@ -77,7 +126,7 @@ func GetWithHeader(ctx context.Context, url string, header http.Header, timeout 
 	}
 	resp, err := client.New(client.Options{Name: clientName, Timeout: timeout}).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request %s: %w", safeURL, err)
+		return nil, fmt.Errorf("request %s: %w", safeURL, sanitizeRequestError(err))
 	}
 	// Closure rather than a bare defer so the bodyclose linter sees the body
 	// reach a closer.
@@ -125,7 +174,7 @@ func Do(ctx context.Context, httpClient *http.Client, req *http.Request, timeout
 	// #nosec G704 -- caller supplies target URL and client; bounded transport utility.
 	resp, err := cl.Do(req)
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("request %s: %w", safeURL, err)
+		return 0, nil, nil, fmt.Errorf("request %s: %w", safeURL, sanitizeRequestError(err))
 	}
 	defer func() { gerrors.CloseJoin(resp.Body, &err, "close response body from "+safeURL) }()
 
