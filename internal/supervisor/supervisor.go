@@ -119,6 +119,7 @@ type Supervisor struct {
 	shimWaiters   atomic.Int32
 	mu            sync.Mutex
 	observedSince map[string]string
+	lostOnceSince map[string]string
 	spawnedShim   map[string]spawnedShim
 	collectedShim map[string]collectedShim
 	stderr        io.Writer
@@ -546,6 +547,7 @@ func (s *Supervisor) superviseLoop(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		candidates := s.lostOnceCandidates(ctx, state)
 		err = s.checkNoJobAlive(ctx, state, &episode)
 		if s.afterTick != nil {
 			s.afterTick()
@@ -553,9 +555,10 @@ func (s *Supervisor) superviseLoop(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if !sleepContext(ctx, s.pollInterval) {
+		if !sleepContext(ctx, s.pollInterval) || ctx.Err() != nil {
 			return ctx.Err()
 		}
+		s.rememberLostOnce(candidates)
 	}
 	return fmt.Errorf("supervisor: supervise exceeded %d ticks", maxSuperviseTicks)
 }
@@ -563,20 +566,23 @@ func (s *Supervisor) superviseLoop(ctx context.Context) error {
 // markSupervisorStopped appends job.supervisor_stopped for each configured job whose run this
 // supervisor observed (on Reconcile or Start) and that the event log still records running
 // with that start time, unless this supervisor started and collected that run's shim with an
-// exit other than SIGTERM. It does not read the job's lock: a stop of the supervisor's unit
-// sends SIGTERM to the shims in the same cgroup at the same time, so each shim exits and frees
-// its lock before the marker is written. A job whose exit the shim recorded before the marker
-// is no longer recorded running and gets none, and a shim this supervisor started that died on
-// its own (exit code, SIGKILL or crash) is collected with a non-SIGTERM status and gets none;
-// only a run this supervisor adopted rather than started (no wait status) whose shim died
-// unrecorded between the last reconcile and the stop reads as interrupted rather than lost, a
-// window of one poll interval. Whatever ended Supervise, its context has ended too, so each
-// job's checked append runs under a supervisorStopMarkTimeout deadline of its own: a slow or
-// failing append for one job does not shorten the next. Because the event log appends one
-// record at a time, a supervisor killed in the middle of marking still leaves the remaining
-// jobs without a marker, and the next supervisor records them lost like a crash. The unit
-// that runs the supervisor ends its jobs with it, and nothing else records their exit: the
-// next supervisor reads the marker to tell this stop from a loss (reconcileJob).
+// exit other than SIGTERM, or this supervisor established a once run with that start time lost
+// before the stop (named in a no-job-alive finding, or read lock-free before a full poll sleep
+// that the stop did not cut short). It does not read the job's lock: a stop of the supervisor's
+// unit sends SIGTERM to the shims in the same cgroup at the same time, so each shim exits and
+// frees its lock before the marker is written. A job whose exit the shim recorded before the
+// marker is no longer recorded running and gets none, and a shim this supervisor started that
+// died on its own (exit code, SIGKILL or crash) is collected with a non-SIGTERM status and gets
+// none; only a run this supervisor adopted rather than started (no wait status) whose shim died
+// unrecorded shortly before the stop reads as interrupted rather than lost, a window of one poll
+// interval, or two for a once run, whose lock-free read counts only after a full poll sleep.
+// Whatever ended Supervise, its context has ended too, so each job's checked append runs under
+// a supervisorStopMarkTimeout deadline of its own: a slow or failing append for one job does not
+// shorten the next. Because the event log appends one record at a time, a supervisor killed in
+// the middle of marking still leaves the remaining jobs without a marker, and the next
+// supervisor records them lost like a crash. The unit that runs the supervisor ends its jobs
+// with it, and nothing else records their exit: the next supervisor reads the marker to tell
+// this stop from a loss (reconcileJob).
 func (s *Supervisor) markSupervisorStopped() error {
 	pid := os.Getpid()
 	var errs []error
@@ -600,6 +606,9 @@ func (s *Supervisor) observeRunning(name string, since string) {
 	if s.observedSince == nil {
 		s.observedSince = make(map[string]string, len(s.cfg.Jobs))
 	}
+	if s.lostOnceSince[name] != since {
+		delete(s.lostOnceSince, name)
+	}
 	s.observedSince[name] = since
 }
 
@@ -613,11 +622,12 @@ func (s *Supervisor) observeReconciled(state eventlog.State) {
 }
 
 // markOneJobStopped appends job.supervisor_stopped for job when the replay under the
-// event-log lock still records the run this supervisor observed running, and any exit status
+// event-log lock still records the run this supervisor observed running, this supervisor did
+// not establish that run lost before the stop (canMarkJobStopped), and any exit status
 // collected from that run's shim was SIGTERM. The job's lock is not read because the stop's
 // SIGTERM reaches the shims at the same time; only an adopted run (no wait status) whose shim
-// died unrecorded between the last reconcile and the stop reads as interrupted rather than
-// lost (a window of one poll interval).
+// died unrecorded shortly before the stop reads as interrupted rather than lost (a window of
+// one poll interval, two for a once run).
 func (s *Supervisor) markOneJobStopped(job config.JobConfig, pid int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), stopMarkTimeout)
 	defer cancel()
@@ -658,9 +668,10 @@ func (s *Supervisor) canMarkJobStopped(name string, st eventlog.Job) bool {
 	s.mu.Lock()
 	since := s.observedSince[name]
 	spawned := s.spawnedShim[name]
+	lostSince := s.lostOnceSince[name]
 	end, hasEnd := s.collectedShim[name]
 	s.mu.Unlock()
-	if st.Since != since {
+	if st.Since != since || st.Since == lostSince {
 		return false
 	}
 	return shimAllowsStopMarker(st.ShimPID, spawned, end, hasEnd)

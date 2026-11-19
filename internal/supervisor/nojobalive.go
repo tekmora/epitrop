@@ -157,7 +157,21 @@ func (s *Supervisor) checkNoJobAlive(ctx context.Context, state eventlog.State, 
 		episode.reset()
 		return nil
 	}
-	return s.reportNoJobAlive(ctx, down, episode)
+	return s.reportConfirmedDown(ctx, down, episode)
+}
+
+func (s *Supervisor) reportConfirmedDown(ctx context.Context, down []downJob, episode *findingEpisode) error {
+	err := s.reportNoJobAlive(ctx, down, episode)
+	if errors.Is(err, ErrNoJobAlive) && ctx.Err() == nil {
+		lost := make(map[string]string, len(down))
+		for i := 0; i < len(down); i++ {
+			if down[i].lostOnce {
+				lost[down[i].job.Name] = down[i].st.Since
+			}
+		}
+		s.rememberLostOnce(lost)
+	}
+	return err
 }
 
 // confirmLostOnce replays once more after a lock-free once candidate was seen, so a shim
@@ -288,4 +302,38 @@ func exitText(st eventlog.Job) string {
 
 func foldWhitespace(text string) string {
 	return strings.Join(strings.Fields(text), " ")
+}
+
+// lostOnceCandidates samples only recorded once runs while supervision is active.
+func (s *Supervisor) lostOnceCandidates(ctx context.Context, state eventlog.State) map[string]string {
+	candidates := make(map[string]string, len(s.cfg.Jobs))
+	for i := 0; i < len(s.cfg.Jobs); i++ {
+		job := s.cfg.Jobs[i]
+		st := state.Jobs[job.Name]
+		if ctx.Err() != nil {
+			break
+		}
+		if job.Schedule != "once" || st.State != string(StateRunning) || st.Since == "" {
+			continue
+		}
+		held, err := probeJobLock(s.lockPath(job.Name))
+		if err == nil && !held && ctx.Err() == nil {
+			candidates[job.Name] = st.Since
+		}
+	}
+	return candidates
+}
+
+// rememberLostOnce records observations that predate a completed poll or terminal finding.
+func (s *Supervisor) rememberLostOnce(candidates map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lostOnceSince == nil {
+		s.lostOnceSince = make(map[string]string, len(s.cfg.Jobs))
+	}
+	for name, since := range candidates {
+		if s.observedSince[name] == since {
+			s.lostOnceSince[name] = since
+		}
+	}
 }

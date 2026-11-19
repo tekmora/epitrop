@@ -509,11 +509,7 @@ func (s *Supervisor) restartJob(ctx context.Context, job config.JobConfig) error
 // window. A window of 0 is the default window, never the job's whole life. A time that does
 // not parse counts, so an unreadable record never frees budget.
 func restartsInWindow(job config.JobConfig, st eventlog.Job, now time.Time) int {
-	window := restartWindowSeconds(job)
-	if window <= 0 {
-		window = config.DefaultRestartWindowSeconds
-	}
-	cutoff := now.Add(-time.Duration(window) * time.Second)
+	cutoff := now.Add(-time.Duration(restartWindowSeconds(job)) * time.Second)
 	count := 0
 	for _, raw := range st.RestartTimes {
 		t, err := time.Parse(time.RFC3339Nano, raw)
@@ -545,7 +541,11 @@ func shouldRestart(job config.JobConfig, st eventlog.Job, now time.Time) bool {
 	return st.LastExitCode == nil || *st.LastExitCode != 0 || st.LastReason == "lost"
 }
 
+// restartWindowSeconds is the job's restart window; 0 or unset is the default window.
 func restartWindowSeconds(job config.JobConfig) int {
+	if job.Restart.WindowSeconds <= 0 {
+		return config.DefaultRestartWindowSeconds
+	}
 	return job.Restart.WindowSeconds
 }
 
@@ -553,9 +553,6 @@ func restartWindowSeconds(job config.JobConfig) int {
 // The policy must still permit a restart after enough parsed times have aged out.
 func restartDueAt(job config.JobConfig, st eventlog.Job, now time.Time) (time.Time, bool) {
 	window := time.Duration(restartWindowSeconds(job)) * time.Second
-	if window <= 0 {
-		return time.Time{}, false
-	}
 	cutoff := now.Add(-window)
 	parsed := make([]time.Time, 0, len(st.RestartTimes))
 	for i := 0; i < len(st.RestartTimes); i++ {
