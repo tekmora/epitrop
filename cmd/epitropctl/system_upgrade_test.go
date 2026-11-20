@@ -331,7 +331,8 @@ func checkUpgradeNegativeTamperedRecord(t *testing.T, bin string) {
 	t.Helper()
 	fix := prepareUpgradeFixture(t)
 	event2Path := filepath.Join(fix.eventLogDir, "events", "00000000000000000002.json")
-	data, err := os.ReadFile(event2Path) // #nosec G304 -- event2Path is in the prepared upgrade fixture
+	// #nosec G304 -- event2Path is in the prepared upgrade fixture
+	data, err := os.ReadFile(event2Path)
 	if err != nil {
 		t.Fatalf("ReadFile(%s) = %v", event2Path, err)
 	}
@@ -354,7 +355,8 @@ func checkUpgradeNegativeSeenVersion(t *testing.T, bin string) {
 	t.Helper()
 	fix := prepareUpgradeFixture(t)
 	seenPath := filepath.Join(fix.watchDir, "release-watch-seen.json")
-	data, err := os.ReadFile(seenPath) // #nosec G304 -- seenPath is in the prepared upgrade fixture
+	// #nosec G304 -- seenPath is in the prepared upgrade fixture
+	data, err := os.ReadFile(seenPath)
 	if err != nil {
 		t.Fatalf("ReadFile(%s) = %v", seenPath, err)
 	}

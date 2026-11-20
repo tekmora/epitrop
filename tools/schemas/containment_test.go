@@ -70,8 +70,8 @@ func TestFragmentPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := fragmentPath(tc.input)
 			if tc.valid {
-				if err != nil || got != filepath.FromSlash(tc.input) {
-					t.Errorf("fragmentPath(%q) = %q, %v; want %q, nil", tc.input, got, err, filepath.FromSlash(tc.input))
+				if err != nil || got != filepath.Clean(filepath.FromSlash(tc.input)) {
+					t.Errorf("fragmentPath(%q) = %q, %v; want %q, nil", tc.input, got, err, filepath.Clean(filepath.FromSlash(tc.input)))
 				}
 			} else if err == nil || !strings.Contains(err.Error(), tc.input) {
 				t.Errorf("fragmentPath(%q) = %q, %v; want named error", tc.input, got, err)
@@ -120,5 +120,16 @@ func TestWriteFragmentsContainmentSymlink(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outside, "x")); !os.IsNotExist(err) {
 		t.Errorf("outside x stat = %v, want not exist", err)
+	}
+}
+
+func TestWriteFragmentsCleanPath(t *testing.T) {
+	root := t.TempDir()
+	if err := writeFragments(root, schemaSource{ID: "test"}, map[string][]byte{"a/../b.yaml": []byte("ok")}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, "b.yaml"))
+	if err != nil || string(body) != "ok" {
+		t.Fatalf("read = %q, %v", body, err)
 	}
 }

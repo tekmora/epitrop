@@ -89,7 +89,8 @@ func TestShellMetacharactersRunLiterally(t *testing.T) {
 		t.Fatalf("Start() = %v, want nil", err)
 	}
 	waitForState(t, sup, "literal", StateDead)
-	body, err := os.ReadFile(logPath) // #nosec G304 -- logPath is the temporary log of this test job
+	// #nosec G304 -- logPath is the temporary log of this test job
+	body, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("ReadFile(log) = %v, want nil", err)
 	}
@@ -767,7 +768,8 @@ func TestShimErrorHelpers(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "append.log")
 	checkOpenAppendLogWrites(t, path)
-	body, err := os.ReadFile(path) // #nosec G304 -- path is append.log under t.TempDir
+	// #nosec G304 -- path is append.log under t.TempDir
+	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile(%s) = %v, want nil", path, err)
 	}
@@ -1641,7 +1643,8 @@ func countingShimSupervisor(t *testing.T, name string) (*Supervisor, testRuntime
 }
 
 func countProbeStarts(path string) int {
-	body, err := os.ReadFile(path) // #nosec G304 -- path is the starts counter created under t.TempDir
+	// #nosec G304 -- path is the starts counter created under t.TempDir
+	body, err := os.ReadFile(path)
 	if err != nil {
 		return 0
 	}
@@ -1906,7 +1909,8 @@ func appendFailingWriter(t *testing.T) *eventlog.Writer {
 func preclosedFile(t *testing.T) *os.File {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "preclosed")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304 -- path is preclosed under t.TempDir
+	// #nosec G304 -- path is preclosed under t.TempDir
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatalf("OpenFile(%s) = %v, want nil", path, err)
 	}
@@ -2024,7 +2028,8 @@ func waitForChildPIDInLog(t *testing.T, path string) int {
 	t.Helper()
 	pid := 0
 	found := waitUntil(func() bool {
-		body, err := os.ReadFile(path) // #nosec G304 -- caller passes the temporary child process log
+		// #nosec G304 -- caller passes the temporary child process log
+		body, err := os.ReadFile(path)
 		if err != nil {
 			return false
 		}

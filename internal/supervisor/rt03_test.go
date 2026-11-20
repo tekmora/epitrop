@@ -1032,7 +1032,8 @@ func TestRT03RuntimeUnavailableRecognisesBwrapMessages(t *testing.T) {
 func TestResolvePastaKeepsTheNamePastaChoosesItsModeBy(t *testing.T) {
 	dir := t.TempDir()
 	passt := filepath.Join(dir, "passt")
-	if err := os.WriteFile(passt, []byte("#!/bin/sh\n"), 0o700); err != nil { // #nosec G306 -- the fake executable must be executable and is private to t.TempDir
+	// #nosec G306 -- the fake executable must be executable and is private to t.TempDir
+	if err := os.WriteFile(passt, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatalf("WriteFile(passt) = %v, want nil", err)
 	}
 	pasta := filepath.Join(dir, "pasta")

@@ -630,7 +630,32 @@ if [[ "$tool" == "gosec" ]]; then
     fi
   done
 
-  echo "$tool: ${#expected[@]} planted findings reported (exit 1), G module root and H mid-name dots scanned, nested worktrees and dot folders excluded, negative control reported excluded findings (exit 1), I trailing-dot folder rejected, J-N found, controls miss their plants, O refused, P and Q isolated passes detected, clean tree passed (exit 0)"
+  rm "$plant/clean/negative.go" "$plant/clean/positive.go"
+  fixture_git add -A
+  # R: inherited tags can invalidate the untagged scan.
+  inherited_rc=0
+  GOFLAGS=-tags=planttag run_make_gosec "$plant/inherited.log" || inherited_rc="$?"
+  if [[ "$inherited_rc" -ne 2 ]] || ! grep -qF 'GOFLAGS' "$plant/inherited.log" || grep -q '^Results:' "$plant/inherited.log"; then
+    echo "$tool: R inherited GOFLAGS tags not refused (exit $inherited_rc)" >&2
+    cat "$plant/inherited.log" >&2
+    exit 1
+  fi
+
+  # S: testdata is outside the Go package walker.
+  mkdir -p "$plant/testdata"
+  printf '%s\n' '//go:build planttag && !plantother' '' 'package testdata' > "$plant/testdata/s.go"
+  fixture_git add -f -- testdata/s.go
+  testdata_rc=0
+  run_make_gosec "$plant/testdata.log" || testdata_rc="$?"
+  if [[ "$testdata_rc" -ne 0 ]]; then
+    echo "$tool: S testdata constraint not skipped (exit $testdata_rc)" >&2
+    cat "$plant/testdata.log" >&2
+    exit 1
+  fi
+  rm "$plant/testdata/s.go"
+  fixture_git add -A
+
+  echo "$tool: ${#expected[@]} planted findings reported (exit 1), G module root and H mid-name dots scanned, nested worktrees and dot folders excluded, negative control reported excluded findings (exit 1), I trailing-dot folder rejected, J-N found, controls miss their plants, O refused, P and Q isolated passes detected, clean tree passed (exit 0), R inherited GOFLAGS tags refused, S testdata constraint skipped"
 else
   echo "$tool: ${#expected[@]} planted findings reported, exit 1 as required"
 fi

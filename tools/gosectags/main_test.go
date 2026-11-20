@@ -32,6 +32,9 @@ func fixture(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
 	fixtureGit(t, dir, "init", "-q")
+	if _, ok := files["go.mod"]; !ok {
+		files["go.mod"] = "module example.com/fixture\n\ngo 1.27\n"
+	}
 	for name, content := range files {
 		path := filepath.Join(dir, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -94,5 +97,59 @@ func TestNonGitDirectory(t *testing.T) {
 	_, err := discover(dir)
 	if err == nil || !strings.Contains(err.Error(), dir) {
 		t.Fatalf("error = %v, want directory", err)
+	}
+}
+
+func TestInheritedTags(t *testing.T) {
+	for _, tc := range []struct {
+		flags string
+		bad   bool
+	}{
+		{"-tags=a", true}, {"--tags=a,b", true}, {"-p=2 -tags=x", true}, {"-tags=", true},
+		{"", false}, {"-p=2", false}, {"-mod=readonly", false}, {"-tagsx=1", false},
+	} {
+		t.Run(tc.flags, func(t *testing.T) {
+			err := checkGOFLAGS(tc.flags)
+			if (err != nil) != tc.bad || err != nil && (!strings.Contains(err.Error(), "GOFLAGS") || !strings.Contains(err.Error(), strings.Fields(tc.flags)[len(strings.Fields(tc.flags))-1])) {
+				t.Fatalf("flags %q: %v", tc.flags, err)
+			}
+		})
+	}
+}
+
+func TestDiscoverDeletedAndUnreadable(t *testing.T) {
+	for _, directory := range []bool{false, true} {
+		t.Run(map[bool]string{false: "deleted", true: "directory"}[directory], func(t *testing.T) {
+			dir := fixture(t, map[string]string{"gone.go": "package a\n"})
+			path := filepath.Join(dir, "gone.go")
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if directory {
+				if err := os.Mkdir(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := discover(dir)
+			if directory && (err == nil || !strings.Contains(err.Error(), "gone.go")) || !directory && err != nil {
+				t.Fatalf("discover: %v", err)
+			}
+		})
+	}
+}
+
+func TestDiscoverExcluded(t *testing.T) {
+	bad := "//go:build alpha && !beta\n\npackage p\n"
+	good := "//go:build gamma\n\npackage p\n"
+	files := map[string]string{"go.mod": "module example.com/fixture\n\ngo 1.27\n\nignore (\n ./build\n x\n)\n", "a/vendor/v.go": good, "keep/gen2/k.go": good, "only/d.go": "//go:build delta\n\npackage p\n", "nested/go.mod": "module example.com/nested\n"}
+	for _, name := range []string{"testdata/a.go", ".hidden/a.go", "_under/a.go", "plain/_x.go", "nested/a.go", "a/vendor/b/a.go", "build/a.go", "gen/x/a.go"} {
+		files[name] = bad
+	}
+	dir := fixture(t, files)
+	// Git ignores some names by default; force-add every exclusion fixture.
+	fixtureGit(t, dir, "add", "-f", "--", ".")
+	got, err := discover(dir)
+	if err != nil || !reflect.DeepEqual(got, []string{"delta", "gamma"}) {
+		t.Fatalf("discover = %v, %v", got, err)
 	}
 }

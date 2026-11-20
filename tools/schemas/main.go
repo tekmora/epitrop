@@ -338,7 +338,7 @@ func fragmentPath(rel string) (string, error) {
 	if !filepath.IsLocal(path) || filepath.Clean(path) == "." {
 		return "", fmt.Errorf("invalid fragment path %q", rel)
 	}
-	return path, nil
+	return filepath.Clean(path), nil
 }
 
 func updateFragmentDigests(source *schemaSource, fragments map[string][]byte) error {

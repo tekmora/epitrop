@@ -383,7 +383,8 @@ func TestRunSync_GatewayUnsetBase_ZeroRequests(t *testing.T) {
 	if got := atomic.LoadInt32(&requestCount); got != 0 {
 		t.Fatalf("httptest server received %d requests, want 0", got)
 	}
-	data, err := os.ReadFile(out) // #nosec G304 -- out is the snapshot under t.TempDir
+	// #nosec G304 -- out is the snapshot under t.TempDir
+	data, err := os.ReadFile(out)
 	if err != nil {
 		t.Fatalf("read snapshot: %v", err)
 	}
