@@ -52,12 +52,15 @@ func goCommand(args ...string) ([]byte, error) {
 	return out, nil
 }
 
-func checkGOFLAGS(value string) error {
-	for _, field := range strings.Fields(value) {
-		name, _, _ := strings.Cut(field, "=")
-		if name == "-tags" || name == "--tags" {
-			return fmt.Errorf("GOFLAGS contains %s", field)
-		}
+// checkInheritedTags asks the Go command for tags in effect because it parses
+// GOFLAGS itself, including quoting.
+func checkInheritedTags() error {
+	out, err := goCommand("list", "-e", "-find", "-f", "{{join context.BuildTags \",\"}}", "unsafe")
+	if err != nil {
+		return fmt.Errorf("read build tags from GOFLAGS: %w", err)
+	}
+	if tags := strings.TrimSpace(string(out)); tags != "" {
+		return fmt.Errorf("GOFLAGS sets build tags %s", tags)
 	}
 	return nil
 }
@@ -285,11 +288,7 @@ func discoveryInputs(root string) ([]string, []string, map[string]bool, error) {
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("%s: not a readable git work tree: %w", root, err)
 	}
-	flags, err := goCommand("env", "GOFLAGS")
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("read GOFLAGS: %w", err)
-	}
-	if err := checkGOFLAGS(string(flags)); err != nil {
+	if err := checkInheritedTags(); err != nil {
 		return nil, nil, nil, err
 	}
 	patterns, err := moduleIgnores(root)

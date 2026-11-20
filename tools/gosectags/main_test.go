@@ -104,16 +104,30 @@ func TestInheritedTags(t *testing.T) {
 	for _, tc := range []struct {
 		flags string
 		bad   bool
+		want  string
 	}{
-		{"-tags=a", true}, {"--tags=a,b", true}, {"-p=2 -tags=x", true}, {"-tags=", true},
-		{"", false}, {"-p=2", false}, {"-mod=readonly", false}, {"-tagsx=1", false},
+		{"-tags=alpha", true, "alpha"},
+		{"--tags=alpha,beta", true, "alpha,beta"},
+		{"-p=2 -tags=alpha", true, "alpha"},
+		{`"-tags=alpha"`, true, "alpha"},
+		{"'-tags=alpha'", true, "alpha"},
+		{"-p=2 '--tags=alpha'", true, "alpha"},
+		{`"-tags=alpha`, true, ""},
+		{"-tagsx=1", true, ""},
+		{"", false, ""},
+		{"-p=2", false, ""},
+		{"-mod=readonly", false, ""},
+		{`"-mod=readonly"`, false, ""},
+		{"'-p=2'", false, ""},
+		// An empty tag list applies no tag.
+		{"-tags=", false, ""},
 	} {
 		t.Run(tc.flags, func(t *testing.T) {
-			err := checkGOFLAGS(tc.flags)
+			t.Setenv("GOFLAGS", tc.flags)
+			err := checkInheritedTags()
 			if tc.bad {
-				fields := strings.Fields(tc.flags)
-				if err == nil || !strings.Contains(err.Error(), "GOFLAGS") || !strings.Contains(err.Error(), fields[len(fields)-1]) {
-					t.Fatalf("flags %q: %v", tc.flags, err)
+				if err == nil || !strings.Contains(err.Error(), "GOFLAGS") || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("flags %q: %v, want GOFLAGS error containing %q", tc.flags, err, tc.want)
 				}
 			} else if err != nil {
 				t.Fatalf("flags %q: %v", tc.flags, err)
@@ -152,10 +166,14 @@ func TestDiscoverUnreadable(t *testing.T) {
 
 func TestDiscoverInheritedTags(t *testing.T) {
 	dir := fixture(t, map[string]string{"a.go": "package a\n"})
-	t.Setenv("GOFLAGS", "-tags=x")
-	_, err := discover(dir)
-	if err == nil || !strings.Contains(err.Error(), "GOFLAGS") {
-		t.Fatalf("discover: %v, want GOFLAGS error", err)
+	for _, flags := range []string{"-tags=x", `"-tags=x"`} {
+		t.Run(flags, func(t *testing.T) {
+			t.Setenv("GOFLAGS", flags)
+			_, err := discover(dir)
+			if err == nil || !strings.Contains(err.Error(), "GOFLAGS") {
+				t.Fatalf("discover: %v, want GOFLAGS error", err)
+			}
+		})
 	}
 }
 

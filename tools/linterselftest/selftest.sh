@@ -633,13 +633,18 @@ if [[ "$tool" == "gosec" ]]; then
   rm "$plant/clean/negative.go" "$plant/clean/positive.go"
   fixture_git add -A
   # R: inherited tags can invalidate the untagged scan.
-  inherited_rc=0
-  GOFLAGS=-tags=planttag run_make_gosec "$plant/inherited.log" || inherited_rc="$?"
-  if [[ "$inherited_rc" -ne 2 ]] || ! grep -qF 'GOFLAGS' "$plant/inherited.log" || grep -q '^Results:' "$plant/inherited.log"; then
-    echo "$tool: R inherited GOFLAGS tags not refused (exit $inherited_rc)" >&2
-    cat "$plant/inherited.log" >&2
-    exit 1
-  fi
+  inherited_index=0
+  for inherited_flags in '-tags=planttag' "'-tags=planttag'" '"-tags=planttag"'; do
+    inherited_log="$plant/inherited-$inherited_index.log"
+    inherited_index=$((inherited_index + 1))
+    inherited_rc=0
+    GOFLAGS="$inherited_flags" run_make_gosec "$inherited_log" || inherited_rc="$?"
+    if [[ "$inherited_rc" -ne 2 ]] || ! grep -qF 'GOFLAGS' "$inherited_log" || grep -q '^Results:' "$inherited_log"; then
+      echo "$tool: R inherited GOFLAGS $inherited_flags not refused (exit $inherited_rc)" >&2
+      cat "$inherited_log" >&2
+      exit 1
+    fi
+  done
 
   # S: testdata is outside the Go package walker.
   mkdir -p "$plant/testdata"
@@ -655,7 +660,7 @@ if [[ "$tool" == "gosec" ]]; then
   rm "$plant/testdata/s.go"
   fixture_git add -A
 
-  echo "$tool: ${#expected[@]} planted findings reported (exit 1), G module root and H mid-name dots scanned, nested worktrees and dot folders excluded, negative control reported excluded findings (exit 1), I trailing-dot folder rejected, J-N found, controls miss their plants, O refused, P and Q isolated passes detected, clean tree passed (exit 0), R inherited GOFLAGS tags refused, S testdata constraint skipped"
+  echo "$tool: ${#expected[@]} planted findings reported (exit 1), G module root and H mid-name dots scanned, nested worktrees and dot folders excluded, negative control reported excluded findings (exit 1), I trailing-dot folder rejected, J-N found, controls miss their plants, O refused, P and Q isolated passes detected, clean tree passed (exit 0), R inherited GOFLAGS tags refused (plain, single- and double-quoted), S testdata constraint skipped"
 else
   echo "$tool: ${#expected[@]} planted findings reported, exit 1 as required"
 fi
