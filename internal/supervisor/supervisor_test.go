@@ -2072,11 +2072,11 @@ func countEvents(t *testing.T, dir string, typ string) int {
 	if err != nil {
 		t.Fatalf("OpenRoot(events) = %v, want nil", err)
 	}
-	t.Cleanup(func() {
+	defer func() {
 		if err := root.Close(); err != nil {
-			t.Errorf("close events root: %v", err)
+			t.Errorf("close events root %s: %v", events, err)
 		}
-	})
+	}()
 	count := 0
 	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil || d.IsDir() {

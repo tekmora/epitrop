@@ -34,11 +34,11 @@ func copyUpgradeDir(t *testing.T, src, dst string) {
 	if err != nil {
 		t.Fatalf("open fixture source %s: %v", src, err)
 	}
-	t.Cleanup(func() {
+	defer func() {
 		if err := root.Close(); err != nil {
-			t.Errorf("close fixture source: %v", err)
+			t.Errorf("close fixture source %s: %v", src, err)
 		}
-	})
+	}()
 	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
