@@ -128,7 +128,16 @@ func TestWriteFragmentsCleanPath(t *testing.T) {
 	if err := writeFragments(root, schemaSource{ID: "test"}, map[string][]byte{"a/../b.yaml": []byte("ok")}); err != nil {
 		t.Fatal(err)
 	}
-	body, err := os.ReadFile(filepath.Join(root, "b.yaml"))
+	dir, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := dir.Close(); err != nil {
+			t.Errorf("close root: %v", err)
+		}
+	}()
+	body, err := dir.ReadFile("b.yaml")
 	if err != nil || string(body) != "ok" {
 		t.Fatalf("read = %q, %v", body, err)
 	}
