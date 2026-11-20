@@ -90,7 +90,7 @@ func run(ctx context.Context) error {
 }
 
 func readManifest(root string) (schemaManifest, error) {
-	body, err := os.ReadFile(filepath.Join(root, manifestRel))
+	body, err := os.ReadFile(filepath.Join(root, manifestRel)) // #nosec G304 -- manifestRel is fixed under the root selected by the caller
 	if err != nil {
 		return schemaManifest{}, fmt.Errorf("read schema manifest: %w", err)
 	}
@@ -312,10 +312,10 @@ func liteLLMFragment(source schemaSource, full []byte) (map[string][]byte, error
 func writeFragments(outRoot string, source schemaSource, fragments map[string][]byte) error {
 	for path, body := range fragments {
 		fullPath := filepath.Join(outRoot, filepath.FromSlash(path))
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
 			return fmt.Errorf("%s: create dir for %s: %w", source.ID, path, err)
 		}
-		if err := os.WriteFile(fullPath, body, 0o644); err != nil {
+		if err := os.WriteFile(fullPath, body, 0o600); err != nil {
 			return fmt.Errorf("%s: write %s: %w", source.ID, path, err)
 		}
 	}
@@ -355,10 +355,10 @@ func writeManifest(outRoot string, manifest schemaManifest) error {
 		return err
 	}
 	path := filepath.Join(outRoot, manifestRel)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("create dir for %s: %w", manifestRel, err)
 	}
-	if err := os.WriteFile(path, body, 0o644); err != nil {
+	if err := os.WriteFile(path, body, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", manifestRel, err)
 	}
 	return nil

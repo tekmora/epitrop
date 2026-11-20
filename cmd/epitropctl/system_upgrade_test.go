@@ -46,7 +46,7 @@ func copyUpgradeDir(t *testing.T, src, dst string) {
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, 0o600)
+		return os.WriteFile(target, data, 0o600) // #nosec G703 -- target is within the temporary upgrade fixture destination
 	})
 	if err != nil {
 		t.Fatalf("copy directory from %s to %s: %v", src, dst, err)
@@ -326,7 +326,7 @@ func checkUpgradeNegativeTamperedRecord(t *testing.T, bin string) {
 	t.Helper()
 	fix := prepareUpgradeFixture(t)
 	event2Path := filepath.Join(fix.eventLogDir, "events", "00000000000000000002.json")
-	data, err := os.ReadFile(event2Path)
+	data, err := os.ReadFile(event2Path) // #nosec G304 -- event2Path is in the prepared upgrade fixture
 	if err != nil {
 		t.Fatalf("ReadFile(%s) = %v", event2Path, err)
 	}
@@ -334,7 +334,7 @@ func checkUpgradeNegativeTamperedRecord(t *testing.T, bin string) {
 	if tampered == string(data) {
 		t.Fatalf("record 2 holds no \"status\":\"ready\" to change: %s", data)
 	}
-	if err := os.WriteFile(event2Path, []byte(tampered), 0o600); err != nil {
+	if err := os.WriteFile(event2Path, []byte(tampered), 0o600); err != nil { // #nosec G703 -- event2Path is in the prepared upgrade fixture
 		t.Fatalf("WriteFile(%s) = %v", event2Path, err)
 	}
 
@@ -349,7 +349,7 @@ func checkUpgradeNegativeSeenVersion(t *testing.T, bin string) {
 	t.Helper()
 	fix := prepareUpgradeFixture(t)
 	seenPath := filepath.Join(fix.watchDir, "release-watch-seen.json")
-	data, err := os.ReadFile(seenPath)
+	data, err := os.ReadFile(seenPath) // #nosec G304 -- seenPath is in the prepared upgrade fixture
 	if err != nil {
 		t.Fatalf("ReadFile(%s) = %v", seenPath, err)
 	}
@@ -357,7 +357,7 @@ func checkUpgradeNegativeSeenVersion(t *testing.T, bin string) {
 	if v2Seen == string(data) {
 		t.Fatalf("seen file holds no \"version\": 1 to change: %s", data)
 	}
-	if err := os.WriteFile(seenPath, []byte(v2Seen), 0o600); err != nil {
+	if err := os.WriteFile(seenPath, []byte(v2Seen), 0o600); err != nil { // #nosec G703 -- seenPath is in the prepared upgrade fixture
 		t.Fatalf("WriteFile(%s) = %v", seenPath, err)
 	}
 

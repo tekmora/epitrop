@@ -274,7 +274,7 @@ func TestR15StopTargetRefusedRunResets(t *testing.T) {
 
 func TestR15StoppedWaiterSurvivesReplacement(t *testing.T) {
 	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
-	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", `exit "$1"`, "sh", strconv.Itoa(shimExitStopped))
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", `exit "$1"`, "sh", strconv.Itoa(shimExitStopped)) // #nosec G204 -- fixed shell program exits with the integer fixture status
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

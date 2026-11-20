@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"go/build"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +45,13 @@ func fixture(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+func excludedOS() string {
+	if build.Default.GOOS == "windows" {
+		return "linux"
+	}
+	return "windows"
+}
+
 func TestDiscover(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -53,12 +61,13 @@ func TestDiscover(t *testing.T) {
 	}{
 		{"none", map[string]string{"a.go": "package a\n"}, []string{}, ""},
 		{"tagged packages", map[string]string{"a.go": "//go:build alpha\n\npackage a\n", "nested/b.go": "//go:build beta\n\npackage b\n"}, []string{"alpha", "beta"}, ""},
-		{"toolchain", map[string]string{"a.go": "//go:build linux || windows || amd64 || unix || cgo || gc || gccgo || go1.21 || goexperiment.x\n\npackage a\n"}, []string{}, ""},
+		{"toolchain", map[string]string{"a.go": "//go:build linux || windows || amd64 || unix || cgo || gc || gccgo || go1.21 || goexperiment.x || amd64.v2\n\npackage a\n"}, []string{}, ""},
+		{"os feature name", map[string]string{"a.go": "//go:build linux.x\n\npackage a\n"}, []string{"linux.x"}, ""},
 		{"negation", map[string]string{"a.go": "//go:build !alpha\n\npackage a\n"}, []string{"alpha"}, ""},
 		{"disjunction", map[string]string{"a.go": "//go:build alpha || beta\n\npackage a\n"}, []string{"alpha", "beta"}, ""},
 		{"gap", map[string]string{"gap.go": "//go:build alpha && !beta\n\npackage a\n"}, nil, "gap.go"},
 		{"bound", map[string]string{"bound.go": "//go:build a || b || c || d || e || f || g || h || i\n\npackage a\n"}, nil, "bound.go"},
-		{"os excluded", map[string]string{"x_windows.go": "//go:build alpha && !beta\n\npackage a\n"}, []string{"alpha", "beta"}, ""},
+		{"os excluded", map[string]string{"x_" + excludedOS() + ".go": "//go:build alpha && !beta\n\npackage a\n"}, []string{"alpha", "beta"}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

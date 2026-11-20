@@ -50,8 +50,12 @@ func toolchainTags() (map[string]bool, error) {
 		tags[word] = true
 	}
 	for _, pair := range strings.Fields(string(out)) {
-		for _, part := range strings.Split(pair, "/") {
+		parts := strings.Split(pair, "/")
+		for _, part := range parts {
 			tags[part] = true
+		}
+		if len(parts) == 2 {
+			tags["arch:"+parts[1]] = true
 		}
 	}
 	return tags, nil
@@ -62,7 +66,8 @@ func isCustom(tag string, known map[string]bool) bool {
 	if known[tag] || releaseTag.MatchString(tag) || strings.HasPrefix(tag, "goexperiment.") {
 		return false
 	}
-	return !feature || !known[prefix]
+	// go help buildconstraint defines feature tags as GOARCH.feature (for example amd64.v2).
+	return !feature || !known["arch:"+prefix]
 }
 
 func customTags(expr constraint.Expr, known map[string]bool) ([]string, error) {

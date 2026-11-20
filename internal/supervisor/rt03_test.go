@@ -113,7 +113,7 @@ func loadRT03Fixtures(t *testing.T) []rt03Fixture {
 
 func readRT03Fixture(t *testing.T, path string) rt03Fixture {
 	t.Helper()
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(path) // #nosec G304 -- path comes from the testdata/rt03 JSON glob
 	if err != nil {
 		t.Fatalf("ReadFile(%s) = %v, want nil", path, err)
 	}
@@ -1031,7 +1031,7 @@ func TestRT03RuntimeUnavailableRecognisesBwrapMessages(t *testing.T) {
 func TestResolvePastaKeepsTheNamePastaChoosesItsModeBy(t *testing.T) {
 	dir := t.TempDir()
 	passt := filepath.Join(dir, "passt")
-	if err := os.WriteFile(passt, []byte("#!/bin/sh\n"), 0o700); err != nil {
+	if err := os.WriteFile(passt, []byte("#!/bin/sh\n"), 0o700); err != nil { // #nosec G306 -- the fake executable must be executable and is private to t.TempDir
 		t.Fatalf("WriteFile(passt) = %v, want nil", err)
 	}
 	pasta := filepath.Join(dir, "pasta")

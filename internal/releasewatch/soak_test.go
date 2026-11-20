@@ -3,6 +3,7 @@ package releasewatch
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -157,7 +158,12 @@ func requireStateFileBounded(t *testing.T, stateDir string) {
 
 func requireHeapFlat(t *testing.T, start, end uint64) {
 	t.Helper()
-	growth := int64(end) - int64(start)
+	if start > math.MaxInt64 || end > math.MaxInt64 {
+		t.Fatal("heap size exceeds int64")
+	}
+	endBytes := int64(end)     // #nosec G115 -- end is checked against MaxInt64 above
+	startBytes := int64(start) // #nosec G115 -- start is checked against MaxInt64 above
+	growth := endBytes - startBytes
 	t.Logf("soak: live heap %d -> %d bytes (%+d), bound %+d", start, end, growth, soakHeapGrowthCap)
 	if growth > soakHeapGrowthCap {
 		t.Errorf("live heap grew %d bytes, want <= %d", growth, soakHeapGrowthCap)

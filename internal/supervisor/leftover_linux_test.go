@@ -93,10 +93,10 @@ func TestUntilStoppedGivesALoopOfTenMinutes(t *testing.T) {
 func TestBoundedLoopEndsByItself(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "rounds")
 	script := boundedLoop("printf . >> "+marker+";", time.Millisecond, 3)
-	if out, err := exec.CommandContext(testContext(t), "/bin/sh", "-c", script).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(testContext(t), "/bin/sh", "-c", script).CombinedOutput(); err != nil { // #nosec G204 -- script is a fixed bounded loop writing a t.TempDir marker
 		t.Fatalf("sh -c %q = %v (%s), want it to end with exit 0", script, err, out)
 	}
-	body, err := os.ReadFile(marker)
+	body, err := os.ReadFile(marker) // #nosec G304 -- marker is constructed under t.TempDir
 	if err != nil || string(body) != "..." {
 		t.Fatalf("rounds = %q, %v; want three", body, err)
 	}

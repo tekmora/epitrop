@@ -82,7 +82,7 @@ func TestFetchOpenRouter_Positive(t *testing.T) {
 
 func mustReadFixture(t *testing.T, path string) []byte {
 	t.Helper()
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(path) // #nosec G304 -- callers use fixed testdata fixture paths
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}

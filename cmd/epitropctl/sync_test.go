@@ -100,7 +100,7 @@ func TestWriteSnapshotFile_ReaderSeesWholeSnapshot(t *testing.T) {
 	go func() {
 		defer close(torn)
 		for i := 0; i < 100*rounds && !done.Load(); i++ {
-			got, err := os.ReadFile(path)
+			got, err := os.ReadFile(path) // #nosec G304 -- path is the snapshot under t.TempDir
 			if err == nil && !bytes.Equal(got, versions[0]) && !bytes.Equal(got, versions[1]) {
 				torn <- len(got)
 				return
@@ -224,7 +224,7 @@ func setupClaudeSyncFixtures(t *testing.T) (string, string) {
 
 func checkSyncSnapshot(t *testing.T, out string) {
 	t.Helper()
-	data, err := os.ReadFile(out)
+	data, err := os.ReadFile(out) // #nosec G304 -- out is passed by the sync test as a t.TempDir path
 	if err != nil {
 		t.Fatalf("read snapshot: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestRunSync_Boundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runSync() = %v, want a completed run with a skipped source", err)
 	}
-	data, readErr := os.ReadFile(out)
+	data, readErr := os.ReadFile(out) // #nosec G304 -- out is the snapshot under t.TempDir
 	if readErr != nil {
 		t.Fatalf("read snapshot: %v", readErr)
 	}
@@ -383,7 +383,7 @@ func TestRunSync_GatewayUnsetBase_ZeroRequests(t *testing.T) {
 	if got := atomic.LoadInt32(&requestCount); got != 0 {
 		t.Fatalf("httptest server received %d requests, want 0", got)
 	}
-	data, err := os.ReadFile(out)
+	data, err := os.ReadFile(out) // #nosec G304 -- out is the snapshot under t.TempDir
 	if err != nil {
 		t.Fatalf("read snapshot: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestRunSync_RejectsInvalidRecordsAndWritesRest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runSync() = %v, want ok with invalid record rejected", err)
 	}
-	data, err := os.ReadFile(out)
+	data, err := os.ReadFile(out) // #nosec G304 -- out is the snapshot under t.TempDir
 	if err != nil {
 		t.Fatalf("read snapshot: %v", err)
 	}
@@ -602,7 +602,7 @@ func TestRunSync_ClaudeLocal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runSync() = %v", err)
 	}
-	data, err := os.ReadFile(out)
+	data, err := os.ReadFile(out) // #nosec G304 -- out is the snapshot under t.TempDir
 	if err != nil {
 		t.Fatalf("read snapshot: %v", err)
 	}

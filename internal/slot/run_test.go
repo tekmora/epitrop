@@ -219,7 +219,7 @@ func repoRefs(t *testing.T, repo string) string {
 
 func readReport(t *testing.T, out string) (Report, []byte) {
 	t.Helper()
-	body, err := os.ReadFile(filepath.Join(out, ReportFile))
+	body, err := os.ReadFile(filepath.Join(out, ReportFile)) // #nosec G304 -- callers pass the temporary output directory for the test run
 	if err != nil {
 		t.Fatalf("ReadFile(report) = %v, want nil", err)
 	}
@@ -233,7 +233,7 @@ func readReport(t *testing.T, out string) (Report, []byte) {
 // gitFed is gitIn for a command that reads its standard input.
 func gitFed(t *testing.T, dir string, stdin string, args ...string) string {
 	t.Helper()
-	cmd := exec.CommandContext(slotCtx(t), "git", args...)
+	cmd := exec.CommandContext(slotCtx(t), "git", args...) // #nosec G204 -- fixture callers supply git argv in their temporary repository
 	cmd.Dir, cmd.Env, cmd.Stdin = dir, gitexec.Env(os.Environ()), strings.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

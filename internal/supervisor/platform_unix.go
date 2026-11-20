@@ -35,7 +35,7 @@ func platformSupported() error {
 }
 
 func holdLock(path string) (*heldLock, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil { // #nosec G703 -- path is the caller-selected shim or supervisor lock path
 		return nil, fmt.Errorf("supervisor: mkdir lock dir: %w", err)
 	}
 	lock := flock.New(path, flock.SetFlag(os.O_CREATE|os.O_RDWR), flock.SetPermissions(0o600))

@@ -91,11 +91,11 @@ func assertStatesEqual(t *testing.T, step int, got, want eventlog.State) {
 }
 
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	data, err := os.ReadFile(src) // #nosec G304 -- copyFlatDir supplies files from the temporary event log
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o600)
+	return os.WriteFile(dst, data, 0o600) // #nosec G703 -- copyFlatDir supplies a destination in the temporary event log
 }
 
 func copyFlatDir(src, dst string) error {
@@ -161,7 +161,7 @@ func setupDivergedLogs(t *testing.T) divergedFixture {
 
 func fileHash(t *testing.T, path string) string {
 	t.Helper()
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(path) // #nosec G304 -- callers pass event files from temporary checkpoint fixtures
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
@@ -172,7 +172,7 @@ func fileHash(t *testing.T, path string) string {
 // readDivergedRecord reads the record at seq and returns its log.diverged payload.
 func readDivergedRecord(t *testing.T, eventsDir string, seq uint64) eventlog.Divergence {
 	t.Helper()
-	body, err := os.ReadFile(filepath.Join(eventsDir, fmt.Sprintf("%020d.json", seq)))
+	body, err := os.ReadFile(filepath.Join(eventsDir, fmt.Sprintf("%020d.json", seq))) // #nosec G304 -- eventsDir is the temporary checkpoint fixture event directory
 	if err != nil {
 		t.Fatalf("read record %d: %v", seq, err)
 	}
@@ -192,7 +192,7 @@ func readDivergedRecord(t *testing.T, eventsDir string, seq uint64) eventlog.Div
 
 func readHeadSeq(t *testing.T, eventsDir string) uint64 {
 	t.Helper()
-	body, err := os.ReadFile(filepath.Join(eventsDir, "HEAD.json"))
+	body, err := os.ReadFile(filepath.Join(eventsDir, "HEAD.json")) // #nosec G304 -- eventsDir is the temporary checkpoint fixture event directory
 	if err != nil {
 		t.Fatalf("read HEAD.json: %v", err)
 	}

@@ -128,13 +128,13 @@ func TestStoreKeepsTheNewestObservation(t *testing.T) {
 	}
 
 	seed(20, fixtureNow.Add(-30*time.Minute))
-	before, err := os.ReadFile(path)
+	before, err := os.ReadFile(path) // #nosec G304 -- path is the store under t.TempDir
 	if err != nil {
 		t.Fatal(err)
 	}
 	record := fiveHour(t, fetchAt(t, logs, fixtureNow, Options{StateDir: state}))
 	assertNear(t, "used_percent against the newer stored ceiling", record.UsageWindow.UsedPercent, 50)
-	if after, err := os.ReadFile(path); err != nil || string(after) != string(before) {
+	if after, err := os.ReadFile(path); err != nil || string(after) != string(before) { // #nosec G304 -- path is the store under t.TempDir
 		t.Fatalf("an older observation must leave the store as it was (err %v)", err)
 	}
 }
@@ -156,7 +156,7 @@ func assertInterruptedWriteFails(t *testing.T, path string) {
 	if err := replaceFile(path, []byte(strings.Repeat("new store ", 50)), interrupted); err == nil {
 		t.Fatal("an interrupted write must fail")
 	}
-	if data, err := os.ReadFile(path); err != nil || string(data) != "old store\n" {
+	if data, err := os.ReadFile(path); err != nil || string(data) != "old store\n" { // #nosec G304 -- caller creates the store under t.TempDir
 		t.Fatalf("the store must keep its old contents, got %q (%v)", data, err)
 	}
 	entries, err := os.ReadDir(filepath.Dir(path))
@@ -177,7 +177,7 @@ func assertLeftoverStagedFileReplaced(t *testing.T, path string) {
 	if err := replaceFile(path, []byte("new store\n"), atomicfile.Sync); err != nil {
 		t.Fatal(err)
 	}
-	if data, err := os.ReadFile(path); err != nil || string(data) != "new store\n" {
+	if data, err := os.ReadFile(path); err != nil || string(data) != "new store\n" { // #nosec G304 -- caller creates the store under t.TempDir
 		t.Fatalf("got %q (%v)", data, err)
 	}
 	if _, err := os.Stat(path + pendingSuffix); !errors.Is(err, os.ErrNotExist) {
@@ -233,7 +233,7 @@ func checkCorruptStoreBody(t *testing.T, logs, body string) {
 	if res.Status != catalog.StatusFail || len(res.Records) != 0 {
 		t.Fatalf("Status = %v, %d records, want a refusal: %q", res.Status, len(res.Records), res.Detail)
 	}
-	if data, err := os.ReadFile(path); err != nil || string(data) != body {
+	if data, err := os.ReadFile(path); err != nil || string(data) != body { // #nosec G304 -- path is the corrupt store written under t.TempDir
 		t.Fatal("a refused store must be left as it was")
 	}
 }

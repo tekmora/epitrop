@@ -48,7 +48,7 @@ func TestSuperviseAppendENOSPC_ErrorWrapped(t *testing.T) {
 func plantOrphanRecord(t *testing.T, rt testRuntimeConfig, signer *corereceipt.Signer, limits eventlog.Limits) {
 	t.Helper()
 	headPath := filepath.Join(rt.EventLogDir, "events", "HEAD.json")
-	headData, err := os.ReadFile(headPath)
+	headData, err := os.ReadFile(headPath) // #nosec G304 -- headPath is the test runtime event log head
 	if err != nil {
 		t.Fatalf("read HEAD.json: %v", err)
 	}
@@ -60,7 +60,7 @@ func plantOrphanRecord(t *testing.T, rt testRuntimeConfig, signer *corereceipt.S
 	if err != nil {
 		t.Fatalf("Append orphan: %v", err)
 	}
-	if err = os.WriteFile(headPath, headData, 0o600); err != nil {
+	if err = os.WriteFile(headPath, headData, 0o600); err != nil { // #nosec G703 -- headPath is the test runtime event log head
 		t.Fatalf("restore HEAD.json: %v", err)
 	}
 }
@@ -116,7 +116,7 @@ func countJobStarts(t *testing.T, ctx context.Context, dir string, pub string, l
 
 func verifyAdoptedRecord(t *testing.T, path string) {
 	t.Helper()
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- caller passes record 2 from the temporary test event log
 	if err != nil {
 		t.Fatalf("read record 2: %v", err)
 	}

@@ -189,7 +189,7 @@ func TestSandboxedJobReadsLocalhostOnly(t *testing.T) {
 	}
 
 	outPath := filepath.Join(sandbox.Workspace, "hosts.txt")
-	body, err := os.ReadFile(outPath)
+	body, err := os.ReadFile(outPath) // #nosec G304 -- outPath is hosts.txt in the temporary sandbox workspace
 	if err != nil {
 		t.Fatalf("ReadFile(hosts.txt) = %v, want nil", err)
 	}

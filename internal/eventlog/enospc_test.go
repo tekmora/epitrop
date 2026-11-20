@@ -18,7 +18,7 @@ import (
 func readHeadRaw(t testing.TB, dir string) []byte {
 	t.Helper()
 	path := filepath.Join(eventsDir(dir), "HEAD.json")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is HEAD.json in the test event log
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
@@ -310,7 +310,7 @@ func TestRepairTailNegative_RecordsAtOrBelowHeadKept(t *testing.T) {
 func readRecordBytes(t testing.TB, dir string, seq uint64) []byte {
 	t.Helper()
 	path := eventPath(eventsDir(dir), seq)
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is the numbered record in the test event log
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}

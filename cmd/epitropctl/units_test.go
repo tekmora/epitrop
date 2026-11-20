@@ -122,7 +122,7 @@ func TestCLIUnitsBadFlagsExit2Subprocess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, bin, "units", "set", "--bad-flag")
+	cmd := exec.CommandContext(ctx, bin, "units", "set", "--bad-flag") // #nosec G204 -- bin is the CLI built by the test
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

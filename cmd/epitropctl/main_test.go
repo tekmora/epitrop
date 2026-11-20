@@ -15,7 +15,7 @@ func TestHelpOutputFramesEpitropAsGraphRouter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	output, err := exec.CommandContext(ctx, bin, "--help").CombinedOutput()
+	output, err := exec.CommandContext(ctx, bin, "--help").CombinedOutput() // #nosec G204 -- bin is the CLI built by the test
 	if err != nil {
 		t.Fatalf("epitropctl --help: %v\n%s", err, output)
 	}
@@ -38,7 +38,7 @@ func TestSchemaCommandPrintsSnapshotSchema(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	output, err := exec.CommandContext(ctx, bin, "schema").CombinedOutput()
+	output, err := exec.CommandContext(ctx, bin, "schema").CombinedOutput() // #nosec G204 -- bin is the CLI built by the test
 	if err != nil {
 		t.Fatalf("epitropctl schema: %v\n%s", err, output)
 	}
@@ -55,7 +55,7 @@ func TestVersionOutputUsesInjectedVersion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	output, err := exec.CommandContext(ctx, bin, "version").CombinedOutput()
+	output, err := exec.CommandContext(ctx, bin, "version").CombinedOutput() // #nosec G204 -- bin is the CLI built by the test
 	if err != nil {
 		t.Fatalf("epitropctl version: %v\n%s", err, output)
 	}
@@ -74,7 +74,7 @@ func TestRelayCommandIsDispatched(t *testing.T) {
 	defer cancel()
 
 	socket := filepath.Join(t.TempDir(), "none.sock")
-	output, err := exec.CommandContext(ctx, "go", "run", ".", "__egress-relay", "--socket", socket, "--listen", "127.0.0.1:0", "--", "/usr/bin/printf", "relayed").CombinedOutput()
+	output, err := exec.CommandContext(ctx, "go", "run", ".", "__egress-relay", "--socket", socket, "--listen", "127.0.0.1:0", "--", "/usr/bin/printf", "relayed").CombinedOutput() // #nosec G204 -- fixed go run uses a socket path under t.TempDir
 	if err != nil {
 		t.Fatalf("epitropctl __egress-relay: %v\n%s", err, output)
 	}

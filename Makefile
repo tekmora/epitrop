@@ -113,13 +113,26 @@ govulncheck:
 # characters, so the unquoted expansion cannot split or glob. gosec treats only trailing ...
 # as a pattern; folders holding ... mid-name are scanned as themselves. go list refuses folder
 # names ending in a dot, failing the target before gosec runs.
-GOSEC_PACKAGES = go list -f '.{{slice .Dir (len .Root)}}' ./...
+# Both passes include tests and require a rule and reason for each nosec annotation. The second
+# pass adds tags derived from tracked build constraints, including fully tagged packages.
+GOSEC_REPO := $(dir $(abspath $(firstword $(MAKEFILE_LIST))))
+GOSEC_TAGS = go -C "$(GOSEC_REPO)" run ./tools/gosectags -root "$(CURDIR)"
+GOSEC_TESTS = -tests
+GOSEC_NOSEC = -nosec-require-justification -nosec-require-rules
+GOSEC_PACKAGES = go list $${scan_tags:+-tags "$$scan_tags"} -f '.{{slice .Dir (len .Root)}}' ./...
 
 gosec-selftest:
 	@bash tools/linterselftest/selftest.sh gosec
 
 gosec:
-	@pkgs="$$($(GOSEC_PACKAGES))" && $(GOTOOL) gosec -conf .gosec.json $$pkgs
+	@tags="$$($(GOSEC_TAGS))" || exit 2; \
+	scan_tags=""; pkgs="$$($(GOSEC_PACKAGES))" || exit 2; \
+	scan_tags="$$tags"; tagged_pkgs="$$($(GOSEC_PACKAGES))" || exit 2; \
+	rc=0; echo 'gosec pass: tests'; \
+	$(GOTOOL) gosec -conf .gosec.json $(GOSEC_TESTS) $(GOSEC_NOSEC) $$pkgs || { rc=1; echo "gosec pass failed: tests"; }; \
+	echo "gosec pass: tests tags=$$tags"; \
+	$(GOTOOL) gosec -conf .gosec.json $(GOSEC_TESTS) $(GOSEC_NOSEC) -tags "$$tags" $$tagged_pkgs || { rc=1; echo "gosec pass failed: tests tags=$$tags"; }; \
+	exit $$rc
 
 # lock-advisories scans the locked spectral CLI (tools/spectral/package-lock.json) for known
 # advisories with osv-scanner, pinned in its own tool module (tools/osvscanner) because its
