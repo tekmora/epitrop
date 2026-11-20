@@ -82,6 +82,10 @@ const (
 	maxTasksMax             = 32768
 )
 
+// DefaultRestartWindowSeconds is the restart window of a job that sets none (or 0): its
+// restart.max_restarts bounds the restarts of the last hour, never those of its whole life.
+const DefaultRestartWindowSeconds = 3600
+
 //go:embed config.schema.json
 var schemaJSON []byte
 
@@ -478,6 +482,9 @@ func applyJobDefaults(jobs []JobConfig) {
 		}
 		if jobs[i].Restart.Policy == "" {
 			jobs[i].Restart.Policy = defaultRestart
+		}
+		if jobs[i].Restart.WindowSeconds == 0 {
+			jobs[i].Restart.WindowSeconds = DefaultRestartWindowSeconds
 		}
 		if jobs[i].Stop.Signal == "" {
 			jobs[i].Stop.Signal = defaultStopSignal

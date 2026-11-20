@@ -839,11 +839,11 @@ func TestReadRecordAndAppendErrors(t *testing.T) {
 	if _, ok := readJobRecord(bad); ok {
 		t.Fatal("readJobRecord(invalid) ok = true, want false")
 	}
-	sup := &Supervisor{cfg: config.Config{EventLog: config.EventLogConfig{Dir: t.TempDir()}}}
-	err := sup.appendJobEvent(testContext(t), "job.bad", "daemon", map[string]any{"bad": make(chan int)})
+	err := testSupervisor(t).appendJobEvent(testContext(t), "job.bad", "daemon", map[string]any{"bad": make(chan int)})
 	if err == nil || !strings.Contains(err.Error(), "marshal") {
 		t.Fatalf("appendJobEvent(unmarshalable) = %v, want marshal error", err)
 	}
+	sup := &Supervisor{cfg: config.Config{EventLog: config.EventLogConfig{Dir: t.TempDir()}}}
 	err = sup.appendJobEvent(testContext(t), "job.bad", "daemon", map[string]any{"state": "dead"})
 	if err == nil || !strings.Contains(err.Error(), "signer is required") {
 		t.Fatalf("appendJobEvent(no signer) = %v, want signer error", err)
@@ -854,7 +854,7 @@ func TestRestartAndShouldRestartBoundaries(t *testing.T) {
 	job := testJob("daemon", []string{"/bin/true"})
 	job.Restart = config.JobRestartConfig{Policy: "always", MaxRestarts: 2, BackoffSeconds: 1}
 	sup := &Supervisor{cfg: config.Config{EventLog: config.EventLogConfig{Dir: t.TempDir()}}}
-	err := sup.restartJob(canceledContext(t), job)
+	err := sup.restartJob(canceledContext(t), job, eventlog.Job{})
 	if err == nil || !strings.Contains(err.Error(), "signer is required") {
 		t.Fatalf("restartJob(canceled) = %v, want append signer error", err)
 	}
@@ -863,18 +863,20 @@ func TestRestartAndShouldRestartBoundaries(t *testing.T) {
 	sup = testSupervisorAt(t, rt, withRestartCommand(job, []string{os.Args[0], "-test.run=TestHelperProcessJob"}))
 	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	defer cancel()
-	err = sup.restartJob(ctx, sup.cfg.Jobs[0])
+	err = sup.restartJob(ctx, sup.cfg.Jobs[0], eventlog.Job{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("restartJob(backoff canceled) = %v, want deadline before restart", err)
 	}
 	zero := 0
+	fixedNow := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	recent := fixedNow.Add(-time.Minute).Format(time.RFC3339Nano)
 	tests := []struct {
 		name string
 		job  config.JobConfig
 		st   eventlog.Job
 		want bool
 	}{
-		{name: "max", job: job, st: eventlog.Job{Restarts: 2}, want: false},
+		{name: "max", job: job, st: eventlog.Job{Restarts: 2, RestartTimes: []string{recent, recent}}, want: false},
 		{name: "always dead", job: job, st: eventlog.Job{State: string(StateDead)}, want: true},
 		{name: "always stopped", job: job, st: eventlog.Job{State: string(StateStopped)}, want: false},
 		{name: "never", job: withRestartPolicy(job, "never"), st: eventlog.Job{}, want: false},
@@ -882,7 +884,6 @@ func TestRestartAndShouldRestartBoundaries(t *testing.T) {
 		{name: "failure zero", job: withRestartPolicy(job, "on-failure"), st: eventlog.Job{LastExitCode: &zero}, want: false},
 		{name: "failure lost", job: withRestartPolicy(job, "on-failure"), st: eventlog.Job{LastExitCode: &zero, LastReason: "lost"}, want: true},
 	}
-	fixedNow := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < len(tests); i++ {
 		t.Run(tests[i].name, func(t *testing.T) {
 			if got := shouldRestart(tests[i].job, tests[i].st, fixedNow); got != tests[i].want {
@@ -919,7 +920,10 @@ func TestShouldRestartCountsOnlyRestartsInsideTheWindow(t *testing.T) {
 		{name: "negative recent restarts", job: withWindowAndCap(3600, 2), st: eventlog.Job{RestartTimes: []string{tenMinAgo, tenMinAgo}}, want: false},
 		{name: "boundary exact window allowed", job: withWindowAndCap(3600, 1), st: eventlog.Job{RestartTimes: []string{exact3600Ago}}, want: true},
 		{name: "boundary inside window refused", job: withWindowAndCap(3600, 1), st: eventlog.Job{RestartTimes: []string{sec3599Ago}}, want: false},
-		{name: "window zero lifetime cap kept", job: withWindowAndCap(0, 2), st: eventlog.Job{Restarts: 2, RestartTimes: []string{twoHoursAgo, twoHoursAgo}}, want: false},
+		{name: "window zero takes the default: old restarts free the budget", job: withWindowAndCap(0, 2), st: eventlog.Job{Restarts: 2, RestartTimes: []string{twoHoursAgo, twoHoursAgo}}, want: true},
+		{name: "window zero takes the default: recent restarts spend the budget", job: withWindowAndCap(0, 2), st: eventlog.Job{Restarts: 2, RestartTimes: []string{tenMinAgo, tenMinAgo}}, want: false},
+		{name: "window zero takes the default: boundary inside the hour refused", job: withWindowAndCap(0, 1), st: eventlog.Job{Restarts: 1, RestartTimes: []string{sec3599Ago}}, want: false},
+		{name: "window zero takes the default: boundary at the hour allowed", job: withWindowAndCap(0, 1), st: eventlog.Job{Restarts: 1, RestartTimes: []string{exact3600Ago}}, want: true},
 		{name: "unparseable time counts towards window cap", job: withWindowAndCap(3600, 1), st: eventlog.Job{RestartTimes: []string{"unparseable-time"}}, want: false},
 	}
 	for i := 0; i < len(tests); i++ {
@@ -1154,7 +1158,7 @@ func TestWaitStartedReportsReplayError(t *testing.T) {
 	corruptEventLog(t, sup.cfg.EventLog.Dir)
 	// The wait follows the shim, so the shim must be one that is known to have exited: any
 	// fixed number may be a live process on the machine that runs the test.
-	err := sup.waitStarted(testContext(t), "probe", eventlog.Job{}, exitedPID(t))
+	err := sup.waitStarted(testContext(t), "probe", eventlog.Job{}, exitedPID(t), false)
 	if err == nil || !strings.Contains(err.Error(), "probe did not start: ") || !strings.Contains(err.Error(), "eventlog: seq 1 file ") {
 		t.Fatalf("waitStarted(corrupt log, exited shim) = %v, want did-not-start wrapping the replay error", err)
 	}
@@ -1233,10 +1237,6 @@ func TestStopPropagatesSignalTargetAndSignalErrors(t *testing.T) {
 	if err := sup.Start(testContext(t), "probe"); err != nil {
 		t.Fatalf("Start() = %v, want nil", err)
 	}
-	failNextJobRecordRead(t)
-	if err := sup.Stop(testContext(t), "probe"); err == nil || !strings.Contains(err.Error(), "missing or invalid") {
-		t.Fatalf("Stop(record read failure) = %v, want signal target error", err)
-	}
 	rec := withStopSignaller(t, unixEPERMOnAnySignal)
 	err := sup.Stop(testContext(t), "probe")
 	if err == nil || !strings.Contains(err.Error(), "signal TERM") {
@@ -1244,6 +1244,50 @@ func TestStopPropagatesSignalTargetAndSignalErrors(t *testing.T) {
 	}
 	if len(*rec) != 1 {
 		t.Fatalf("recorded signals = %+v, want one TERM", *rec)
+	}
+}
+
+func TestStopRecordReadFailures(t *testing.T) {
+	sup := testSupervisor(t, testJob("probe", longJobCommand(t)))
+	if err := sup.Start(testContext(t), "probe"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(testContext(t))
+	defer cancel()
+	old := jobRecordReadFile
+	reads := 0
+	jobRecordReadFile = func(string) ([]byte, error) {
+		reads++
+		if reads == maxStatusPolls {
+			cancel()
+		}
+		return nil, os.ErrNotExist
+	}
+	t.Cleanup(func() { jobRecordReadFile = old })
+	signals := withRecordingSignaller(t)
+	err := sup.Stop(ctx, "probe")
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "probe") || !strings.Contains(err.Error(), "missing or invalid") {
+		t.Fatalf("Stop(record failures) = %v, want job and last cause", err)
+	}
+	if reads < maxStatusPolls || len(*signals) != 0 || countEvents(t, sup.cfg.EventLog.Dir, "job.stopped") != 0 {
+		t.Fatalf("reads=%d signals=%v, want bounded retries and no signals or stopped event", reads, *signals)
+	}
+}
+
+func TestStopRecordReadRetrySucceeds(t *testing.T) {
+	sup := testSupervisor(t, testJob("probe", longJobCommand(t)))
+	if err := sup.Start(testContext(t), "probe"); err != nil {
+		t.Fatal(err)
+	}
+	fired := failNextJobRecordRead(t)
+	if err := sup.Stop(testContext(t), "probe"); err != nil {
+		t.Fatalf("Stop(transient read failure) = %v", err)
+	}
+	if *fired != 1 {
+		t.Fatalf("transient read failure fired on read %d, want 1", *fired)
+	}
+	if got := eventlogJob(t, sup, "probe"); got.LastEvent != "job.stopped" {
+		t.Fatalf("last event = %s, want job.stopped", got.LastEvent)
 	}
 }
 
@@ -1309,7 +1353,7 @@ func TestStartAllStopAllAndWaitStartedBoundaries(t *testing.T) {
 	for ctx.Err() == nil {
 		time.Sleep(time.Millisecond)
 	}
-	if err := sup.waitStarted(ctx, "missing", eventlog.Job{}, 0); err == nil {
+	if err := sup.waitStarted(ctx, "missing", eventlog.Job{}, 0, false); err == nil {
 		t.Fatal("waitStarted(expired missing) = nil, want error")
 	}
 }
@@ -1771,18 +1815,20 @@ func assertLockReleased(t *testing.T, path string) {
 	}
 }
 
-func failNextJobRecordRead(t *testing.T) {
+func failNextJobRecordRead(t *testing.T) *int {
 	t.Helper()
 	old := jobRecordReadFile
-	reads := 0
+	fired, reads := 0, 0
 	jobRecordReadFile = func(path string) ([]byte, error) {
 		reads++
-		if reads == 2 {
+		if reads == 1 {
+			fired = reads
 			return nil, os.ErrNotExist
 		}
 		return old(path)
 	}
 	t.Cleanup(func() { jobRecordReadFile = old })
+	return &fired
 }
 
 func withStopSignaller(t *testing.T, fail func(int, unix.Signal) error) *[]recordedSignal {
@@ -2094,7 +2140,18 @@ func runHelperJob() {
 		os.Exit(7)
 	case "ignore-term":
 		signal.Ignore(syscall.SIGTERM)
+		fmt.Println("ignore-term ready")
 		time.Sleep(30 * time.Second)
+	case "term-delay":
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGTERM)
+		fmt.Println("term-delay ready")
+		select {
+		case <-ch:
+			time.Sleep(300 * time.Millisecond)
+		case <-time.After(30 * time.Second):
+		}
+		signal.Stop(ch)
 	case "spawn-child":
 		runChildJob(false)
 	case "spawn-child-ignore-term":

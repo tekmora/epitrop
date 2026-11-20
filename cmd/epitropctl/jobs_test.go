@@ -414,7 +414,7 @@ func TestRunJobsActionHistoryWithLoadedConfig(t *testing.T) {
 			t.Fatalf("runJobsAction(history loaded) = %v, want nil", err)
 		}
 	})
-	if out != "idle\t0\t0\t0\t0\t0\t0\t0\t\t\n" {
+	if out != "idle\t0\t0\t0\t0\t0\t0\t0\t\t\t0\t0\n" {
 		t.Fatalf("history output = %q, want an idle row with nothing counted", out)
 	}
 }
@@ -475,9 +475,56 @@ func TestRunJobsActionRefusesABadSince(t *testing.T) {
 }
 
 func TestJobsHistoryLineOrdersItsColumns(t *testing.T) {
-	h := supervisor.JobHistory{Name: "d", Started: 1, Exited: 2, Unclean: 3, Restarted: 4, Stale: 5, Refused: 6, Stopped: 7, First: "f", Last: "l"}
-	if got, want := jobsHistoryLine(h), "d\t1\t2\t3\t4\t5\t6\t7\tf\tl"; got != want {
+	h := supervisor.JobHistory{Name: "d", Started: 1, Exited: 2, Unclean: 3, Restarted: 4, Interrupted: 5, Stale: 6, Refused: 7, Stopped: 8, SupervisorStops: 9, First: "f", Last: "l"}
+	if got, want := jobsHistoryLine(h), "d\t1\t2\t3\t4\t6\t7\t8\tf\tl\t5\t9"; got != want {
 		t.Fatalf("jobsHistoryLine() = %q, want %q", got, want)
+	}
+}
+
+func wrapCanceledDepth(depth int) error {
+	err := context.Canceled
+	for i := 0; i < depth; i++ {
+		err = fmt.Errorf("wrap %d: %w", i, err)
+	}
+	return err
+}
+
+func assertSuperviseUntilStopped(t *testing.T, name string, got error, want []error) {
+	t.Helper()
+	if len(want) == 0 && got != nil {
+		t.Fatalf("superviseUntilStopped(%s) = %v, want nil", name, got)
+	}
+	for i := 0; i < len(want); i++ {
+		if !errors.Is(got, want[i]) {
+			t.Fatalf("superviseUntilStopped(%s) = %v, want errors.Is(%v)", name, got, want[i])
+		}
+	}
+}
+
+func TestSuperviseUntilStoppedKeepsMarkerWriteFailure(t *testing.T) {
+	old := superviseJobs
+	t.Cleanup(func() { superviseJobs = old })
+	replayBoom, boom := errors.New("replay boom"), errors.New("boom")
+	markerErr := fmt.Errorf("%w: disk full", supervisor.ErrStopMarkersNotWritten)
+	cases := []struct {
+		name string
+		err  error
+		want []error
+	}{
+		{"plain canceled", context.Canceled, nil},
+		{"wrapped canceled", fmt.Errorf("replay: %w", context.Canceled), nil},
+		{"joined canceled and canceled", errors.Join(context.Canceled, context.Canceled), nil},
+		{"chain at bound", wrapCanceledDepth(maxCancelErrorNodes - 1), nil},
+		{"canceled with replay error", fmt.Errorf("supervisor: x did not start: %w; last replay: %w", context.Canceled, replayBoom), []error{context.Canceled, replayBoom}},
+		{"joined canceled and error", errors.Join(context.Canceled, boom), []error{context.Canceled, boom}},
+		{"chain deeper than bound", wrapCanceledDepth(maxCancelErrorNodes), []error{context.Canceled}},
+		{"canceled with marker write failure", errors.Join(context.Canceled, markerErr), []error{supervisor.ErrStopMarkersNotWritten, context.Canceled}},
+	}
+	for i := 0; i < len(cases); i++ {
+		t.Run(cases[i].name, func(t *testing.T) {
+			superviseJobs = func(*supervisor.Supervisor, context.Context) error { return cases[i].err }
+			assertSuperviseUntilStopped(t, cases[i].name, superviseUntilStopped(testContext(t), nil), cases[i].want)
+		})
 	}
 }
 

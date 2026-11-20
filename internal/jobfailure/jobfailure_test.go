@@ -298,6 +298,47 @@ func TestAttemptsCountConsecutiveFailures(t *testing.T) {
 	assertAttemptPayload(t, f.records[11], 1, true, false)
 }
 
+func TestAnInterruptedJobIsNotAFailedExit(t *testing.T) {
+	f := &fakeLog{outputs: make(map[string]string)}
+	specs := []broker.ClassSpec{
+		{Name: "retry-once", Signatures: []string{`.*`}, MaxRetries: 1},
+		{Name: "fallback-class"},
+	}
+	w, err := New(testDeadLetters(t, specs, "fallback-class", 10), f.replay, f.head, f.appendFn, f.output)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("init Poll: %v", err)
+	}
+	f.appendRecord(t, "job.supervisor_stopped", "job-a", map[string]any{"supervisor_pid": 9})
+	f.appendRecord(t, "job.interrupted", "job-a", map[string]any{"state": "dead", "reason": "supervisor-stop"})
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("Poll after first interrupted: %v", err)
+	}
+	if len(f.records) != 2 {
+		t.Fatalf("records after job.interrupted = %d, want 2 (no job.dead_lettered)", len(f.records))
+	}
+	f.appendRecord(t, "job.exited", "job-a", map[string]any{"state": "dead", "code": 1})
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("Poll after first failed exit: %v", err)
+	}
+	assertAttemptPayload(t, f.records[3], 1, true, false)
+	f.appendRecord(t, "job.interrupted", "job-a", map[string]any{"state": "dead", "reason": "supervisor-stop"})
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("Poll after second interrupted: %v", err)
+	}
+	if len(f.records) != 5 {
+		t.Fatalf("records after second job.interrupted = %d, want 5 (no job.dead_lettered)", len(f.records))
+	}
+	f.appendRecord(t, "job.exited", "job-a", map[string]any{"state": "dead", "code": 1})
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("Poll after second failed exit: %v", err)
+	}
+	assertAttemptPayload(t, f.records[6], 2, false, true)
+}
+
 func TestTheOutputPicksTheClass(t *testing.T) {
 	f := &fakeLog{outputs: make(map[string]string)}
 	specs := []broker.ClassSpec{

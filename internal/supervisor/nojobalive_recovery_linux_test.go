@@ -31,7 +31,7 @@ func TestRestartDueAt(t *testing.T) {
 		{"exactly max", "on-failure", 2, 1, 1, []string{stamp(-time.Second)}, time.Second, true},
 		{"sorted need two", "always", 2, 2, 0, []string{stamp(-time.Second / 2), stamp(-time.Second * 3 / 2), stamp(-time.Second)}, time.Second, true},
 		{"one unreadable", "always", 2, 2, 1, []string{"bad", stamp(-time.Second)}, time.Second, true},
-		{"window zero", "always", 0, 1, 1, []string{stamp(0)}, 0, false},
+		{"window zero", "always", 0, 1, 1, []string{stamp(0)}, time.Duration(config.DefaultRestartWindowSeconds) * time.Second, true},
 		{"never", "never", 2, 1, 1, []string{stamp(0)}, 0, false},
 		{"success", "on-failure", 2, 1, 0, []string{stamp(0)}, 0, false},
 		{"unreadable at max", "always", 2, 1, 1, []string{"bad", stamp(0)}, 0, false},
@@ -181,7 +181,7 @@ func TestNoJobAliveFoldsNameToOneLine(t *testing.T) {
 	if err := sup.Supervise(testContext(t)); !errors.Is(err, ErrNoJobAlive) {
 		t.Fatalf("Supervise = %v, want ErrNoJobAlive", err)
 	}
-	want := "epitrop supervisor: finding: no job alive: split name dead (exit 1, restarts 0/0 in 0s); supervise exits 3\n"
+	want := "epitrop supervisor: finding: no job alive: split name dead (exit 1, restarts 0/0 in 3600s); supervise exits 3\n"
 	if got := stderr.String(); got != want {
 		t.Fatalf("stderr = %q, want %q", got, want)
 	}
@@ -303,7 +303,7 @@ func TestShimErrorWriteDeadline(t *testing.T) {
 func TestNoJobAliveTerminalAfterRecoverableFinding(t *testing.T) {
 	window := budgetJob("A", 1, []string{"/bin/false"})
 	window.Restart.WindowSeconds = 3600
-	spent := budgetJob("B", 1, []string{"/bin/false"})
+	spent := terminalBudgetJob("B", 1, []string{"/bin/false"})
 	sup := testSupervisor(t, window, spent)
 	now := time.Date(2026, 11, 18, 8, 0, 0, 0, time.UTC)
 	sup.clk = clockwork.NewFakeClockAt(now)
@@ -316,7 +316,7 @@ func TestNoJobAliveTerminalAfterRecoverableFinding(t *testing.T) {
 	}
 	var episode findingEpisode
 	checkFindingEpisode(t, sup, state, &episode)
-	want := "epitrop supervisor: finding: no job alive: A dead (exit 1, restarts 1/1 in 3600s, restart due 2026-11-18T09:00:00Z), B dead (exit 1, restarts 1/1 in 0s); supervise keeps running\n"
+	want := "epitrop supervisor: finding: no job alive: A dead (exit 1, restarts 1/1 in 3600s, restart due 2026-11-18T09:00:00Z), B dead (exit 1, restarts 1/1 in 3600s); supervise keeps running\n"
 	if got := stderr.String(); got != want || !episode.reported {
 		t.Fatalf("first finding = %q, reported = %t, want %q, true", got, episode.reported, want)
 	}
@@ -328,7 +328,7 @@ func TestNoJobAliveTerminalAfterRecoverableFinding(t *testing.T) {
 	if err = sup.checkNoJobAlive(testContext(t), state, &episode); !errors.Is(err, ErrNoJobAlive) {
 		t.Fatalf("terminal finding = %v, want ErrNoJobAlive", err)
 	}
-	want += "epitrop supervisor: finding: no job alive: B dead (exit 1, restarts 1/1 in 0s); supervise exits 3\n"
+	want += "epitrop supervisor: finding: no job alive: B dead (exit 1, restarts 1/1 in 3600s); supervise exits 3\n"
 	if got := stderr.String(); got != want {
 		t.Fatalf("terminal episode = %q, want %q", got, want)
 	}

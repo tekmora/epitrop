@@ -18,11 +18,17 @@ type JobHistory struct {
 	Exited    int
 	Unclean   int // exits without code 0: a stop's signal, a lost job and a deadline included
 	Restarted int
-	Stale     int
-	Refused   int
-	Stopped   int
-	First     string // time of the first counted record, empty when none was counted
-	Last      string // time of the last counted record
+	// Interrupted counts job.interrupted records: a recorded classification, not a confirmed
+	// cause; not counted as failures.
+	Interrupted int
+	Stale       int
+	Refused     int
+	Stopped     int
+	// SupervisorStops counts recorded job.supervisor_stopped markers: each is one stop of a
+	// supervisor that left this job recorded running.
+	SupervisorStops int
+	First           string // time of the first counted record, empty when none was counted
+	Last            string // time of the last counted record
 }
 
 // History counts the supervision records of the named job, or of every configured job,
@@ -76,7 +82,7 @@ func (c *historyCounter) count(rec eventlog.Record) error {
 		return nil
 	}
 	h := c.byName[rec.TaskID]
-	field := h.counterFor(rec.Type)
+	field := h.counterFor(rec)
 	if field == nil {
 		return nil
 	}
@@ -98,15 +104,19 @@ func (c *historyCounter) count(rec eventlog.Record) error {
 	return nil
 }
 
-// counterFor is the count a record of type typ adds to, nil for a type history leaves out.
-func (h *JobHistory) counterFor(typ string) *int {
-	switch typ {
+// counterFor is the count a record rec adds to, nil for a type history leaves out.
+func (h *JobHistory) counterFor(rec eventlog.Record) *int {
+	switch rec.Type {
 	case "job.started", "job.adopted":
 		return &h.Started
 	case "job.exited":
 		return &h.Exited
 	case "job.restarted":
 		return &h.Restarted
+	case eventInterrupted:
+		return &h.Interrupted
+	case eventSupervisorStopped:
+		return &h.SupervisorStops
 	case "job.stale":
 		return &h.Stale
 	case "job.refused":

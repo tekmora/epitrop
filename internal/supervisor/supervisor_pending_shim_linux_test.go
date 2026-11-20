@@ -1,0 +1,404 @@
+//go:build linux
+
+package supervisor
+
+import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/jonboulle/clockwork"
+
+	"github.com/tekmora/epitrop/internal/config"
+	"github.com/tekmora/epitrop/internal/eventlog"
+)
+
+// TestShimAllowsStopMarker checks which shim ends allow a supervisor stop marker: a collected
+// end for the run's shim decides by its SIGTERM flag, and without one a spawned shim that has
+// exited allows no marker, because its end cannot be told apart from a crash.
+func TestShimAllowsStopMarker(t *testing.T) {
+	exitedPID := exitedShimPID(t)
+	cmd := exec.CommandContext(t.Context(), "sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start(sleep) = %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if err := cmd.Process.Kill(); err != nil {
+			t.Errorf("Kill(sleep) = %v, want nil", err)
+		}
+		var exitErr *exec.ExitError
+		if err := cmd.Wait(); !errors.As(err, &exitErr) {
+			t.Errorf("Wait(sleep) = %v, want exit error", err)
+		}
+	})
+	livePID := cmd.Process.Pid
+	tests := []struct {
+		name    string
+		shimPID int
+		spawned spawnedShim
+		end     collectedShim
+		hasEnd  bool
+		want    bool
+	}{
+		{"collected SIGTERM", exitedPID, spawnedShim{pid: exitedPID}, collectedShim{pid: exitedPID, sigterm: true}, true, true},
+		{"collected other exit", exitedPID, spawnedShim{pid: exitedPID}, collectedShim{pid: exitedPID}, true, false},
+		{"other collected pid", exitedPID, spawnedShim{pid: exitedPID}, collectedShim{pid: livePID, sigterm: true}, true, false},
+		{"no end exited spawned shim", exitedPID, spawnedShim{pid: exitedPID}, collectedShim{}, false, false},
+		{"no end live spawned shim", livePID, spawnedShim{pid: livePID}, collectedShim{}, false, true},
+		{"no end other spawned pid", exitedPID, spawnedShim{pid: livePID}, collectedShim{}, false, true},
+		{"end ignored when absent", exitedPID, spawnedShim{pid: exitedPID}, collectedShim{pid: exitedPID, sigterm: true}, false, false},
+	}
+	for i := 0; i < len(tests); i++ {
+		tc := tests[i]
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shimAllowsStopMarker(tc.shimPID, tc.spawned, tc.end, tc.hasEnd); got != tc.want {
+				t.Errorf("shimAllowsStopMarker() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+// exitedShimPID returns the pid of a child that has exited and been waited for.
+func exitedShimPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "true")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Run(true) = %v, want nil", err)
+	}
+	return cmd.Process.Pid
+}
+
+// TestSupervisorStopSkipsExitedShimWithoutStatus checks that an exited spawned
+// shim with no collected status does not receive a supervisor stop marker.
+func TestSupervisorStopSkipsExitedShimWithoutStatus(t *testing.T) {
+	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
+	shimPID := exitedShimPID(t)
+	const since = "2026-11-18T08:00:00Z"
+	appendHistory(t, sup, "job.started", "daemon", map[string]any{"state": "running", "pid": shimPID + 1, "shim_pid": shimPID, "since": since})
+	sup.observeRunning("daemon", since)
+	sup.recordSpawnedShim("daemon", shimPID)
+	sup.mu.Lock()
+	sup.spawnedShim["daemon"] = spawnedShim{pid: shimPID}
+	delete(sup.collectedShim, "daemon")
+	sup.mu.Unlock()
+	if err := sup.markSupervisorStopped(); err != nil {
+		t.Fatalf("markSupervisorStopped() = %v, want nil", err)
+	}
+	if got := historyOne(t, sup, "daemon").SupervisorStops; got != 0 {
+		t.Fatalf("supervisor stop markers without collected status = %d, want 0", got)
+	}
+}
+
+// TestAdoptClearsStopMarkerOnNonAlwaysSchedules: once and cron jobs marked
+// running while their lock is held record job.adopted, clear SupervisorStopped without a new
+// job.started and keep the cron next-fire unchanged; releasing the lock without an exit
+// record then writes no job.interrupted.
+func TestAdoptClearsStopMarkerOnNonAlwaysSchedules(t *testing.T) {
+	onceJob := testJob("once-job", longJobCommand(t))
+	onceJob.Schedule = "once"
+	cronJob := testJob("cron-job", longJobCommand(t))
+	cronJob.Schedule = "0 2 * * *"
+	cronJob.Restart = config.JobRestartConfig{Policy: "never"}
+	clk := clockwork.NewFakeClockAt(time.Date(2026, 11, 18, 1, 59, 0, 0, time.UTC))
+	sup := testSupervisorWithClock(t, testRuntime(t), clk, onceJob, cronJob)
+	reconcileOnce(t, sup, "arm cron-job")
+	clk.Advance(90 * time.Second)
+	onceStatus := seedMarkedRunningNonAlwaysJob(t, sup, onceJob, false)
+	cronStatus := seedMarkedRunningNonAlwaysJob(t, sup, cronJob, true)
+	reconcileOnce(t, sup, "adopt marked once and cron jobs")
+	assertAdoptedMarkedNonAlwaysJobs(t, sup)
+	killMarkedTestShim(t, sup, onceJob, onceStatus)
+	killMarkedTestShim(t, sup, cronJob, cronStatus)
+	clk.Advance(time.Minute)
+	reconcileOnce(t, sup, "after lock release with no exit record")
+	if got := countEvents(t, sup.cfg.EventLog.Dir, eventInterrupted); got != 0 {
+		t.Fatalf("job.interrupted count after unlocked post-adopt = %d, want 0", got)
+	}
+	clk.Advance(24 * time.Hour)
+	reconcileOnce(t, sup, "cron next due")
+	if triggers := collectTriggeredEvents(t, sup, "cron-job"); len(triggers) != 2 || triggers[1].Due != "2026-11-19T02:00:00Z" {
+		t.Fatalf("cron triggers = %+v, want second fire at unchanged next due 2026-11-19T02:00:00Z", triggers)
+	}
+}
+
+func seedMarkedRunningNonAlwaysJob(t *testing.T, sup *Supervisor, job config.JobConfig, triggered bool) JobStatus {
+	t.Helper()
+	const since = "2026-11-18T02:00:00Z"
+	if triggered {
+		appendHistory(t, sup, "job.triggered", job.Name, map[string]any{"trigger": canonicalTrigger(job), "outcome": "started", "due": since})
+	}
+	if err := sup.Start(testContext(t), job.Name); err != nil {
+		t.Fatalf("Start(%s) = %v", job.Name, err)
+	}
+	status := statusOne(t, sup, job.Name)
+	appendHistory(t, sup, eventSupervisorStopped, job.Name, map[string]any{"supervisor_pid": 1, "since": status.Since})
+	return status
+}
+
+func killMarkedTestShim(t *testing.T, sup *Supervisor, job config.JobConfig, status JobStatus) {
+	t.Helper()
+	assertSafeSignalPID(t, status.ShimPID)
+	if err := syscall.Kill(status.ShimPID, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill shim %d: %v", status.ShimPID, err)
+	}
+	waitForProcessGone(t, status.PID)
+	waitForUnlock(t, sup, job)
+}
+
+func assertAdoptedMarkedNonAlwaysJobs(t *testing.T, sup *Supervisor) {
+	t.Helper()
+	names := []string{"once-job", "cron-job"}
+	for i := 0; i < len(names); i++ {
+		got := eventlogJob(t, sup, names[i])
+		if got.LastEvent != "job.adopted" || got.SupervisorStopped {
+			t.Fatalf("%s after reconcile = %+v, want job.adopted and SupervisorStopped false", names[i], got)
+		}
+	}
+	if adopted := countEvents(t, sup.cfg.EventLog.Dir, "job.adopted"); adopted != 2 {
+		t.Fatalf("job.adopted count = %d, want 2", adopted)
+	}
+	if starts := countEvents(t, sup.cfg.EventLog.Dir, "job.started"); starts != 2 {
+		t.Fatalf("job.started count = %d, want 2 (no new start)", starts)
+	}
+	if triggers := collectTriggeredEvents(t, sup, "cron-job"); len(triggers) != 1 || triggers[0].Due != "2026-11-18T02:00:00Z" {
+		t.Fatalf("cron triggers after adopt = %+v, want unchanged single trigger at 2026-11-18T02:00:00Z", triggers)
+	}
+}
+
+// TestPendingShimObserveStartedOnCancel: a cancelled start wait joins any final
+// replay error from observeStartedOnCancel with context.Canceled, and returns only the cancel
+// leaf when the final replay succeeds.
+func TestPendingShimObserveStartedOnCancel(t *testing.T) {
+	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
+	okCtx, okPID := startStubShimUntilCancel(t, sup, "daemon")
+	err := sup.waitStarted(okCtx, "daemon", eventlog.Job{}, okPID, false)
+	if !errors.Is(err, context.Canceled) || !errors.Is(errors.Unwrap(err), context.Canceled) || strings.Contains(err.Error(), "last replay:") {
+		t.Fatalf("waitStarted(cancel, replay ok) = %v, want only context.Canceled leaf", err)
+	}
+	failCtx, failPID := startStubShimUntilCancel(t, sup, "daemon")
+	eventsPath := filepath.Join(sup.cfg.EventLog.Dir, "events")
+	if writeErr := os.WriteFile(eventsPath, []byte("bad"), 0o600); writeErr != nil {
+		t.Fatalf("WriteFile(events) = %v, want nil", writeErr)
+	}
+	t.Cleanup(func() {
+		if rmErr := os.Remove(eventsPath); rmErr != nil && !os.IsNotExist(rmErr) {
+			t.Errorf("Remove(events) = %v, want nil", rmErr)
+		}
+	})
+	err = sup.waitStarted(failCtx, "daemon", eventlog.Job{}, failPID, false)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, syscall.ENOTDIR) || !strings.Contains(err.Error(), "last replay:") {
+		t.Fatalf("waitStarted(cancel, replay failed) = %v, want context.Canceled and ENOTDIR replay error", err)
+	}
+}
+
+// TestSpawnedShimIgnoresStaleCollector: when shim A is followed by shim B, A's
+// late collector neither overwrites collectedShim for B nor closes B's done channel.
+func TestSpawnedShimIgnoresStaleCollector(t *testing.T) {
+	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
+	cmdA := exec.CommandContext(t.Context(), "/bin/sh", "-c", "exit 1")
+	if err := cmdA.Start(); err != nil {
+		t.Fatalf("Start(A) = %v, want nil", err)
+	}
+	pidA := cmdA.Process.Pid
+	pidB := pidA + 100
+	sup.recordSpawnedShim("daemon", pidA)
+	sup.shimWaiters.Add(1)
+	sup.recordSpawnedShim("daemon", pidB)
+	sup.mu.Lock()
+	doneB := sup.spawnedShim["daemon"].done
+	sup.mu.Unlock()
+	sup.collectShim(cmdA, "daemon")
+	sup.mu.Lock()
+	gotCollected, hasCollected := sup.collectedShim["daemon"]
+	curSpawned := sup.spawnedShim["daemon"]
+	sup.mu.Unlock()
+	if hasCollected {
+		t.Fatalf("collectedShim after stale collector A = %+v, want none for B", gotCollected)
+	}
+	if curSpawned.pid != pidB || curSpawned.done == nil {
+		t.Fatalf("spawnedShim after stale collector A = %+v, want pid %d with open done", curSpawned, pidB)
+	}
+	select {
+	case <-doneB:
+		t.Fatal("B's done channel was closed by A's collector")
+	default:
+	}
+	sup.shimWaiters.Add(1)
+	sup.finishShimCollector("daemon", pidB)
+	select {
+	case <-doneB:
+	default:
+		t.Fatal("B's done channel was not closed by B's finishShimCollector")
+	}
+}
+
+// TestPendingShimCollectorBlocksStopMarker: when a shim exited with status 1 and
+// its collector is delayed at beforeRecordCollectedShim, markSupervisorStopped waits for the
+// collector and writes no marker; if the collector stays pending past stopMarkTimeout, no
+// marker is written and Supervise's error names the job.
+func TestPendingShimCollectorBlocksStopMarker(t *testing.T) {
+	assertDelayedCollectorSkipsMarker(t)
+	assertPendingCollectorPastTimeoutFailsSupervise(t)
+}
+
+func assertDelayedCollectorSkipsMarker(t *testing.T) {
+	t.Helper()
+	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
+	atSeam, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	releaseCollector := func() { once.Do(func() { close(release) }) }
+	defer releaseCollector()
+	oldSeam := beforeRecordCollectedShim
+	beforeRecordCollectedShim = func(string, int) {
+		close(atSeam)
+		<-release
+	}
+	t.Cleanup(func() { beforeRecordCollectedShim = oldSeam })
+	_, done := startExitedStubShimWithDelayedCollector(t, sup, atSeam, releaseCollector, "job.started")
+	realAppend := appendEvent
+	appendEvent = func(w *eventlog.Writer, c context.Context, check func(context.Context) (eventlog.Event, error)) (eventlog.Record, error) {
+		return realAppend(w, c, func(cctx context.Context) (eventlog.Event, error) {
+			appendEvent = realAppend
+			releaseCollector()
+			return check(cctx)
+		})
+	}
+	defer func() { appendEvent = realAppend }()
+	if err := runWithCollectorRelease(sup.markSupervisorStopped, releaseCollector, done); err != nil {
+		t.Fatalf("markSupervisorStopped(delayed collector) = %v, want nil", err)
+	}
+	if got := historyOne(t, sup, "daemon").SupervisorStops; got != 0 {
+		t.Fatalf("supervisor stop markers with delayed exit-1 collector = %d, want 0", got)
+	}
+}
+
+func runWithCollectorRelease(run func() error, release func(), done <-chan struct{}) error {
+	defer func() { release(); <-done }()
+	return run()
+}
+
+func TestCollectorReleasedWhenAppendFails(t *testing.T) {
+	release, done := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	go func() { <-release; close(done) }()
+	t.Cleanup(unblock)
+	want := errors.New("append failed before callback")
+	result := make(chan error, 1)
+	go func() { result <- runWithCollectorRelease(func() error { return want }, unblock, done) }()
+	select {
+	case err := <-result:
+		if !errors.Is(err, want) {
+			t.Fatalf("runWithCollectorRelease error = %v, want append failure", err)
+		}
+	case <-time.After(testWaitBound):
+		t.Fatal("collector was not released after append failure")
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("collector was not joined")
+	}
+	unblock()
+}
+
+func assertPendingCollectorPastTimeoutFailsSupervise(t *testing.T) {
+	t.Helper()
+	oldTimeout := stopMarkTimeout
+	stopMarkTimeout = 30 * time.Millisecond
+	t.Cleanup(func() { stopMarkTimeout = oldTimeout })
+	sup, _ := stopSupervisor(t, stopJob("always", 1, 0, longJobCommand(t)))
+	atSeam, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	releaseCollector := func() { once.Do(func() { close(release) }) }
+	defer releaseCollector()
+	oldSeam := beforeRecordCollectedShim
+	beforeRecordCollectedShim = func(string, int) {
+		close(atSeam)
+		<-release
+	}
+	t.Cleanup(func() { beforeRecordCollectedShim = oldSeam })
+	shimPID, done := startExitedStubShimWithDelayedCollector(t, sup, atSeam, releaseCollector, "job.adopted")
+	defer func() { releaseCollector(); <-done }()
+	lock := holdRunningRecordForShim(t, sup, "daemon", shimPID, "2026-11-18T08:00:00Z")
+	defer func() {
+		if closeErr := lock.Close(); closeErr != nil {
+			t.Fatalf("Close(lock) = %v, want nil", closeErr)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), testWaitBound)
+	defer cancel()
+	sup.afterTick = cancel
+	err := sup.Supervise(ctx)
+	if !errors.Is(err, ErrStopMarkersNotWritten) || !strings.Contains(err.Error(), "job daemon") {
+		t.Fatalf("Supervise(collector past timeout) = %v, want ErrStopMarkersNotWritten naming daemon", err)
+	}
+	if got := historyOne(t, sup, "daemon").SupervisorStops; got != 0 {
+		t.Fatalf("supervisor stop markers past timeout = %d, want 0", got)
+	}
+}
+
+func startExitedStubShimWithDelayedCollector(t *testing.T, sup *Supervisor, atSeam <-chan struct{}, release func(), eventType string) (int, <-chan struct{}) {
+	t.Helper()
+	const since = "2026-11-18T08:00:00Z"
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", "exit 1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start(exit 1) = %v, want nil", err)
+	}
+	shimPID := cmd.Process.Pid
+	sup.recordSpawnedShim("daemon", shimPID)
+	done := sup.spawnedShim["daemon"].done
+	sup.shimWaiters.Add(1)
+	appendHistory(t, sup, eventType, "daemon", map[string]any{"state": "running", "pid": shimPID + 1, "shim_pid": shimPID, "since": since})
+	sup.observeRunning("daemon", since)
+	go sup.collectShim(cmd, "daemon")
+	t.Cleanup(func() { release(); <-done })
+	if err := waitForCollectorSeam(atSeam, done, time.After(testWaitBound)); err != nil {
+		t.Fatal(err)
+	}
+	return shimPID, done
+}
+
+func waitForCollectorSeam(atSeam, done <-chan struct{}, deadline <-chan time.Time) error {
+	select {
+	case <-atSeam:
+		return nil
+	case <-done:
+		return errors.New("collector finished before beforeRecordCollectedShim")
+	case <-deadline:
+		return errors.New("deadline waiting for beforeRecordCollectedShim")
+	}
+}
+
+func TestWaitForCollectorSeamMissing(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	if err := waitForCollectorSeam(make(chan struct{}), done, make(chan time.Time)); err == nil || !strings.Contains(err.Error(), "beforeRecordCollectedShim") {
+		t.Fatalf("missing seam error = %v", err)
+	}
+	deadline := make(chan time.Time)
+	close(deadline)
+	if err := waitForCollectorSeam(make(chan struct{}), make(chan struct{}), deadline); err == nil || !strings.Contains(err.Error(), "deadline") {
+		t.Fatalf("seam deadline error = %v", err)
+	}
+}
+
+func holdRunningRecordForShim(t *testing.T, sup *Supervisor, name string, shimPID int, since string) *heldLock {
+	t.Helper()
+	lock, err := holdLock(sup.lockPath(name))
+	if err != nil {
+		t.Fatalf("holdLock(%s) = %v, want nil", name, err)
+	}
+	cfg := shimConfig{Name: name, RecordPath: sup.recordPath(name), LogPath: sup.cfg.Jobs[0].LogPath}
+	if err = writeRecord(cfg, shimPID+1, since); err != nil {
+		t.Fatalf("writeRecord(%s) = %v, want nil", name, err)
+	}
+	return lock
+}

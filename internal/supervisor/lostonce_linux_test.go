@@ -44,7 +44,7 @@ func TestNoJobAliveLostOnce(t *testing.T) {
 func testLostOnceFinding(t *testing.T) {
 	once := testJob("manual", []string{"/bin/true"})
 	once.Schedule = "once"
-	sup := testSupervisor(t, once, budgetJob("broken", 1, []string{"/bin/true"}))
+	sup := testSupervisor(t, once, terminalBudgetJob("broken", 1, []string{"/bin/true"}))
 	stderr := captureSupervisorStderr(sup)
 	plantRunningOnce(t, sup, "manual", "2026-11-18T08:00:00Z")
 	plantSpentBudget(t, sup, "broken", 1, intPtr(1), "")
@@ -54,7 +54,7 @@ func testLostOnceFinding(t *testing.T) {
 	if err := sup.Supervise(ctx); !errors.Is(err, ErrNoJobAlive) {
 		t.Fatalf("Supervise = %v, want ErrNoJobAlive", err)
 	}
-	want := "epitrop supervisor: finding: no job alive: manual dead (exit lost, restarts 0/0 in 0s), broken dead (exit 1, restarts 1/1 in 0s); supervise exits 3\n"
+	want := "epitrop supervisor: finding: no job alive: manual dead (exit lost, restarts 0/0 in 3600s), broken dead (exit 1, restarts 1/1 in 3600s); supervise exits 3\n"
 	if got := stderr.String(); got != want {
 		t.Fatalf("stderr = %q, want %q", got, want)
 	}
@@ -63,7 +63,7 @@ func testLostOnceFinding(t *testing.T) {
 func testHeldLockOnceAlive(t *testing.T) {
 	once := testJob("manual", []string{"/bin/true"})
 	once.Schedule = "once"
-	sup := testSupervisor(t, once, budgetJob("broken", 1, []string{"/bin/true"}))
+	sup := testSupervisor(t, once, terminalBudgetJob("broken", 1, []string{"/bin/true"}))
 	stderr := captureSupervisorStderr(sup)
 	plantSpentBudget(t, sup, "broken", 1, intPtr(1), "")
 	state := plantRunningOnce(t, sup, "manual", "2026-11-18T08:00:00Z")
@@ -81,7 +81,7 @@ func testHeldLockOnceAlive(t *testing.T) {
 func testLostOnceNewStartBeforeConfirm(t *testing.T) {
 	once := testJob("manual", []string{"/bin/true"})
 	once.Schedule = "once"
-	sup := testSupervisor(t, once, budgetJob("broken", 1, []string{"/bin/true"}))
+	sup := testSupervisor(t, once, terminalBudgetJob("broken", 1, []string{"/bin/true"}))
 	stderr := captureSupervisorStderr(sup)
 	plantSpentBudget(t, sup, "broken", 1, intPtr(1), "")
 	state := plantRunningOnce(t, sup, "manual", "2026-11-18T08:00:00Z")
@@ -97,7 +97,7 @@ func testLostOnceNewStartBeforeConfirm(t *testing.T) {
 func testLostOnceExitBeforeConfirm(t *testing.T) {
 	once := testJob("manual", []string{"/bin/true"})
 	once.Schedule = "once"
-	sup := testSupervisor(t, once, budgetJob("broken", 1, []string{"/bin/true"}))
+	sup := testSupervisor(t, once, terminalBudgetJob("broken", 1, []string{"/bin/true"}))
 	stderr := captureSupervisorStderr(sup)
 	plantSpentBudget(t, sup, "broken", 1, intPtr(1), "")
 	state := plantRunningOnce(t, sup, "manual", "2026-11-18T08:00:00Z")
@@ -116,7 +116,7 @@ func testLostOnceExitBeforeConfirm(t *testing.T) {
 	if err := sup.checkNoJobAlive(testContext(t), fresh, &episode); !errors.Is(err, ErrNoJobAlive) {
 		t.Fatalf("tick 2 (after exit): checkNoJobAlive = %v, want ErrNoJobAlive", err)
 	}
-	want := "epitrop supervisor: finding: no job alive: manual dead (exit 1, restarts 0/0 in 0s), broken dead (exit 1, restarts 1/1 in 0s); supervise exits 3\n"
+	want := "epitrop supervisor: finding: no job alive: manual dead (exit 1, restarts 0/0 in 3600s), broken dead (exit 1, restarts 1/1 in 3600s); supervise exits 3\n"
 	if got := stderr.String(); got != want {
 		t.Fatalf("tick 2 stderr = %q, want %q", got, want)
 	}
@@ -125,7 +125,7 @@ func testLostOnceExitBeforeConfirm(t *testing.T) {
 func testOtherJobStartsBeforeConfirm(t *testing.T) {
 	once := testJob("manual", []string{"/bin/true"})
 	once.Schedule = "once"
-	sup := testSupervisor(t, once, budgetJob("broken", 1, []string{"/bin/true"}))
+	sup := testSupervisor(t, once, terminalBudgetJob("broken", 1, []string{"/bin/true"}))
 	stderr := captureSupervisorStderr(sup)
 	plantSpentBudget(t, sup, "broken", 1, intPtr(1), "")
 	state := plantRunningOnce(t, sup, "manual", "2026-11-18T08:00:00Z")
@@ -171,7 +171,7 @@ func testChangedExitPreservesEpisode(t *testing.T) {
 func testConfirmReplayNamesItsDownJobs(t *testing.T) {
 	once := testJob("manual", []string{"/bin/true"})
 	once.Schedule = "once"
-	sup := testSupervisor(t, once, budgetJob("broken", 1, []string{"/bin/true"}))
+	sup := testSupervisor(t, once, terminalBudgetJob("broken", 1, []string{"/bin/true"}))
 	stderr := captureSupervisorStderr(sup)
 	plantSpentBudget(t, sup, "broken", 1, intPtr(1), "")
 	state := plantRunningOnce(t, sup, "manual", "2026-11-18T08:00:00Z")
@@ -180,7 +180,7 @@ func testConfirmReplayNamesItsDownJobs(t *testing.T) {
 	if err := sup.checkNoJobAlive(testContext(t), state, &episode); !errors.Is(err, ErrNoJobAlive) {
 		t.Fatalf("checkNoJobAlive = %v, want ErrNoJobAlive", err)
 	}
-	want := "epitrop supervisor: finding: no job alive: manual dead (exit lost, restarts 0/0 in 0s); supervise exits 3\n"
+	want := "epitrop supervisor: finding: no job alive: manual dead (exit lost, restarts 0/0 in 3600s); supervise exits 3\n"
 	if got := stderr.String(); got != want {
 		t.Fatalf("stderr = %q, want %q", got, want)
 	}

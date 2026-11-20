@@ -266,14 +266,15 @@ func (j *Supervised) Wait(ctx context.Context) (JobEnd, error) {
 	return JobEnd{}, fmt.Errorf("slot: the job %s still runs after its deadline and stop grace; stop it with jobs stop", j.name)
 }
 
-// end reads how the job ended. The exit counts only when it belongs to the start this run
-// made: the start time is what tells one start of the slot's job from another.
+// end reads how the job ended. The exit or interruption counts only when it belongs to the
+// start this run made: the start time is what tells one start of the slot's job from
+// another.
 func (j *Supervised) end(ctx context.Context) (JobEnd, error) {
 	rec, err := j.sup.Recorded(ctx, j.name)
 	if err != nil {
 		return JobEnd{}, err
 	}
-	if rec.LastEvent != "job.exited" || rec.Since != j.since {
+	if (rec.LastEvent != "job.exited" && rec.LastEvent != "job.interrupted") || rec.Since != j.since {
 		return JobEnd{Reason: "the job stopped running without its exit in the event log"}, nil
 	}
 	return JobEnd{Recorded: true, Code: rec.LastExitCode, Reason: rec.LastReason}, nil

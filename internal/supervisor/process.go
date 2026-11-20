@@ -2,20 +2,28 @@ package supervisor
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"time"
 
 	"github.com/tekmora/epitrop/internal/config"
+	"github.com/tekmora/epitrop/internal/eventlog"
 )
 
 func (s *Supervisor) shimCmd(ctx context.Context, job config.JobConfig) *exec.Cmd {
-	args := make([]string, 0, len(s.shimCommand)+len(job.Command)+18)
+	return s.shimCmdFor(ctx, job, false, nil)
+}
+
+func (s *Supervisor) shimCmdFor(ctx context.Context, job config.JobConfig, unlessStopped bool, expected *eventlog.Job) *exec.Cmd {
+	args := make([]string, 0, len(s.shimCommand)+len(job.Command)+19)
 	args = append(args, s.shimCommand[1:]...)
 	args = append(args,
 		"__job-shim",
 		"--event-log-dir", s.cfg.EventLog.Dir,
 		"--event-log-lock-timeout-seconds", strconv.Itoa(s.cfg.EventLog.LockTimeoutSeconds),
+		"--event-log-max-replay-records", strconv.Itoa(s.cfg.EventLog.MaxReplayRecords),
 		"--signing-key", s.cfg.EventLog.SigningKeyPath,
 		"--name", job.Name,
 		"--lock", s.lockPath(job.Name),
@@ -25,6 +33,12 @@ func (s *Supervisor) shimCmd(ctx context.Context, job config.JobConfig) *exec.Cm
 		"--stop-signal", job.Stop.Signal,
 		"--stop-grace-seconds", strconv.Itoa(job.Stop.GraceSeconds),
 	)
+	if unlessStopped {
+		args = append(args, "--unless-stopped")
+		if expected != nil {
+			args = append(args, "--check-generation", "--expected-since", expected.Since, "--expected-shim-pid", strconv.Itoa(expected.ShimPID))
+		}
+	}
 	args = append(args, sandboxFlagArgs(job.Sandbox)...)
 	args = append(args, "--")
 	args = append(args, job.Command...)
@@ -33,6 +47,56 @@ func (s *Supervisor) shimCmd(ctx context.Context, job config.JobConfig) *exec.Cm
 	cmd := exec.CommandContext(ctx, s.shimCommand[0], args...)
 	cmd.Cancel = nil
 	return cmd
+}
+
+const maxStopTargetPolls = int((shimReplayTimeout + 2*time.Second) / startPollInterval)
+
+// waitStopTarget retries the lock while a starting shim publishes its record.
+func (s *Supervisor) waitStopTarget(ctx context.Context, job config.JobConfig) (*heldLock, jobSignalTarget, error) {
+	last := errors.New("job lock is held without a record")
+	refused := 0
+	for i := 0; i < maxStopTargetPolls; i++ {
+		lock, err := holdLock(s.lockPath(job.Name))
+		if err == nil {
+			return lock, jobSignalTarget{}, nil
+		}
+		if !errors.Is(err, errLockBusy) {
+			return nil, jobSignalTarget{}, err
+		}
+		target, err := s.signalTarget(job)
+		if err != nil {
+			last = err
+			refused = 0
+		} else if err = validateSignalTarget(target); err == nil {
+			return stopTargetIfContextActive(ctx, target, last)
+		} else if errors.Is(err, errSignalRefused) {
+			last = err
+			refused = stopTargetRefusals(target, refused)
+			if refused >= maxStatusPolls {
+				return nil, jobSignalTarget{}, last
+			}
+		} else {
+			return nil, jobSignalTarget{}, fmt.Errorf("validate stop target: %w", err)
+		}
+		if !sleepContext(ctx, startPollInterval) {
+			return nil, jobSignalTarget{}, errors.Join(last, ctx.Err())
+		}
+	}
+	return nil, jobSignalTarget{}, last
+}
+
+func stopTargetIfContextActive(ctx context.Context, target jobSignalTarget, last error) (*heldLock, jobSignalTarget, error) {
+	if ctx.Err() != nil {
+		return nil, jobSignalTarget{}, errors.Join(last, ctx.Err())
+	}
+	return nil, target, nil
+}
+
+func stopTargetRefusals(target jobSignalTarget, refused int) int {
+	if recordShimStale(target) {
+		return 0
+	}
+	return refused + 1
 }
 
 func (s *Supervisor) isRunning(job config.JobConfig) (bool, error) {

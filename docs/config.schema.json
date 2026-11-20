@@ -154,7 +154,7 @@
               "policy": "never",
               "max_restarts": 0,
               "backoff_seconds": 0,
-              "window_seconds": 0
+              "window_seconds": 3600
             },
             "additionalProperties": false,
             "properties": {
@@ -181,7 +181,8 @@
               },
               "window_seconds": {
                 "type": "integer",
-                "default": 0,
+                "description": "restart.max_restarts bounds the restarts of this many last seconds; 0 takes the default, 3600.",
+                "default": 3600,
                 "minimum": 0,
                 "maximum": 604800
               }
