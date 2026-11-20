@@ -95,15 +95,7 @@ func TestWriteSnapshotFile_ReaderSeesWholeSnapshot(t *testing.T) {
 	if err := writeSnapshotFile(path, versions[0]); err != nil {
 		t.Fatalf("writeSnapshotFile() = %v, want nil", err)
 	}
-	root, err := os.OpenRoot(filepath.Dir(path))
-	if err != nil {
-		t.Fatalf("open snapshot directory: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := root.Close(); err != nil {
-			t.Errorf("close snapshot directory: %v", err)
-		}
-	})
+	root := openSnapshotRoot(t, path)
 	var done atomic.Bool
 	torn := make(chan int, 1)
 	go func() {
@@ -231,17 +223,23 @@ func setupClaudeSyncFixtures(t *testing.T) (string, string) {
 	return claudeDir, claudeStateDir
 }
 
-func readSnapshot(t *testing.T, path string) []byte {
+func openSnapshotRoot(t *testing.T, path string) *os.Root {
 	t.Helper()
 	root, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
 		t.Fatalf("open snapshot directory: %v", err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if err := root.Close(); err != nil {
 			t.Errorf("close snapshot directory: %v", err)
 		}
-	}()
+	})
+	return root
+}
+
+func readSnapshot(t *testing.T, path string) []byte {
+	t.Helper()
+	root := openSnapshotRoot(t, path)
 	data, err := root.ReadFile(filepath.Base(path))
 	if err != nil {
 		t.Fatalf("read snapshot: %v", err)
