@@ -328,7 +328,7 @@ case "$tool" in
     printf '%s\n' 'package negative' 'import _ "crypto/des" // #nosec -- missing rule' > "$plant/negative/n2.go"
     # Strip inherited Git variables and disable global and system config for the fixture.
     fixture_git() {
-      python3 - "$plant" "$@" <<'PYGIT'
+      sh "$launcher" - "$plant" "$@" <<'PYGIT'
 import os
 import subprocess
 import sys
