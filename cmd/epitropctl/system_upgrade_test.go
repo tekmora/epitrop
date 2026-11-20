@@ -30,19 +30,24 @@ func fixtureSourceDir(t *testing.T) string {
 
 func copyUpgradeDir(t *testing.T, src, dst string) {
 	t.Helper()
-	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
+	root, err := os.OpenRoot(src)
+	if err != nil {
+		t.Fatalf("open fixture source %s: %v", src, err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close fixture source: %v", err)
+		}
+	})
+	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
+		target := filepath.Join(dst, filepath.FromSlash(path))
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o750)
 		}
-		data, err := os.ReadFile(path)
+		data, err := root.ReadFile(path)
 		if err != nil {
 			return err
 		}

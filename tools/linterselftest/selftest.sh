@@ -603,7 +603,34 @@ if [[ "$tool" == "gosec" ]]; then
     exit 1
   fi
 
-  echo "$tool: ${#expected[@]} planted findings reported (exit 1), G module root and H mid-name dots scanned, nested worktrees and dot folders excluded, negative control reported excluded findings (exit 1), I trailing-dot folder rejected, J-N found, controls miss their plants, O refused, clean tree passed (exit 0)"
+  # P and Q: isolate each pass so losing either pass's exit status is observable.
+  for case_id in P Q; do
+    if [[ "$case_id" == P ]]; then
+      printf '%s\n' '//go:build !planttag' '' 'package clean' 'import _ "crypto/md5"' > "$plant/clean/negative.go"
+      printf '%s\n' '//go:build planttag' '' 'package clean' > "$plant/clean/positive.go"
+    else
+      printf '%s\n' '//go:build !planttag' '' 'package clean' > "$plant/clean/negative.go"
+      printf '%s\n' '//go:build planttag' '' 'package clean' 'import _ "crypto/md5"' > "$plant/clean/positive.go"
+    fi
+    fixture_git add -- clean/negative.go clean/positive.go
+    pass_rc=0
+    run_make_gosec "$plant/pass-$case_id.log" || pass_rc="$?"
+    if [[ "$case_id" == P ]]; then
+      wanted='gosec pass failed: tests'
+      forbidden='^gosec pass failed: tests tags='
+    else
+      wanted='gosec pass failed: tests tags=planttag'
+      forbidden='^gosec pass failed: tests$'
+    fi
+    if [[ "$pass_rc" -ne 1 ]] || ! grep -qxF "$wanted" "$plant/pass-$case_id.log" ||
+      grep -q "$forbidden" "$plant/pass-$case_id.log"; then
+      echo "$tool: $case_id isolated pass failed (exit $pass_rc)" >&2
+      cat "$plant/pass-$case_id.log" >&2
+      exit 1
+    fi
+  done
+
+  echo "$tool: ${#expected[@]} planted findings reported (exit 1), G module root and H mid-name dots scanned, nested worktrees and dot folders excluded, negative control reported excluded findings (exit 1), I trailing-dot folder rejected, J-N found, controls miss their plants, O refused, P and Q isolated passes detected, clean tree passed (exit 0)"
 else
   echo "$tool: ${#expected[@]} planted findings reported, exit 1 as required"
 fi

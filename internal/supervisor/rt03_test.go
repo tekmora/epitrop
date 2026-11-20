@@ -895,7 +895,8 @@ func TestSandboxPreflightRefusesEnvOutsideUsr(t *testing.T) {
 		t.Fatalf("read env: %v", err)
 	}
 	outside := filepath.Join(t.TempDir(), "env")
-	if err = os.WriteFile(outside, body, 0o700); err != nil {
+	// #nosec G703 -- outside is the env copy under t.TempDir.
+	if err = os.WriteFile(outside, body, 0o600); err != nil {
 		t.Fatalf("copy env: %v", err)
 	}
 	withToolLookPath(t, "env", outside)

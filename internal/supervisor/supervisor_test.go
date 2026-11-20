@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -2064,12 +2065,24 @@ func waitForUnlock(t *testing.T, sup *Supervisor, job config.JobConfig) {
 func countEvents(t *testing.T, dir string, typ string) int {
 	t.Helper()
 	events := filepath.Join(dir, "events")
+	root, err := os.OpenRoot(events)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("OpenRoot(events) = %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close events root: %v", err)
+		}
+	})
 	count := 0
-	err := filepath.WalkDir(events, func(path string, d os.DirEntry, walkErr error) error {
+	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil || d.IsDir() {
 			return walkErr
 		}
-		body, err := os.ReadFile(path)
+		body, err := root.ReadFile(path)
 		if err != nil {
 			return err
 		}

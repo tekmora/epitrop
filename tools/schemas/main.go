@@ -309,17 +309,36 @@ func liteLLMFragment(source schemaSource, full []byte) (map[string][]byte, error
 	return oneFragment(source, string(body))
 }
 
-func writeFragments(outRoot string, source schemaSource, fragments map[string][]byte) error {
+func writeFragments(outRoot string, source schemaSource, fragments map[string][]byte) (retErr error) {
+	if err := os.MkdirAll(outRoot, 0o750); err != nil {
+		return fmt.Errorf("%s: create output root: %w", source.ID, err)
+	}
+	root, err := os.OpenRoot(outRoot)
+	if err != nil {
+		return fmt.Errorf("%s: open output root: %w", source.ID, err)
+	}
+	defer func() { retErr = errors.Join(retErr, root.Close()) }()
 	for path, body := range fragments {
-		fullPath := filepath.Join(outRoot, filepath.FromSlash(path))
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0o750); err != nil {
+		rel, err := fragmentPath(path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", source.ID, err)
+		}
+		if err := root.MkdirAll(filepath.Dir(rel), 0o750); err != nil {
 			return fmt.Errorf("%s: create dir for %s: %w", source.ID, path, err)
 		}
-		if err := os.WriteFile(fullPath, body, 0o600); err != nil {
+		if err := root.WriteFile(rel, body, 0o600); err != nil {
 			return fmt.Errorf("%s: write %s: %w", source.ID, path, err)
 		}
 	}
 	return nil
+}
+
+func fragmentPath(rel string) (string, error) {
+	path := filepath.FromSlash(rel)
+	if !filepath.IsLocal(path) || filepath.Clean(path) == "." {
+		return "", fmt.Errorf("invalid fragment path %q", rel)
+	}
+	return path, nil
 }
 
 func updateFragmentDigests(source *schemaSource, fragments map[string][]byte) error {
@@ -381,12 +400,26 @@ func compareFragments(manifest schemaManifest, root, tmp string) error {
 	return nil
 }
 
-func compareOne(root, tmp, rel string) error {
-	got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+func compareOne(root, tmp, rel string) (retErr error) {
+	path, err := fragmentPath(rel)
+	if err != nil {
+		return err
+	}
+	committed, err := os.OpenRoot(root)
+	if err != nil {
+		return fmt.Errorf("open committed root for %s: %w", rel, err)
+	}
+	defer func() { retErr = errors.Join(retErr, committed.Close()) }()
+	refreshed, err := os.OpenRoot(tmp)
+	if err != nil {
+		return fmt.Errorf("open refreshed root for %s: %w", rel, err)
+	}
+	defer func() { retErr = errors.Join(retErr, refreshed.Close()) }()
+	got, err := committed.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read committed %s: %w", rel, err)
 	}
-	want, err := os.ReadFile(filepath.Join(tmp, filepath.FromSlash(rel)))
+	want, err := refreshed.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read refreshed %s: %w", rel, err)
 	}

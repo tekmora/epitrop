@@ -82,7 +82,7 @@ func runFakeScopeCommand(args []string) int {
 	command := args[sep+1:]
 	failed := make(chan error, 1)
 	go func() {
-		// #nosec G204 -- test stand-in for systemd-run; the argv comes from the sandbox builder.
+		// #nosec G204 G702 -- test stand-in for systemd-run; the argv comes from the sandbox builder.
 		failed <- syscall.Exec(command[0], command, os.Environ())
 	}()
 	fmt.Fprintf(os.Stderr, "fake scope command: exec %s: %v\n", command[0], <-failed)

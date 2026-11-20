@@ -42,7 +42,7 @@ func (s *Supervisor) shimCmdFor(ctx context.Context, job config.JobConfig, unles
 	args = append(args, sandboxFlagArgs(job.Sandbox)...)
 	args = append(args, "--")
 	args = append(args, job.Command...)
-	// #nosec G204 -- the shim path is this executable by default, and job
+	// #nosec G204 G702 -- the shim path is this executable by default, and job
 	// command arguments are passed as argv after "--"; no shell is invoked.
 	cmd := exec.CommandContext(ctx, s.shimCommand[0], args...)
 	cmd.Cancel = nil
