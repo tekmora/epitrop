@@ -92,28 +92,38 @@ func ignoredDir(dir string, patterns []string) bool {
 	return false
 }
 
+func excludedName(parts []string, i int) bool {
+	part := parts[i]
+	return strings.HasPrefix(part, ".") || strings.HasPrefix(part, "_") ||
+		i < len(parts)-1 && (part == "testdata" || part == "vendor" && i < len(parts)-2)
+}
+
+func excludedDir(root, dir string, patterns []string) (bool, error) {
+	if ignoredDir(dir, patterns) {
+		return true, nil
+	}
+	_, err := os.Stat(filepath.Join(root, filepath.FromSlash(dir), "go.mod"))
+	if err == nil {
+		return true, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("%s: inspect module: %w", dir, err)
+	}
+	return false, nil
+}
+
 func excluded(root, name string, patterns []string) (bool, error) {
 	parts := strings.Split(name, "/")
-	for i, part := range parts {
-		if strings.HasPrefix(part, ".") || strings.HasPrefix(part, "_") {
+	for i := range parts {
+		if excludedName(parts, i) {
 			return true, nil
 		}
 		if i == len(parts)-1 {
 			break
 		}
-		if part == "testdata" || part == "vendor" && i < len(parts)-2 {
-			return true, nil
-		}
-		dir := strings.Join(parts[:i+1], "/")
-		if ignoredDir(dir, patterns) {
-			return true, nil
-		}
-		_, err := os.Stat(filepath.Join(root, filepath.FromSlash(dir), "go.mod"))
-		if err == nil {
-			return true, nil
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return false, fmt.Errorf("%s: inspect module: %w", dir, err)
+		skip, err := excludedDir(root, strings.Join(parts[:i+1], "/"), patterns)
+		if skip || err != nil {
+			return skip, err
 		}
 	}
 	return false, nil
@@ -270,30 +280,34 @@ func scanFile(root, name string, known map[string]bool, all map[string]bool) err
 	return nil
 }
 
-func discover(root string) ([]string, error) {
+func discoveryInputs(root string) ([]string, []string, map[string]bool, error) {
 	files, err := gitCommand("-C", root, "ls-files", "-z", "--", "*.go")
 	if err != nil {
-		return nil, fmt.Errorf("%s: not a readable git work tree: %w", root, err)
+		return nil, nil, nil, fmt.Errorf("%s: not a readable git work tree: %w", root, err)
 	}
 	flags, err := goCommand("env", "GOFLAGS")
 	if err != nil {
-		return nil, fmt.Errorf("read GOFLAGS: %w", err)
+		return nil, nil, nil, fmt.Errorf("read GOFLAGS: %w", err)
 	}
 	if err := checkGOFLAGS(string(flags)); err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	patterns, err := moduleIgnores(root)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	known, err := toolchainTags()
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	names := strings.Split(strings.TrimSuffix(string(files), "\x00"), "\x00")
 	if len(names) > maxFiles {
-		return nil, fmt.Errorf("%s: exceeds file limit", root)
+		return nil, nil, nil, fmt.Errorf("%s: exceeds file limit", root)
 	}
+	return names, patterns, known, nil
+}
+
+func scanNames(root string, names, patterns []string, known map[string]bool) (map[string]bool, error) {
 	all := make(map[string]bool)
 	for _, name := range names {
 		if name == "" {
@@ -309,6 +323,18 @@ func discover(root string) ([]string, error) {
 		if err := scanFile(root, name, known, all); err != nil {
 			return nil, err
 		}
+	}
+	return all, nil
+}
+
+func discover(root string) ([]string, error) {
+	names, patterns, known, err := discoveryInputs(root)
+	if err != nil {
+		return nil, err
+	}
+	all, err := scanNames(root, names, patterns, known)
+	if err != nil {
+		return nil, err
 	}
 	tags := make([]string, 0, len(all))
 	for tag := range all {

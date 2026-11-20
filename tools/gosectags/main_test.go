@@ -110,38 +110,59 @@ func TestInheritedTags(t *testing.T) {
 	} {
 		t.Run(tc.flags, func(t *testing.T) {
 			err := checkGOFLAGS(tc.flags)
-			if (err != nil) != tc.bad || err != nil && (!strings.Contains(err.Error(), "GOFLAGS") || !strings.Contains(err.Error(), strings.Fields(tc.flags)[len(strings.Fields(tc.flags))-1])) {
+			if tc.bad {
+				fields := strings.Fields(tc.flags)
+				if err == nil || !strings.Contains(err.Error(), "GOFLAGS") || !strings.Contains(err.Error(), fields[len(fields)-1]) {
+					t.Fatalf("flags %q: %v", tc.flags, err)
+				}
+			} else if err != nil {
 				t.Fatalf("flags %q: %v", tc.flags, err)
 			}
 		})
 	}
 }
 
-func TestDiscoverDeletedAndUnreadable(t *testing.T) {
-	for _, directory := range []bool{false, true} {
-		t.Run(map[bool]string{false: "deleted", true: "directory"}[directory], func(t *testing.T) {
-			dir := fixture(t, map[string]string{"gone.go": "package a\n"})
-			path := filepath.Join(dir, "gone.go")
-			if err := os.Remove(path); err != nil {
-				t.Fatal(err)
-			}
-			if directory {
-				if err := os.Mkdir(path, 0700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			_, err := discover(dir)
-			if directory && (err == nil || !strings.Contains(err.Error(), "gone.go")) || !directory && err != nil {
-				t.Fatalf("discover: %v", err)
-			}
-		})
+func deletedFixture(t *testing.T) (string, string) {
+	t.Helper()
+	dir := fixture(t, map[string]string{"gone.go": "package a\n"})
+	path := filepath.Join(dir, "gone.go")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	return dir, path
+}
+
+func TestDiscoverDeleted(t *testing.T) {
+	dir, _ := deletedFixture(t)
+	if _, err := discover(dir); err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+}
+
+func TestDiscoverUnreadable(t *testing.T) {
+	dir, path := deletedFixture(t)
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := discover(dir)
+	if err == nil || !strings.Contains(err.Error(), "gone.go") {
+		t.Fatalf("discover: %v", err)
+	}
+}
+
+func TestDiscoverInheritedTags(t *testing.T) {
+	dir := fixture(t, map[string]string{"a.go": "package a\n"})
+	t.Setenv("GOFLAGS", "-tags=x")
+	_, err := discover(dir)
+	if err == nil || !strings.Contains(err.Error(), "GOFLAGS") {
+		t.Fatalf("discover: %v, want GOFLAGS error", err)
 	}
 }
 
 func TestDiscoverExcluded(t *testing.T) {
 	bad := "//go:build alpha && !beta\n\npackage p\n"
 	good := "//go:build gamma\n\npackage p\n"
-	files := map[string]string{"go.mod": "module example.com/fixture\n\ngo 1.27\n\nignore (\n ./build\n x\n)\n", "a/vendor/v.go": good, "keep/gen2/k.go": good, "only/d.go": "//go:build delta\n\npackage p\n", "nested/go.mod": "module example.com/nested\n"}
+	files := map[string]string{"go.mod": "module example.com/fixture\n\ngo 1.27\n\nignore (\n ./build\n x\n)\n", "a/vendor/v.go": good, "keep/gen2/k.go": "//go:build epsilon\n\npackage p\n", "keep/build/k.go": "//go:build zeta\n\npackage p\n", "only/d.go": "//go:build delta\n\npackage p\n", "nested/go.mod": "module example.com/nested\n"}
 	for _, name := range []string{"testdata/a.go", ".hidden/a.go", "_under/a.go", "plain/_x.go", "nested/a.go", "a/vendor/b/a.go", "build/a.go", "gen/x/a.go"} {
 		files[name] = bad
 	}
@@ -149,7 +170,7 @@ func TestDiscoverExcluded(t *testing.T) {
 	// Git ignores some names by default; force-add every exclusion fixture.
 	fixtureGit(t, dir, "add", "-f", "--", ".")
 	got, err := discover(dir)
-	if err != nil || !reflect.DeepEqual(got, []string{"delta", "gamma"}) {
+	if err != nil || !reflect.DeepEqual(got, []string{"delta", "epsilon", "gamma", "zeta"}) {
 		t.Fatalf("discover = %v, %v", got, err)
 	}
 }
