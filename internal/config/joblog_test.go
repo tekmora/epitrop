@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -96,6 +97,24 @@ func TestLoadJobLogPathsUnique(t *testing.T) {
 	t.Run("same_cleaned_path_refused", func(t *testing.T) {
 		assertDuplicateJobLogPathsRefused(t)
 	})
+	t.Run("relative_and_absolute_same_file_refused", func(t *testing.T) {
+		assertRelativeAndAbsoluteJobLogPaths(t)
+	})
+}
+
+func assertRelativeAndAbsoluteJobLogPaths(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if _, err := Load(testContext(t), writeConfig(t, twoJobsLogPathConfig("a.log", "b.log"))); err != nil {
+		t.Fatalf("Load(relative distinct) = %v, want nil", err)
+	}
+	absA := filepath.Join(dir, "a.log")
+	_, err := Load(testContext(t), writeConfig(t, twoJobsLogPathConfig("a.log", absA)))
+	want := fmt.Sprintf("config: jobs/1/log_path: %q names the same file as jobs/0 (%q)", absA, "a.log")
+	if err == nil || err.Error() != want {
+		t.Fatalf("Load(relative vs absolute) = %v, want %q", err, want)
+	}
 }
 
 func assertDistinctJobLogPathsLoad(t *testing.T) {

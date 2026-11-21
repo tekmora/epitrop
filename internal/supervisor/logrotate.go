@@ -164,8 +164,13 @@ func (l *rotatingLog) rotateLocked() error {
 			return fmt.Errorf("job-shim: close log %s: %w", l.path, err)
 		}
 	}
-	for step := 0; step < l.keepFiles; step++ {
-		idx := l.keepFiles - step
+	gap, err := firstMissingBackup(l.path, l.keepFiles)
+	if err != nil {
+		return err
+	}
+	shiftCount := gap - 1
+	for step := 0; step < shiftCount; step++ {
+		idx := shiftCount - step
 		if err := renameIfExists(rotatedLogPath(l.path, idx), rotatedLogPath(l.path, idx+1)); err != nil {
 			return fmt.Errorf("job-shim: rotate log %s: %w", l.path, err)
 		}
@@ -177,6 +182,19 @@ func (l *rotatingLog) rotateLocked() error {
 		return fmt.Errorf("job-shim: remove oldest log %s: %w", l.path, err)
 	}
 	return l.reopen()
+}
+
+func firstMissingBackup(path string, keepFiles int) (int, error) {
+	for step := 0; step < keepFiles; step++ {
+		idx := step + 1
+		if _, err := os.Lstat(rotatedLogPath(path, idx)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return idx, nil
+			}
+			return 0, fmt.Errorf("job-shim: stat rotated log %s: %w", path, err)
+		}
+	}
+	return keepFiles + 1, nil
 }
 
 func rotatedLogPath(path string, index int) string {

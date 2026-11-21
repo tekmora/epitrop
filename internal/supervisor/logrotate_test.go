@@ -182,6 +182,9 @@ func TestLogRotationDropsOldestAndPreservesAcceptedOnFailure(t *testing.T) {
 	t.Run("open_and_rename_failures_wrap_error_and_keep_accepted_lines", func(t *testing.T) {
 		assertFailuresPreserveAcceptedLines(t)
 	})
+	t.Run("read_only_dir_keeps_accepted_lines", func(t *testing.T) {
+		assertReadOnlyDirKeepsAccepted(t)
+	})
 }
 
 func TestLogRotationOpenPrunesStaleBackups(t *testing.T) {
@@ -260,7 +263,7 @@ func assertOpenPrunesAtMaxKeepBound(t *testing.T) {
 func assertOpenFailsWhenStaleRemoveFails(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
-		return
+		t.Skip("skipping read-only directory test: Windows lacks POSIX directory modes and root (euid 0) ignores them")
 	}
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "ro-open.log")
@@ -337,7 +340,6 @@ func assertFailuresPreserveAcceptedLines(t *testing.T) {
 		t.Fatal("openRotatingLog(path under file) = nil, want wrapped error")
 	}
 	assertBlockedRenameKeepsAccepted(t)
-	assertReadOnlyDirKeepsAccepted(t)
 }
 
 func assertBlockedRenameKeepsAccepted(t *testing.T) {
@@ -353,9 +355,8 @@ func assertBlockedRenameKeepsAccepted(t *testing.T) {
 	accepted := "accepted-line-one\naccepted-line-two\n"
 	mustWriteLine(t, log, "1", "accepted-line-one\n")
 	mustWriteLine(t, log, "2", "accepted-line-two\n")
-	if err := os.WriteFile(logPath+".2", []byte("older-accepted-line\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(.2) = %v, want nil", err)
-	}
+	mustWriteRawFile(t, logPath+".1", "recent-accepted-line\n")
+	mustWriteRawFile(t, logPath+".2", "older-accepted-line\n")
 	if err := os.MkdirAll(filepath.Join(logPath+".3", "nonempty"), 0o700); err != nil {
 		t.Fatalf("MkdirAll(blocker dir) = %v, want nil", err)
 	}
@@ -364,18 +365,15 @@ func assertBlockedRenameKeepsAccepted(t *testing.T) {
 	if err == nil || !errors.As(err, &linkErr) {
 		t.Fatalf("writeLine(blocked rename) = %v, want wrapped *os.LinkError", err)
 	}
-	if got := string(mustReadLogFile(t, logPath)); got != accepted {
-		t.Fatalf("active log after failed rename = %q, want %q preserved", got, accepted)
-	}
-	if got := string(mustReadLogFile(t, logPath+".2")); got != "older-accepted-line\n" {
-		t.Fatalf("rotated .2 after failed rename = %q, want older line preserved", got)
-	}
+	assertFileString(t, logPath, accepted)
+	assertFileString(t, logPath+".1", "recent-accepted-line\n")
+	assertFileString(t, logPath+".2", "older-accepted-line\n")
 }
 
 func assertReadOnlyDirKeepsAccepted(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
-		return
+		t.Skip("skipping read-only directory test: Windows lacks POSIX directory modes and root (euid 0) ignores them")
 	}
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "ro.log")
