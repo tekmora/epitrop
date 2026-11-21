@@ -34,10 +34,23 @@ func assertJobLogMaxBytesSchemaShape(t *testing.T) {
 	if !ok || len(branches) != 2 {
 		t.Fatalf("max_bytes anyOf = %#v, want 2 branches", maxNode["anyOf"])
 	}
-	zeroBranch, okZero := branches[0].(map[string]any)
-	rangeBranch, okRange := branches[1].(map[string]any)
-	if !okZero || !okRange || zeroBranch["const"] != float64(0) || rangeBranch["minimum"] != float64(MinLogMaxBytes) || rangeBranch["maximum"] != float64(MaxLogMaxBytes) {
-		t.Fatalf("max_bytes anyOf branches = %#v, want const 0 and %d..%d", branches, MinLogMaxBytes, MaxLogMaxBytes)
+	assertJobLogZeroBranch(t, branches[0])
+	assertJobLogRangeBranch(t, branches[1])
+}
+
+func assertJobLogZeroBranch(t *testing.T, raw any) {
+	t.Helper()
+	branch, ok := raw.(map[string]any)
+	if !ok || branch["const"] != float64(0) {
+		t.Fatalf("max_bytes anyOf branch 0 = %#v, want const 0", raw)
+	}
+}
+
+func assertJobLogRangeBranch(t *testing.T, raw any) {
+	t.Helper()
+	branch, ok := raw.(map[string]any)
+	if !ok || branch["minimum"] != float64(MinLogMaxBytes) || branch["maximum"] != float64(MaxLogMaxBytes) {
+		t.Fatalf("max_bytes anyOf branch 1 = %#v, want %d..%d", raw, MinLogMaxBytes, MaxLogMaxBytes)
 	}
 }
 
