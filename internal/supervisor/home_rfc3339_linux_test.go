@@ -122,39 +122,52 @@ func TestPrepareHomeRefusesTheConsumerAgyLogin(t *testing.T) {
 	const agyLogin = ".gemini/antigravity-cli/antigravity-oauth-token"
 	until := time.Now().Truncate(time.Second).Add(time.Hour)
 	valid := until.Add(homeTokenMargin + time.Minute).Format(time.RFC3339)
+	spellings := []string{
+		agyLogin,
+		"./.gemini/antigravity-cli/antigravity-oauth-token",
+		".gemini//antigravity-cli/antigravity-oauth-token",
+		".gemini/../.gemini/antigravity-cli/antigravity-oauth-token",
+		".gemini/antigravity-cli/antigravity-oauth-token/",
+	}
+	for _, file := range spellings {
+		checkPrepareHomeRefusesAgyLogin(t, file, agyLogin, until, valid)
+	}
+	missing := homeTestSandbox(t, until.Add(homeTokenMargin+time.Minute).Unix())
+	missing.Home.Env = "HOME"
+	missing.Home.Bind = []config.SandboxHomeBind{{File: agyLogin, ExpiresRFC3339: "token.expiry"}}
+	if err := prepareHome(missing, until); err == nil || !strings.Contains(err.Error(), "#368") {
+		t.Errorf("prepareHome(missing consumer agy login) = %v, want #368 before reading source", err)
+	}
+}
+
+func checkPrepareHomeRefusesAgyLogin(t *testing.T, bindFile, sourceRel string, until time.Time, valid string) {
+	t.Helper()
 	sandbox := homeTestSandbox(t, until.Add(homeTokenMargin+time.Minute).Unix())
-	sourceFile := filepath.Join(sandbox.Home.Source, filepath.FromSlash(agyLogin))
+	sourceFile := filepath.Join(sandbox.Home.Source, filepath.FromSlash(sourceRel))
 	if err := os.MkdirAll(filepath.Dir(sourceFile), 0o700); err != nil {
-		t.Fatalf("MkdirAll() = %v, want nil", err)
+		t.Fatalf("%s: MkdirAll() = %v, want nil", bindFile, err)
 	}
 	writeRT03File(t, sourceFile, homeTestAgyToken(valid))
 	sandbox.Home.Env = "HOME"
-	sandbox.Home.Bind = []config.SandboxHomeBind{{File: agyLogin, ExpiresRFC3339: "token.expiry"}}
+	sandbox.Home.Bind = []config.SandboxHomeBind{{File: bindFile, ExpiresRFC3339: "token.expiry"}}
 
-	err := prepareHome(sandbox, until)
-	if err == nil || !strings.Contains(err.Error(), "#368") {
-		t.Fatalf("prepareHome(consumer agy login) = %v, want an error holding #368", err)
+	if err := prepareHome(sandbox, until); err == nil || !strings.Contains(err.Error(), "#368") {
+		t.Errorf("prepareHome(%q) = %v, want an error holding #368", bindFile, err)
 	}
 	if _, statErr := os.Lstat(filepath.Join(homeDir(sandbox), ".gemini")); !errors.Is(statErr, os.ErrNotExist) {
-		t.Errorf("Lstat(.gemini) = %v, want ErrNotExist", statErr)
+		t.Errorf("%s: Lstat(.gemini) = %v, want ErrNotExist", bindFile, statErr)
 	}
 	walkErr := filepath.WalkDir(homeDir(sandbox), func(path string, _ os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if filepath.Base(path) == "antigravity-oauth-token" {
-			t.Errorf("found %s in prepared home after refusal", path)
+			t.Errorf("%s: found %s in prepared home after refusal", bindFile, path)
 		}
 		return nil
 	})
 	if walkErr != nil {
-		t.Fatalf("WalkDir(homeDir) = %v, want nil", walkErr)
-	}
-	if err = os.Remove(sourceFile); err != nil {
-		t.Fatalf("Remove(source login) = %v, want nil", err)
-	}
-	if err = prepareHome(sandbox, until); err == nil || !strings.Contains(err.Error(), "#368") {
-		t.Errorf("prepareHome(missing consumer agy login) = %v, want #368 before reading source", err)
+		t.Fatalf("%s: WalkDir(homeDir) = %v, want nil", bindFile, walkErr)
 	}
 }
 

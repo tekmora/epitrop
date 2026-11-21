@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -43,10 +44,10 @@ var homeCredentialFiles = []string{".credentials.json"}
 var refusedHomeLogins = []string{".gemini/antigravity-cli/antigravity-oauth-token"}
 
 // RefusedHomeLogin returns an error when file is a client login a slot home refuses to bind,
-// matched verbatim as written, and nil otherwise. Both the configuration loader and the job
-// shim call it.
+// matched after path.Clean, so every spelling that names the same file is refused, and nil
+// otherwise. Both the configuration loader and the job shim call it.
 func RefusedHomeLogin(file string) error {
-	if slices.Contains(refusedHomeLogins, file) {
+	if slices.Contains(refusedHomeLogins, path.Clean(file)) {
 		return fmt.Errorf("home: file %q is the consumer Antigravity login, which a slot refuses (tekmora/epitrop#368); agy returns with business authentication (#367)", file)
 	}
 	return nil

@@ -107,13 +107,13 @@ func TestValidateSandboxHomeLoginRules(t *testing.T) {
 		{"agy login folder", func(s *SandboxConfig) { s.Home.Bind[0].File = ".gemini/antigravity-cli" }, "nor a known login file"},
 		{"agy login file with a trailing slash", func(s *SandboxConfig) {
 			s.Home.Bind[0].File = ".gemini/antigravity-cli/antigravity-oauth-token/"
-		}, "nor a known login file"},
+		}, "#368"},
 		{"agy login file with a leading dot folder", func(s *SandboxConfig) {
 			s.Home.Bind[0].File = "./.gemini/antigravity-cli/antigravity-oauth-token"
-		}, "nor a known login file"},
+		}, "#368"},
 		{"agy login file climbing out", func(s *SandboxConfig) {
 			s.Home.Bind[0].File = ".gemini/../.gemini/antigravity-cli/antigravity-oauth-token"
-		}, "nor a known login file"},
+		}, "#368"},
 		{"another file in the agy folder", func(s *SandboxConfig) {
 			s.Home.Bind[0].File = ".gemini/antigravity-cli/settings.json"
 		}, "nor a known login file"},
@@ -171,17 +171,28 @@ func checkSandboxHomeRule(t *testing.T, name string, edit func(*SandboxConfig), 
 }
 
 func TestRefusedHomeLogin(t *testing.T) {
-	err := RefusedHomeLogin(".gemini/antigravity-cli/antigravity-oauth-token")
-	if err == nil || !strings.Contains(err.Error(), "consumer Antigravity login") || !strings.Contains(err.Error(), "#368") {
-		t.Fatalf("RefusedHomeLogin(agy login) = %v, want consumer Antigravity login refusal with #368", err)
+	refused := []string{
+		".gemini/antigravity-cli/antigravity-oauth-token",
+		"./.gemini/antigravity-cli/antigravity-oauth-token",
+		".gemini//antigravity-cli/antigravity-oauth-token",
+		".gemini/../.gemini/antigravity-cli/antigravity-oauth-token",
+		".gemini/antigravity-cli/antigravity-oauth-token/",
 	}
-	for _, file := range []string{
+	for _, file := range refused {
+		err := RefusedHomeLogin(file)
+		if err == nil || !strings.Contains(err.Error(), "consumer Antigravity login") || !strings.Contains(err.Error(), "#368") || !strings.Contains(err.Error(), fmt.Sprintf("%q", file)) {
+			t.Errorf("RefusedHomeLogin(%q) = %v, want consumer Antigravity login refusal with #368 naming %q", file, err, file)
+		}
+	}
+	allowed := []string{
 		".credentials.json",
 		"auth.json",
 		".gemini/antigravity-cli/settings.json",
-		"./.gemini/antigravity-cli/antigravity-oauth-token",
+		".gemini/antigravity-cli/antigravity-oauth-token/x",
+		"../.gemini/antigravity-cli/antigravity-oauth-token",
 		"",
-	} {
+	}
+	for _, file := range allowed {
 		if err := RefusedHomeLogin(file); err != nil {
 			t.Errorf("RefusedHomeLogin(%q) = %v, want nil", file, err)
 		}
