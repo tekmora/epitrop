@@ -66,7 +66,7 @@ jobs:
       # max_runtime_seconds. A bind file is one plain name or the one measured login file
       # (.credentials.json for Claude Code, with env: CLAUDE_CONFIG_DIR and
       # expires_ms: claudeAiOauth.expiresAt); the consumer Antigravity CLI login is refused
-      # (#368).
+      # (#368); Antigravity returns with business authentication (#367).
       #   home:
       #     source: /var/tmp/slot-home
       #     env: CODEX_HOME

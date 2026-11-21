@@ -111,6 +111,9 @@ func TestValidateSandboxHomeLoginRules(t *testing.T) {
 		{"agy login file with a leading dot folder", func(s *SandboxConfig) {
 			s.Home.Bind[0].File = "./.gemini/antigravity-cli/antigravity-oauth-token"
 		}, "#368"},
+		{"agy login file with a doubled slash", func(s *SandboxConfig) {
+			s.Home.Bind[0].File = ".gemini//antigravity-cli/antigravity-oauth-token"
+		}, "#368"},
 		{"agy login file climbing out", func(s *SandboxConfig) {
 			s.Home.Bind[0].File = ".gemini/../.gemini/antigravity-cli/antigravity-oauth-token"
 		}, "#368"},
