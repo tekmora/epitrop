@@ -92,6 +92,53 @@ func TestDiscover(t *testing.T) {
 	}
 }
 
+func checkDiscoverResult(t *testing.T, got []string, err error, want, wantErr []string) {
+	t.Helper()
+	if len(wantErr) > 0 {
+		if err == nil {
+			t.Fatalf("got %v, want error containing %v", got, wantErr)
+		}
+		for _, text := range wantErr {
+			if !strings.Contains(err.Error(), text) {
+				t.Fatalf("error = %v, want %q", err, text)
+			}
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestDiscoverPlusBuild(t *testing.T) {
+	otherOSFile := "x_" + excludedOS() + ".go"
+	cases := []struct {
+		name    string
+		files   map[string]string
+		want    []string
+		wantErr []string
+	}{
+		{"single", map[string]string{"p.go": "// +build alpha\n\npackage a\n"}, nil, []string{"p.go", `"// +build alpha"`, "//go:build"}},
+		{"multiple", map[string]string{"two.go": "// +build alpha\n// +build beta\n\npackage a\n"}, nil, []string{"two.go", `"// +build alpha"`, "//go:build"}},
+		{"negated", map[string]string{"neg.go": "// +build !alpha\n\npackage a\n"}, nil, []string{"neg.go", `"// +build !alpha"`, "//go:build"}},
+		{"os excluded", map[string]string{otherOSFile: "// +build alpha\n\npackage a\n"}, nil, []string{otherOSFile, `"// +build alpha"`, "//go:build"}},
+		{"gobuild before plusbuild", map[string]string{"a.go": "//go:build alpha\n// +build alpha\n\npackage a\n"}, []string{"alpha"}, nil},
+		{"plusbuild before gobuild", map[string]string{"a.go": "// +build alpha\n//go:build alpha\n\npackage a\n"}, []string{"alpha"}, nil},
+		{"after package", map[string]string{"a.go": "package a\n\n// +build alpha\n"}, []string{}, nil},
+		{"plain comment", map[string]string{"a.go": "// plain comment\n\npackage a\n"}, []string{}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := fixture(t, tc.files)
+			got, err := discover(dir)
+			checkDiscoverResult(t, got, err, tc.want, tc.wantErr)
+		})
+	}
+}
+
 func TestNonGitDirectory(t *testing.T) {
 	dir := t.TempDir()
 	_, err := discover(dir)

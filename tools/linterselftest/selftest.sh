@@ -575,6 +575,20 @@ if [[ "$tool" == "gosec" ]]; then
   rm "$plant/real/o.go"
   fixture_git add -A
 
+  # T: a legacy +build constraint with no //go:build line must be refused.
+  printf '%s\n' '// +build planttag' '' 'package real' > "$plant/real/t.go"
+  fixture_git add -- real/t.go
+  plusbuild_rc=0
+  run_make_gosec "$plant/plusbuild.log" || plusbuild_rc="$?"
+  if [[ "$plusbuild_rc" -ne 2 ]] || ! grep -qF 'real/t.go' "$plant/plusbuild.log" ||
+    ! grep -qF '//go:build' "$plant/plusbuild.log" || grep -q '^Results:' "$plant/plusbuild.log"; then
+    echo "$tool: T legacy +build constraint not refused (exit $plusbuild_rc)" >&2
+    cat "$plant/plusbuild.log" >&2
+    exit 1
+  fi
+  rm "$plant/real/t.go"
+  fixture_git add -A
+
   # I: folder name ending in a dot -> go list must fail before gosec runs.
   mkdir "$plant/trail..."
   printf '%s\n' 'package trail' > "$plant/trail.../i.go"
@@ -660,7 +674,7 @@ if [[ "$tool" == "gosec" ]]; then
   rm "$plant/testdata/s.go"
   fixture_git add -A
 
-  echo "$tool: ${#expected[@]} planted findings reported (exit 1), G module root and H mid-name dots scanned, nested worktrees and dot folders excluded, negative control reported excluded findings (exit 1), I trailing-dot folder rejected, J-N found, controls miss their plants, O refused, P and Q isolated passes detected, clean tree passed (exit 0), R inherited GOFLAGS tags refused (plain, single- and double-quoted), S testdata constraint skipped"
+  echo "$tool: ${#expected[@]} planted findings reported (exit 1), G module root and H mid-name dots scanned, nested worktrees and dot folders excluded, negative control reported excluded findings (exit 1), I trailing-dot folder rejected, J-N found, controls miss their plants, O refused, T legacy +build constraint refused, P and Q isolated passes detected, clean tree passed (exit 0), R inherited GOFLAGS tags refused (plain, single- and double-quoted), S testdata constraint skipped"
 else
   echo "$tool: ${#expected[@]} planted findings reported, exit 1 as required"
 fi
