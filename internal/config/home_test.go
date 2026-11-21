@@ -97,20 +97,26 @@ func TestValidateSandboxHomeLoginRules(t *testing.T) {
 		{"login file", func(s *SandboxConfig) { s.Home.Bind[0].File = ".credentials.json" }, ""},
 		{"login file as a copy", func(s *SandboxConfig) { s.Home.Copy[0].File = ".credentials.json" }, "is not one plain path element"},
 		{"login file below a folder", func(s *SandboxConfig) { s.Home.Bind[0].File = "sub/.credentials.json" }, "nor a known login file"},
-		{"agy login file", func(s *SandboxConfig) { s.Home.Bind[0].File = ".gemini/antigravity-cli/antigravity-oauth-token" }, ""},
+		{"agy login file", func(s *SandboxConfig) { s.Home.Bind[0].File = ".gemini/antigravity-cli/antigravity-oauth-token" }, "#368"},
+		{"agy login file without expiry", func(s *SandboxConfig) {
+			s.Home.Bind[0] = SandboxHomeBind{File: ".gemini/antigravity-cli/antigravity-oauth-token"}
+		}, "#368"},
 		{"agy login file as a copy", func(s *SandboxConfig) {
 			s.Home.Copy[0].File = ".gemini/antigravity-cli/antigravity-oauth-token"
 		}, "is not one plain path element"},
 		{"agy login folder", func(s *SandboxConfig) { s.Home.Bind[0].File = ".gemini/antigravity-cli" }, "nor a known login file"},
 		{"agy login file with a trailing slash", func(s *SandboxConfig) {
 			s.Home.Bind[0].File = ".gemini/antigravity-cli/antigravity-oauth-token/"
-		}, "nor a known login file"},
+		}, "#368"},
 		{"agy login file with a leading dot folder", func(s *SandboxConfig) {
 			s.Home.Bind[0].File = "./.gemini/antigravity-cli/antigravity-oauth-token"
-		}, "nor a known login file"},
+		}, "#368"},
+		{"agy login file with a doubled slash", func(s *SandboxConfig) {
+			s.Home.Bind[0].File = ".gemini//antigravity-cli/antigravity-oauth-token"
+		}, "#368"},
 		{"agy login file climbing out", func(s *SandboxConfig) {
 			s.Home.Bind[0].File = ".gemini/../.gemini/antigravity-cli/antigravity-oauth-token"
-		}, "nor a known login file"},
+		}, "#368"},
 		{"another file in the agy folder", func(s *SandboxConfig) {
 			s.Home.Bind[0].File = ".gemini/antigravity-cli/settings.json"
 		}, "nor a known login file"},
@@ -135,6 +141,9 @@ func TestValidateSandboxHomeRFC3339Rules(t *testing.T) {
 		}, "home.bind/0: names more than one of"},
 		{"agy login with its RFC 3339 expiry", func(s *SandboxConfig) {
 			s.Home.Bind[0] = SandboxHomeBind{File: ".gemini/antigravity-cli/antigravity-oauth-token", ExpiresRFC3339: "token.expiry"}
+		}, "#368"},
+		{"bind with an RFC 3339 expiry", func(s *SandboxConfig) {
+			s.Home.Bind[0] = SandboxHomeBind{File: "auth.json", ExpiresRFC3339: "token.expiry"}
 		}, ""},
 		{"RFC 3339 expiry path of eight names", func(s *SandboxConfig) {
 			s.Home.Bind[0].JWT, s.Home.Bind[0].ExpiresRFC3339 = "", "a.b.c.d.e.f.g.h"
@@ -161,6 +170,35 @@ func checkSandboxHomeRule(t *testing.T, name string, edit func(*SandboxConfig), 
 	}
 	if want != "" && (err == nil || !strings.Contains(err.Error(), want)) {
 		t.Errorf("%s: ValidateSandbox() = %v, want an error holding %q", name, err, want)
+	}
+}
+
+func TestRefusedHomeLogin(t *testing.T) {
+	refused := []string{
+		".gemini/antigravity-cli/antigravity-oauth-token",
+		"./.gemini/antigravity-cli/antigravity-oauth-token",
+		".gemini//antigravity-cli/antigravity-oauth-token",
+		".gemini/../.gemini/antigravity-cli/antigravity-oauth-token",
+		".gemini/antigravity-cli/antigravity-oauth-token/",
+	}
+	for _, file := range refused {
+		err := RefusedHomeLogin(file)
+		if err == nil || !strings.Contains(err.Error(), "consumer Antigravity login") || !strings.Contains(err.Error(), "#368") || !strings.Contains(err.Error(), fmt.Sprintf("%q", file)) {
+			t.Errorf("RefusedHomeLogin(%q) = %v, want consumer Antigravity login refusal with #368 naming %q", file, err, file)
+		}
+	}
+	allowed := []string{
+		".credentials.json",
+		"auth.json",
+		".gemini/antigravity-cli/settings.json",
+		".gemini/antigravity-cli/antigravity-oauth-token/x",
+		"../.gemini/antigravity-cli/antigravity-oauth-token",
+		"",
+	}
+	for _, file := range allowed {
+		if err := RefusedHomeLogin(file); err != nil {
+			t.Errorf("RefusedHomeLogin(%q) = %v, want nil", file, err)
+		}
 	}
 }
 
