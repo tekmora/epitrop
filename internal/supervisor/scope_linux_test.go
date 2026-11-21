@@ -82,7 +82,7 @@ func runFakeScopeCommand(args []string) int {
 	command := args[sep+1:]
 	failed := make(chan error, 1)
 	go func() {
-		// #nosec G204 -- test stand-in for systemd-run; the argv comes from the sandbox builder.
+		// #nosec G204 G702 -- test stand-in for systemd-run; the argv comes from the sandbox builder.
 		failed <- syscall.Exec(command[0], command, os.Environ())
 	}()
 	fmt.Fprintf(os.Stderr, "fake scope command: exec %s: %v\n", command[0], <-failed)
@@ -100,7 +100,7 @@ func leaveFakeStraggler(pidFile string) error {
 	if err := straggler.Start(); err != nil {
 		return err
 	}
-	return os.WriteFile(pidFile, []byte(strconv.Itoa(straggler.Process.Pid)), 0o600)
+	return os.WriteFile(pidFile, []byte(strconv.Itoa(straggler.Process.Pid)), 0o600) // #nosec G703 -- pidFile is the test-provided straggler marker
 }
 
 // plantFakeScopeCommand puts the test binary first on PATH under the name systemd-run.
@@ -458,7 +458,7 @@ func pollProcessDuringExec(t *testing.T, pid int, status string) (int, bool) {
 		if gone || goneErr != nil {
 			t.Fatalf("processGone(child that only execs) = %v, %v on poll %d, want false: it never exited", gone, goneErr, i)
 		}
-		if body, readErr := os.ReadFile(status); readErr == nil && strings.HasPrefix(procStatusField(string(body), "State:"), "Z") {
+		if body, readErr := os.ReadFile(status); readErr == nil && strings.HasPrefix(procStatusField(string(body), "State:"), "Z") { // #nosec G304 -- status is the test child process proc status file
 			sawZombie++
 		}
 		if execed.IsZero() && strings.HasSuffix(processImage(pid), "sleep") {
@@ -568,7 +568,7 @@ func checkSandboxedJobKilledRecord(t *testing.T, sup *Supervisor, jobName string
 func checkSandboxedJobStragglerKilled(t *testing.T, sup *Supervisor, job config.JobConfig, stragglerFile string, beat string) {
 	t.Helper()
 	// The whole process group dies, not only the process the parent-death signal reaches.
-	straggler, err := os.ReadFile(stragglerFile)
+	straggler, err := os.ReadFile(stragglerFile) // #nosec G304 -- stragglerFile is the temporary test child marker
 	if err != nil {
 		t.Fatalf("ReadFile(straggler pid) = %v, want the pid the scope command left behind", err)
 	}

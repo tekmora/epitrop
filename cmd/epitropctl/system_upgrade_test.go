@@ -30,23 +30,28 @@ func fixtureSourceDir(t *testing.T) string {
 
 func copyUpgradeDir(t *testing.T, src, dst string) {
 	t.Helper()
-	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
+	root, err := os.OpenRoot(src)
+	if err != nil {
+		t.Fatalf("open fixture source %s: %v", src, err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close fixture source %s: %v", src, err)
+		}
+	}()
+	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
+		target := filepath.Join(dst, filepath.FromSlash(path))
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o750)
 		}
-		data, err := os.ReadFile(path)
+		data, err := root.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, 0o600)
+		return os.WriteFile(target, data, 0o600) // #nosec G703 -- target is within the temporary upgrade fixture destination
 	})
 	if err != nil {
 		t.Fatalf("copy directory from %s to %s: %v", src, dst, err)
@@ -326,6 +331,7 @@ func checkUpgradeNegativeTamperedRecord(t *testing.T, bin string) {
 	t.Helper()
 	fix := prepareUpgradeFixture(t)
 	event2Path := filepath.Join(fix.eventLogDir, "events", "00000000000000000002.json")
+	// #nosec G304 -- event2Path is in the prepared upgrade fixture
 	data, err := os.ReadFile(event2Path)
 	if err != nil {
 		t.Fatalf("ReadFile(%s) = %v", event2Path, err)
@@ -334,7 +340,7 @@ func checkUpgradeNegativeTamperedRecord(t *testing.T, bin string) {
 	if tampered == string(data) {
 		t.Fatalf("record 2 holds no \"status\":\"ready\" to change: %s", data)
 	}
-	if err := os.WriteFile(event2Path, []byte(tampered), 0o600); err != nil {
+	if err := os.WriteFile(event2Path, []byte(tampered), 0o600); err != nil { // #nosec G703 -- event2Path is in the prepared upgrade fixture
 		t.Fatalf("WriteFile(%s) = %v", event2Path, err)
 	}
 
@@ -349,6 +355,7 @@ func checkUpgradeNegativeSeenVersion(t *testing.T, bin string) {
 	t.Helper()
 	fix := prepareUpgradeFixture(t)
 	seenPath := filepath.Join(fix.watchDir, "release-watch-seen.json")
+	// #nosec G304 -- seenPath is in the prepared upgrade fixture
 	data, err := os.ReadFile(seenPath)
 	if err != nil {
 		t.Fatalf("ReadFile(%s) = %v", seenPath, err)
@@ -357,7 +364,7 @@ func checkUpgradeNegativeSeenVersion(t *testing.T, bin string) {
 	if v2Seen == string(data) {
 		t.Fatalf("seen file holds no \"version\": 1 to change: %s", data)
 	}
-	if err := os.WriteFile(seenPath, []byte(v2Seen), 0o600); err != nil {
+	if err := os.WriteFile(seenPath, []byte(v2Seen), 0o600); err != nil { // #nosec G703 -- seenPath is in the prepared upgrade fixture
 		t.Fatalf("WriteFile(%s) = %v", seenPath, err)
 	}
 

@@ -24,7 +24,7 @@ const slotTestUnit = "epitrop:unit-1"
 func slotGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	full := append([]string{"-c", "user.name=slot test", "-c", "user.email=slot@example.invalid", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"}, args...)
-	cmd := exec.CommandContext(testContext(t), "git", full...)
+	cmd := exec.CommandContext(testContext(t), "git", full...) // #nosec G204 -- fixture callers supply git argv in their temporary repository
 	cmd.Dir = dir
 	env := make([]string, 0, len(os.Environ())+3)
 	for _, kv := range os.Environ() {
@@ -264,7 +264,7 @@ func TestCLISlotReachesItsCommandSubprocess(t *testing.T) {
 	bin := buildCLI(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, bin, "slot").CombinedOutput()
+	out, err := exec.CommandContext(ctx, bin, "slot").CombinedOutput() // #nosec G204 -- bin is the CLI built by the test
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
 		t.Fatalf("epitropctl slot = %v, want exit 1\n%s", err, out)

@@ -105,7 +105,7 @@ func TestReadSnapshotFileRejectsUnsupportedSchemaVersion(t *testing.T) {
 // one byte over maxSnapshotReadBytes must be rejected outright.
 func TestReadSnapshotFile_Boundary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "big.json")
-	f, err := os.Create(path)
+	f, err := os.Create(path) // #nosec G304 -- path is big.json under t.TempDir
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}

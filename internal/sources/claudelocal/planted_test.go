@@ -43,7 +43,7 @@ func TestFetchMatchesThePlantedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal() = %v", err)
 	}
-	want, err := os.ReadFile(plantedSnapshot)
+	want, err := os.ReadFile(plantedSnapshot) // #nosec G304 -- plantedSnapshot is the fixed catalog testdata fixture
 	if err != nil {
 		t.Fatalf("read planted snapshot: %v", err)
 	}

@@ -5,6 +5,7 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"math"
 	"os/exec"
 	"testing"
 
@@ -148,7 +149,10 @@ func startWaitingShim(t *testing.T, sup *Supervisor, name string) *exec.Cmd {
 
 func waitShimLockOpen(t *testing.T, fd int, pid int) {
 	t.Helper()
-	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	if fd < 0 || fd > math.MaxInt32 {
+		t.Fatalf("invalid poll descriptor %d", fd)
+	}
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}} // #nosec G115 -- fd is checked against zero and MaxInt32 above
 	if n, err := unix.Poll(fds, 15000); err != nil || n != 1 || fds[0].Revents&unix.POLLIN == 0 {
 		t.Fatalf("shim lock open: poll = %d, %v, events %x", n, err, fds[0].Revents)
 	}

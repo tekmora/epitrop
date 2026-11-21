@@ -122,7 +122,7 @@ func checkHomeContents(t *testing.T, dir string) {
 	if !slices.Equal(names, []string{"auth.json", "config.toml"}) {
 		t.Fatalf("home holds %q, want the copy and the bind's placeholder alone", names)
 	}
-	if body, err := os.ReadFile(filepath.Join(dir, "config.toml")); err != nil || string(body) != homeTestConfig {
+	if body, err := os.ReadFile(filepath.Join(dir, "config.toml")); err != nil || string(body) != homeTestConfig { // #nosec G304 -- dir is the test sandbox home
 		t.Errorf("config.toml = %q, %v, want the source's", body, err)
 	}
 	if info, err := os.Stat(filepath.Join(dir, "auth.json")); err != nil || info.Size() != 0 || info.Mode().Perm() != 0o600 {
@@ -285,7 +285,7 @@ if rm -f "$CODEX_HOME/auth.json" 2>/dev/null && [ ! -e "$CODEX_HOME/auth.json" ]
 		t.Fatal("the job failed, want it to run and record what it could do")
 	}
 	read := func(name string) string {
-		body, err := os.ReadFile(filepath.Join(sandbox.Workspace, name))
+		body, err := os.ReadFile(filepath.Join(sandbox.Workspace, name)) // #nosec G304 -- name selects test output in the temporary sandbox workspace
 		if err != nil {
 			t.Fatalf("ReadFile(%s) = %v, want nil", name, err)
 		}

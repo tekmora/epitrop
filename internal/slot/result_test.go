@@ -223,7 +223,7 @@ func TestReadOpenedRefusesAFileThatIsNotTheOneLookedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lstat() = %v, want nil", err)
 	}
-	f, err := os.Open(opened)
+	f, err := os.Open(opened) // #nosec G304 -- opened is created by createLookedAndOpenedFiles in t.TempDir
 	if err != nil {
 		t.Fatalf("Open() = %v, want nil", err)
 	}

@@ -104,7 +104,7 @@ func TestGet_Boundary(t *testing.T) {
 // TestGetWithHeader covers the authenticated variant: the header reaches the
 // server and its value never reaches an error.
 func TestGetWithHeader(t *testing.T) {
-	const secret = "Bearer do-not-print-me"
+	const secret = "Bearer do-not-print-me" // #nosec G101 -- synthetic input verifies credential redaction
 
 	t.Run("header reaches the server", func(t *testing.T) {
 		var got string

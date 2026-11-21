@@ -429,7 +429,7 @@ func TestTheSameLogGivesTheSameOrder(t *testing.T) {
 	// frontier rankNodes receives to prove the comparator, not the input, decides ties.
 	for perm := 0; perm < 50; perm++ {
 		shuffled := slices.Clone(frontier)
-		rng := rand.New(rand.NewPCG(42, uint64(perm)))
+		rng := rand.New(rand.NewPCG(42, uint64(perm))) // #nosec G404 -- fixed seeds reproduce ranking permutations
 		rng.Shuffle(len(shuffled), func(i, j int) {
 			shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
 		})

@@ -51,7 +51,7 @@ func TestFetchPinnedStatusErrorRedactsPassword(t *testing.T) {
 }
 
 func TestInvalidPasswordEscapeRedacted(t *testing.T) {
-	source := schemaSource{ID: "source-id", URLTemplate: "https://user:p4ss%zzw0rd@example.invalid/x"}
+	source := schemaSource{ID: "source-id", URLTemplate: "https://user:p4ss%zzw0rd@example.invalid/x"} // #nosec G101 -- synthetic input verifies credential redaction
 	for name, check := range map[string]func() error{
 		"validate": func() error { return validateSourceURL(source) },
 		"fetch":    func() error { _, err := fetchPinned(context.Background(), source); return err },

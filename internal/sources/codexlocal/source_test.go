@@ -102,7 +102,7 @@ func assertCodexRecord(t *testing.T, rec catalog.Record) {
 
 func mustReadFixture(t *testing.T, path string) []byte {
 	t.Helper()
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(path) // #nosec G304 -- callers use fixed testdata fixture paths
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
@@ -315,7 +315,7 @@ func TestOpenRegularSessionFile_SizeCap(t *testing.T) {
 func testOpenRegularSessionFileExactCap(t *testing.T) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "exact.jsonl")
-	f, err := os.Create(path)
+	f, err := os.Create(path) // #nosec G304 -- path is constructed under t.TempDir
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -337,7 +337,7 @@ func testOpenRegularSessionFileExactCap(t *testing.T) {
 func testOpenRegularSessionFileOverCap(t *testing.T) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "over.jsonl")
-	f, err := os.Create(path)
+	f, err := os.Create(path) // #nosec G304 -- path is constructed under t.TempDir
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

@@ -165,7 +165,7 @@ func TestRunWritesTheSectionToANewFile(t *testing.T) {
 	if err := run([]string{"-changelog=" + changelog, "-version=v0.1.0", "-out=" + out}); err != nil {
 		t.Fatalf("run = %v, want nil", err)
 	}
-	got, err := os.ReadFile(out)
+	got, err := os.ReadFile(out) // #nosec G304 -- out is notes.md under t.TempDir
 	if err != nil {
 		t.Fatalf("ReadFile = %v", err)
 	}
@@ -177,7 +177,7 @@ func TestRunWritesTheSectionToANewFile(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "create notes file") {
 		t.Fatalf("run onto an existing file = %v, want a create error", err)
 	}
-	again, err := os.ReadFile(out)
+	again, err := os.ReadFile(out) // #nosec G304 -- out is notes.md under t.TempDir
 	if err != nil {
 		t.Fatalf("ReadFile after the refused run = %v", err)
 	}

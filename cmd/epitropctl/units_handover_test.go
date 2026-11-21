@@ -78,7 +78,7 @@ func checkHandoverRounds(t *testing.T, cfgPath string, answers string, resume st
 
 func checkHandoverResumeNote(t *testing.T, resume string) {
 	t.Helper()
-	note, err := os.ReadFile(resume)
+	note, err := os.ReadFile(resume) // #nosec G304 -- resume is the note path under t.TempDir
 	if err != nil || !strings.Contains(string(note), `- pending decision: "epitrop-name"`) || !strings.Contains(string(note), `"see the ledger"`) {
 		t.Fatalf("resume.md = %q, %v; want the pending decision and the unread note", note, err)
 	}

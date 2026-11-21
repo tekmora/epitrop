@@ -486,7 +486,7 @@ func TestJobLogHasLines(t *testing.T) {
 // and in order. Other lines may come between them: a coverage build of the helper process adds
 // its own warning line to the log.
 func jobLogHasLines(path string, want ...string) bool {
-	body, err := os.ReadFile(path) // #nosec G304 -- test-controlled path.
+	body, err := os.ReadFile(path) // #nosec G304 G703 -- callers pass job logs or missing log paths under t.TempDir
 	if err != nil {
 		return false
 	}

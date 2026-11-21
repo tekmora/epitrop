@@ -116,7 +116,7 @@ func TestSandboxedJobReadsOnlyItsOwnClientLogin(t *testing.T) {
 	if !runRT03Command(t, built) {
 		t.Fatal("the job failed, want it to run and record what it read")
 	}
-	reads, err := os.ReadFile(filepath.Join(workspace, "reads.txt"))
+	reads, err := os.ReadFile(filepath.Join(workspace, "reads.txt")) // #nosec G304 -- workspace is the temporary directory holding the test result
 	if err != nil {
 		t.Fatalf("ReadFile(reads.txt) = %v, want what the job read", err)
 	}
