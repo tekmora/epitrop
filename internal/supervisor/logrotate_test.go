@@ -230,29 +230,22 @@ func assertBlockedRenameKeepsAccepted(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "job.log")
-	log, err := openRotatingLog(logPath, config.JobLogRotation{MaxBytes: 40, KeepFiles: 2})
-	if err != nil {
-		t.Fatalf("openRotatingLog() = %v, want nil", err)
-	}
+	log := mustOpenRotatingLog(t, logPath, config.JobLogRotation{MaxBytes: 40, KeepFiles: 2})
 	defer func() {
 		if closeErr := log.Close(); closeErr != nil {
 			t.Errorf("Close() = %v, want nil", closeErr)
 		}
 	}()
 	accepted := "accepted-line-one\naccepted-line-two\n"
-	if err = log.writeLine([]byte("accepted-line-one\n")); err != nil {
-		t.Fatalf("writeLine(1) = %v, want nil", err)
-	}
-	if err = log.writeLine([]byte("accepted-line-two\n")); err != nil {
-		t.Fatalf("writeLine(2) = %v, want nil", err)
-	}
-	if err = os.WriteFile(logPath+".2", []byte("older-accepted-line\n"), 0o600); err != nil {
+	mustWriteLine(t, log, "1", "accepted-line-one\n")
+	mustWriteLine(t, log, "2", "accepted-line-two\n")
+	if err := os.WriteFile(logPath+".2", []byte("older-accepted-line\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(.2) = %v, want nil", err)
 	}
-	if err = os.MkdirAll(filepath.Join(logPath+".3", "nonempty"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(logPath+".3", "nonempty"), 0o700); err != nil {
 		t.Fatalf("MkdirAll(blocker dir) = %v, want nil", err)
 	}
-	err = log.writeLine([]byte("triggers-rotation-and-fails\n"))
+	err := log.writeLine([]byte("triggers-rotation-and-fails\n"))
 	var linkErr *os.LinkError
 	if err == nil || !errors.As(err, &linkErr) {
 		t.Fatalf("writeLine(blocked rename) = %v, want wrapped *os.LinkError", err)
@@ -272,14 +265,9 @@ func assertReadOnlyDirKeepsAccepted(t *testing.T) {
 	}
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "ro.log")
-	log, err := openRotatingLog(logPath, config.JobLogRotation{MaxBytes: 32, KeepFiles: 2})
-	if err != nil {
-		t.Fatalf("openRotatingLog() = %v, want nil", err)
-	}
-	if err = log.writeLine([]byte("kept-before-chmod\n")); err != nil {
-		t.Fatalf("writeLine(before chmod) = %v, want nil", err)
-	}
-	if err = os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- read-only directory simulates rename permission failure
+	log := mustOpenRotatingLog(t, logPath, config.JobLogRotation{MaxBytes: 32, KeepFiles: 2})
+	mustWriteLine(t, log, "before chmod", "kept-before-chmod\n")
+	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- read-only directory simulates rename permission failure
 		t.Fatalf("Chmod(0500) = %v, want nil", err)
 	}
 	t.Cleanup(func() {
@@ -287,13 +275,11 @@ func assertReadOnlyDirKeepsAccepted(t *testing.T) {
 			t.Errorf("Chmod(0700) = %v, want nil", chmodErr)
 		}
 	})
-	err = log.writeLine([]byte("second-line-rotates\n"))
+	err := log.writeLine([]byte("second-line-rotates\n"))
 	if err == nil || !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("writeLine(read-only dir) = %v, want wrapped permission error", err)
 	}
-	if closeErr := log.Close(); closeErr != nil {
-		t.Fatalf("Close() = %v, want nil", closeErr)
-	}
+	mustCloseRotatingLog(t, log)
 	if got := string(mustReadLogFile(t, logPath)); got != "kept-before-chmod\n" {
 		t.Fatalf("ro.log = %q, want accepted line preserved", got)
 	}
@@ -605,6 +591,29 @@ func listLogFiles(t *testing.T, dir, prefix string) []string {
 		}
 	}
 	return names
+}
+
+func mustOpenRotatingLog(t *testing.T, path string, rot config.JobLogRotation) *rotatingLog {
+	t.Helper()
+	log, err := openRotatingLog(path, rot)
+	if err != nil {
+		t.Fatalf("openRotatingLog() = %v, want nil", err)
+	}
+	return log
+}
+
+func mustWriteLine(t *testing.T, log *rotatingLog, label, line string) {
+	t.Helper()
+	if err := log.writeLine([]byte(line)); err != nil {
+		t.Fatalf("writeLine(%s) = %v, want nil", label, err)
+	}
+}
+
+func mustCloseRotatingLog(t *testing.T, log *rotatingLog) {
+	t.Helper()
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
 }
 
 func mustReadLogFile(t *testing.T, path string) []byte {
