@@ -5,10 +5,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -20,6 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
+
+	"github.com/tekmora/epitrop/internal/eventlog"
 	"github.com/tekmora/epitrop/internal/releasewatch"
 	"github.com/tekmora/epitrop/internal/units"
 )
@@ -31,10 +34,13 @@ const (
 	restartDoneUnitID    = "tekmora/epitrop#398"
 	restartBranch        = "feat/restart-399"
 	restartUnitNote      = "keep unit across supervisor restart"
+	restartKeySeedByte   = 7
 	restartPollCap       = 300
 	restartPollInterval  = 50 * time.Millisecond
 	restartPollBound     = 15 * time.Second
-	superviseRunBound    = 50 * time.Second
+	// restartSettleWindow is three supervisor poll intervals.
+	restartSettleWindow = 3 * time.Second
+	superviseRunBound   = 50 * time.Second
 )
 
 type restartFixture struct {
@@ -125,7 +131,7 @@ func newRestartFixture(t *testing.T) *restartFixture {
 	bin := buildCLI(t)
 	base := jobsTempDir(t)
 	keyPath := filepath.Join(base, "seed.hex")
-	seed := bytes.Repeat([]byte{7}, 32)
+	seed := bytes.Repeat([]byte{restartKeySeedByte}, ed25519.SeedSize)
 	if err := os.WriteFile(keyPath, []byte(hex.EncodeToString(seed)), 0o600); err != nil {
 		t.Fatalf("write signing key: %v", err)
 	}
@@ -262,36 +268,24 @@ func waitDaemonRunning(t *testing.T, bin, cfgPath string) (string, int, int) {
 	return "", 0, 0
 }
 
+func restartPubKeyHex() string {
+	priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{restartKeySeedByte}, ed25519.SeedSize))
+	return hex.EncodeToString(priv[ed25519.SeedSize:])
+}
+
+// countRestartEvents counts committed records of typ in eventLogDir up to verified HEAD,
+// ignoring any uncommitted tail record an interrupted append has not yet linked to HEAD.
 func countRestartEvents(t *testing.T, eventLogDir, typ string) int {
 	t.Helper()
-	eventsDir := filepath.Join(eventLogDir, "events")
-	root, err := os.OpenRoot(eventsDir)
-	if os.IsNotExist(err) {
-		return 0
-	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	records, err := eventlog.ReplayAfter(ctx, eventLogDir, restartPubKeyHex(), eventlog.Limits{Clock: clockwork.NewRealClock()}, 0)
 	if err != nil {
-		t.Fatalf("open events root %s: %v", eventsDir, err)
+		t.Fatalf("replay committed events in %s: %v", eventLogDir, err)
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			t.Errorf("close events root %s: %v", eventsDir, closeErr)
-		}
-	}()
-	entries, err := fs.ReadDir(root.FS(), ".")
-	if err != nil {
-		t.Fatalf("read events dir %s: %v", eventsDir, err)
-	}
-	needle := `"type":"` + typ + `"`
 	count := 0
-	for i := 0; i < len(entries); i++ {
-		if entries[i].IsDir() || !strings.HasSuffix(entries[i].Name(), ".json") {
-			continue
-		}
-		body, readErr := root.ReadFile(entries[i].Name())
-		if readErr != nil {
-			t.Fatalf("read event %s: %v", entries[i].Name(), readErr)
-		}
-		if strings.Contains(string(body), needle) {
+	for i := 0; i < len(records); i++ {
+		if records[i].Type == typ {
 			count++
 		}
 	}
@@ -311,6 +305,22 @@ func waitEventCountAtLeast(t *testing.T, eventLogDir, typ string, wantMin int) i
 	}
 	t.Fatalf("event %q count = %d after %s, want >= %d", typ, got, restartPollBound, wantMin)
 	return 0
+}
+
+// assertEventCountSettles polls countRestartEvents every restartPollInterval across
+// restartSettleWindow and fails at once if the count of typ ever differs from want.
+func assertEventCountSettles(t *testing.T, eventLogDir, typ string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(restartSettleWindow)
+	for i := 0; i < restartPollCap && time.Now().Before(deadline); i++ {
+		if got := countRestartEvents(t, eventLogDir, typ); got != want {
+			t.Fatalf("event %q count = %d during %s settle window, want %d", typ, got, restartSettleWindow, want)
+		}
+		time.Sleep(restartPollInterval)
+	}
+	if got := countRestartEvents(t, eventLogDir, typ); got != want {
+		t.Fatalf("event %q count = %d after %s settle window, want %d", typ, got, restartSettleWindow, want)
+	}
 }
 
 func mustRunUnitsCLI(t *testing.T, bin string, args ...string) string {
@@ -445,6 +455,9 @@ func assertPostRestartJobs(t *testing.T, fix *restartFixture, snap restartSnapsh
 	if restartsShown != restarted {
 		t.Fatalf("jobs status restarts = %d, want event log restart count %d", restartsShown, restarted)
 	}
+	assertEventCountSettles(t, fix.eventLogDir, "job.adopted", 1)
+	assertEventCountSettles(t, fix.eventLogDir, "job.started", 1)
+	assertEventCountSettles(t, fix.eventLogDir, "job.restarted", 0)
 }
 
 func assertPostRestartUnitsAndWatch(t *testing.T, fix *restartFixture, snap restartSnapshot) {
@@ -484,12 +497,13 @@ func TestSystemRestart_Positive(t *testing.T) {
 	assertPostRestartUnitsAndWatch(t, fix, snap)
 }
 
+// TestSystemRestart_Boundary proves supervisor 3 adds no second adoption after supervisor 2 adopts.
 func TestSystemRestart_Boundary(t *testing.T) {
 	fix := newRestartFixture(t)
 	sup1, snap := prepareAndSnapshotState(t, fix)
 
 	sup2 := restartSupervise(t, sup1, fix.bin, fix.cfgPath)
-	waitDaemonRunning(t, fix.bin, fix.cfgPath)
+	waitEventCountAtLeast(t, fix.eventLogDir, "job.adopted", 1)
 	restartSupervise(t, sup2, fix.bin, fix.cfgPath)
 
 	assertPostRestartJobs(t, fix, snap)
