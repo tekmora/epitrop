@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -31,10 +32,26 @@ var (
 //
 //   - .credentials.json: Claude Code 2.1.302 below CLAUDE_CONFIG_DIR; the token's expiry
 //     is claudeAiOauth.expiresAt, in Unix milliseconds.
+var homeCredentialFiles = []string{".credentials.json"}
+
+// refusedHomeLogins are client login files a slot home refuses to bind, in the loader and
+// in the shim.
+//
 //   - .gemini/antigravity-cli/antigravity-oauth-token: the Antigravity CLI (agy) 1.4 below
 //     HOME, where it keeps its login when no keyring is reachable, as in a slot; the token's
-//     expiry is token.expiry, an RFC 3339 time.
-var homeCredentialFiles = []string{".credentials.json", ".gemini/antigravity-cli/antigravity-oauth-token"}
+//     expiry is token.expiry, an RFC 3339 time. A slot refuses it (#368) until business
+//     authentication lands (#367).
+var refusedHomeLogins = []string{".gemini/antigravity-cli/antigravity-oauth-token"}
+
+// RefusedHomeLogin returns an error when file is a client login a slot home refuses to bind,
+// matched after path.Clean, so every spelling that names the same file is refused, and nil
+// otherwise. Both the configuration loader and the job shim call it.
+func RefusedHomeLogin(file string) error {
+	if slices.Contains(refusedHomeLogins, path.Clean(file)) {
+		return fmt.Errorf("home: file %q is the consumer Antigravity login, which a slot refuses (tekmora/epitrop#368); agy returns with business authentication (#367)", file)
+	}
+	return nil
+}
 
 // SandboxHome is a home a coding client keeps its settings and login in, made in the job's
 // workspace at SandboxHomeDir before each start. Copy files come from Source and must hash to
@@ -121,6 +138,9 @@ func homeFileNames(home *SandboxHome) ([]string, error) {
 
 // validateHomeBind checks a bind's name and that it names its token's expiry exactly once.
 func validateHomeBind(i int, bind SandboxHomeBind) error {
+	if err := RefusedHomeLogin(bind.File); err != nil {
+		return err
+	}
 	if !homeFileName.MatchString(bind.File) && !slices.Contains(homeCredentialFiles, bind.File) {
 		return fmt.Errorf("home: file %q is not one plain path element nor a known login file", bind.File)
 	}
