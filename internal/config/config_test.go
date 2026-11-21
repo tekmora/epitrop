@@ -559,7 +559,7 @@ func assertJobLogRotationRefusals(t *testing.T) {
 		rot  string
 		want string
 	}{
-		{"max_bytes 4095", `{"max_bytes": 4095}`, "log_rotation.max_bytes"},
+		{"max_bytes 4095", `{"max_bytes": 4095}`, "/jobs/0/log_rotation/max_bytes"},
 		{"max_bytes 1073741825", `{"max_bytes": 1073741825}`, "maximum"},
 		{"max_bytes -1", `{"max_bytes": -1}`, "minimum"},
 		{"keep_files -1", `{"keep_files": -1}`, "minimum"},

@@ -184,6 +184,123 @@ func TestLogRotationDropsOldestAndPreservesAcceptedOnFailure(t *testing.T) {
 	})
 }
 
+func TestLogRotationOpenPrunesStaleBackups(t *testing.T) {
+	t.Run("removes_above_keep_files_and_keeps_active_kept_and_unrelated", func(t *testing.T) {
+		assertOpenPrunesAboveKeepFiles(t)
+	})
+	t.Run("skips_directory_and_symlink_backups", func(t *testing.T) {
+		assertOpenSkipsNonRegularStalePaths(t)
+	})
+	t.Run("removes_max_keep_plus_one_and_leaves_higher_index", func(t *testing.T) {
+		assertOpenPrunesAtMaxKeepBound(t)
+	})
+	t.Run("stale_remove_error_fails_open_with_context", func(t *testing.T) {
+		assertOpenFailsWhenStaleRemoveFails(t)
+	})
+}
+
+func assertOpenPrunesAboveKeepFiles(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	logPath, otherPath := filepath.Join(dir, "job.log"), filepath.Join(dir, "other.log")
+	mustWriteRawFile(t, logPath, "active\n")
+	mustWriteRawFile(t, otherPath, "unrelated\n")
+	for i := 0; i < 5; i++ {
+		mustWriteRawFile(t, rotatedLogPath(logPath, i+1), fmt.Sprintf("backup-%d\n", i+1))
+	}
+	mustCloseRotatingLog(t, mustOpenRotatingLog(t, logPath, config.JobLogRotation{MaxBytes: 4096, KeepFiles: 2}))
+	for i := 0; i < 3; i++ {
+		assertPathMissing(t, rotatedLogPath(logPath, i+3))
+	}
+	assertFileString(t, logPath, "active\n")
+	assertFileString(t, logPath+".1", "backup-1\n")
+	assertFileString(t, logPath+".2", "backup-2\n")
+	assertFileString(t, otherPath, "unrelated\n")
+}
+
+func assertOpenSkipsNonRegularStalePaths(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	logPath, target := filepath.Join(dir, "job.log"), filepath.Join(dir, "target.txt")
+	mustWriteRawFile(t, logPath+".3", "regular-stale\n")
+	mustWriteRawFile(t, target, "target\n")
+	if err := os.Mkdir(logPath+".4", 0o700); err != nil {
+		t.Fatalf("Mkdir(.4) = %v, want nil", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Symlink(target, logPath+".5"); err != nil {
+			t.Fatalf("Symlink(.5) = %v, want nil", err)
+		}
+	}
+	mustCloseRotatingLog(t, mustOpenRotatingLog(t, logPath, config.JobLogRotation{MaxBytes: 4096, KeepFiles: 2}))
+	assertPathMissing(t, logPath+".3")
+	if info, err := os.Lstat(logPath + ".4"); err != nil || !info.IsDir() {
+		t.Fatalf("Lstat(.4) = %v, %v, want directory kept", info, err)
+	}
+	if runtime.GOOS != "windows" {
+		if info, err := os.Lstat(logPath + ".5"); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("Lstat(.5) = %v, %v, want symlink kept", info, err)
+		}
+	}
+}
+
+func assertOpenPrunesAtMaxKeepBound(t *testing.T) {
+	t.Helper()
+	logPath := filepath.Join(t.TempDir(), "bound.log")
+	indices := []int{100, 101, 102}
+	for i := 0; i < len(indices); i++ {
+		mustWriteRawFile(t, rotatedLogPath(logPath, indices[i]), fmt.Sprintf("b-%d\n", indices[i]))
+	}
+	mustCloseRotatingLog(t, mustOpenRotatingLog(t, logPath, config.JobLogRotation{MaxBytes: 4096, KeepFiles: config.MaxLogKeepFiles}))
+	assertPathMissing(t, rotatedLogPath(logPath, 101))
+	assertFileString(t, rotatedLogPath(logPath, 100), "b-100\n")
+	assertFileString(t, rotatedLogPath(logPath, 102), "b-102\n")
+}
+
+func assertOpenFailsWhenStaleRemoveFails(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		return
+	}
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "ro-open.log")
+	mustWriteRawFile(t, logPath, "existing\n")
+	mustWriteRawFile(t, logPath+".3", "stale\n")
+	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- read-only directory simulates stale backup unlink permission failure
+		t.Fatalf("Chmod(0500) = %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if chmodErr := os.Chmod(dir, 0o700); chmodErr != nil { // #nosec G302 -- restore temp dir permissions for cleanup
+			t.Errorf("Chmod(0700) = %v, want nil", chmodErr)
+		}
+	})
+	_, err := openRotatingLog(logPath, config.JobLogRotation{MaxBytes: 4096, KeepFiles: 2})
+	if err == nil || !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "remove stale log") {
+		t.Fatalf("openRotatingLog(read-only stale remove) = %v, want wrapped os.ErrPermission with context", err)
+	}
+}
+
+func mustWriteRawFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) = %v, want nil", path, err)
+	}
+}
+
+func assertFileString(t *testing.T, path, want string) {
+	t.Helper()
+	if got := string(mustReadLogFile(t, path)); got != want {
+		t.Fatalf("ReadFile(%s) = %q, want %q", path, got, want)
+	}
+}
+
+func assertPathMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Lstat(%s) = %v, want os.ErrNotExist", path, err)
+	}
+}
+
 func assertKeepFilesDropsOnlyOldest(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()

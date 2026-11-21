@@ -667,7 +667,7 @@ func insertPath(root map[string]any, parts []string, value any) error {
 }
 
 func validateNames(cfg Config) error {
-	if err := validateJobNames(cfg.Jobs); err != nil {
+	if err := validateJobNamesAndLogPaths(cfg.Jobs); err != nil {
 		return err
 	}
 	return validateWatchNames(cfg.Watches)

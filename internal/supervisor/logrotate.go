@@ -16,7 +16,8 @@ import (
 const (
 	logReadBufferBytes = 32 * 1024
 	// maxLogReadSteps bounds the pipe read loop above any year-long byte stream.
-	maxLogReadSteps int64 = 1 << 50
+	maxLogReadSteps  int64 = 1 << 50
+	maxStaleLogIndex       = config.MaxLogKeepFiles + 1
 )
 
 // rotatingLog writes whole lines to path and rotates path.1 .. path.<keepFiles> before any
@@ -43,7 +44,37 @@ func openRotatingLog(path string, rot config.JobLogRotation) (*rotatingLog, erro
 	if err := l.reopen(); err != nil {
 		return nil, err
 	}
+	if err := pruneStaleBackups(path, rot.KeepFiles); err != nil {
+		return nil, errors.Join(err, l.Close())
+	}
 	return l, nil
+}
+
+func pruneStaleBackups(path string, keepFiles int) error {
+	for step := 0; step < maxStaleLogIndex; step++ {
+		idx := keepFiles + 1 + step
+		if idx > maxStaleLogIndex {
+			break
+		}
+		if err := removeRegularIfExists(rotatedLogPath(path, idx)); err != nil {
+			return fmt.Errorf("job-shim: remove stale log %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func removeRegularIfExists(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	return removeIfExists(path)
 }
 
 func (l *rotatingLog) reopen() error {

@@ -241,8 +241,15 @@
                 "type": "integer",
                 "description": "Byte bound of the active log file (4096..1073741824); 0 takes the default, 67108864.",
                 "default": 67108864,
-                "minimum": 0,
-                "maximum": 1073741824
+                "anyOf": [
+                  {
+                    "const": 0
+                  },
+                  {
+                    "minimum": 4096,
+                    "maximum": 1073741824
+                  }
+                ]
               },
               "keep_files": {
                 "type": "integer",
