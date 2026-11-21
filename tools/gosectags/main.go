@@ -28,6 +28,19 @@ const (
 	maxNodes       = 1024
 	// go help buildconstraint lists these fixed toolchain-supplied tags.
 	fixedTags = "unix cgo gc gccgo"
+	// go help buildconstraint (go 1.27.4) lists these defined architecture feature build tags.
+	featureTags = "386.387 386.sse2 " +
+		"amd64.v1 amd64.v2 amd64.v3 " +
+		"arm.5 arm.6 arm.7 " +
+		"arm64.v8.0 arm64.v8.1 arm64.v8.2 arm64.v8.3 arm64.v8.4 " +
+		"arm64.v8.5 arm64.v8.6 arm64.v8.7 arm64.v8.8 arm64.v8.9 " +
+		"arm64.v9.0 arm64.v9.1 arm64.v9.2 arm64.v9.3 arm64.v9.4 arm64.v9.5 " +
+		"mips.hardfloat mips.softfloat mipsle.hardfloat mipsle.softfloat " +
+		"mips64.hardfloat mips64.softfloat mips64le.hardfloat mips64le.softfloat " +
+		"ppc64.power8 ppc64.power9 ppc64.power10 " +
+		"ppc64le.power8 ppc64le.power9 ppc64le.power10 " +
+		"riscv64.rva20u64 riscv64.rva22u64 riscv64.rva23u64 " +
+		"wasm.satconv wasm.signext"
 )
 
 var releaseTag = regexp.MustCompile(`^go1\.[0-9]+$`)
@@ -141,25 +154,19 @@ func toolchainTags() (map[string]bool, error) {
 	for _, word := range strings.Fields(fixedTags) {
 		tags[word] = true
 	}
+	for _, word := range strings.Fields(featureTags) {
+		tags[word] = true
+	}
 	for _, pair := range strings.Fields(string(out)) {
-		parts := strings.Split(pair, "/")
-		for _, part := range parts {
+		for _, part := range strings.Split(pair, "/") {
 			tags[part] = true
-		}
-		if len(parts) == 2 {
-			tags["arch:"+parts[1]] = true
 		}
 	}
 	return tags, nil
 }
 
 func isCustom(tag string, known map[string]bool) bool {
-	prefix, _, feature := strings.Cut(tag, ".")
-	if known[tag] || releaseTag.MatchString(tag) || strings.HasPrefix(tag, "goexperiment.") {
-		return false
-	}
-	// go help buildconstraint defines feature tags as GOARCH.feature (for example amd64.v2).
-	return !feature || !known["arch:"+prefix]
+	return !known[tag] && !releaseTag.MatchString(tag) && !strings.HasPrefix(tag, "goexperiment.")
 }
 
 func customTags(expr constraint.Expr, known map[string]bool) ([]string, error) {
