@@ -192,11 +192,19 @@ func customTags(expr constraint.Expr, known map[string]bool) ([]string, error) {
 	return tags, nil
 }
 
+func firstPlusBuild(first, text string) string {
+	if first == "" && constraint.IsPlusBuild(text) {
+		return text
+	}
+	return first
+}
+
 func fileConstraint(path string) (constraint.Expr, string, error) {
 	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.PackageClauseOnly|parser.ParseComments)
 	if err != nil {
 		return nil, "", fmt.Errorf("parse %s: %w", path, err)
 	}
+	var text string
 	for _, group := range f.Comments {
 		for _, comment := range group.List {
 			if comment.Pos() >= f.Package {
@@ -206,7 +214,11 @@ func fileConstraint(path string) (constraint.Expr, string, error) {
 				expr, err := constraint.Parse(comment.Text)
 				return expr, comment.Text, err
 			}
+			text = firstPlusBuild(text, comment.Text)
 		}
+	}
+	if text != "" {
+		return nil, "", fmt.Errorf("// +build constraint %q has no //go:build line; add one (gofmt adds it)", text)
 	}
 	return nil, "", nil
 }
