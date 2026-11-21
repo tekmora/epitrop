@@ -66,6 +66,10 @@ func TestDiscover(t *testing.T) {
 		{"tagged packages", map[string]string{"a.go": "//go:build alpha\n\npackage a\n", "nested/b.go": "//go:build beta\n\npackage b\n"}, []string{"alpha", "beta"}, ""},
 		{"toolchain", map[string]string{"a.go": "//go:build linux || windows || amd64 || unix || cgo || gc || gccgo || go1.21 || goexperiment.x || amd64.v2\n\npackage a\n"}, []string{}, ""},
 		{"os feature name", map[string]string{"a.go": "//go:build linux.x\n\npackage a\n"}, []string{"linux.x"}, ""},
+		{"defined feature tags", map[string]string{"a.go": "//go:build 386.387 || 386.sse2 || amd64.v1 || amd64.v3 || arm.5 || arm.7 || arm64.v8.0 || arm64.v9.5 || mips.hardfloat || mipsle.softfloat || mips64.softfloat || mips64le.hardfloat || ppc64.power8 || ppc64le.power10 || riscv64.rva20u64 || riscv64.rva23u64 || wasm.satconv || wasm.signext\n\npackage a\n"}, []string{}, ""},
+		{"arch prefix custom", map[string]string{"a.go": "//go:build amd64.audit\n\npackage a\n"}, []string{"amd64.audit"}, ""},
+		{"undefined feature names", map[string]string{"a.go": "//go:build amd64.v4 || arm64.v9.6 || arm64.v8 || riscv64.rva23 || wasm.audit\n\npackage a\n"}, []string{"amd64.v4", "arm64.v8", "arm64.v9.6", "riscv64.rva23", "wasm.audit"}, ""},
+		{"feature and custom", map[string]string{"a.go": "//go:build amd64.v2 || amd64.audit\n\npackage a\n"}, []string{"amd64.audit"}, ""},
 		{"negation", map[string]string{"a.go": "//go:build !alpha\n\npackage a\n"}, []string{"alpha"}, ""},
 		{"disjunction", map[string]string{"a.go": "//go:build alpha || beta\n\npackage a\n"}, []string{"alpha", "beta"}, ""},
 		{"gap", map[string]string{"gap.go": "//go:build alpha && !beta\n\npackage a\n"}, nil, "gap.go"},
@@ -136,6 +140,23 @@ func TestDiscoverPlusBuild(t *testing.T) {
 			got, err := discover(dir)
 			checkDiscoverResult(t, got, err, tc.want, tc.wantErr)
 		})
+	}
+}
+
+// TestHostToolTags checks the feature tags the running toolchain sets for this
+// host against the defined list, so a level the list misses fails here.
+func TestHostToolTags(t *testing.T) {
+	known, err := toolchainTags()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range build.Default.ToolTags {
+		if isCustom(tag, known) {
+			t.Errorf("toolchain tag %q is reported as custom", tag)
+		}
+	}
+	if !isCustom("amd64.audit", known) {
+		t.Error("amd64.audit is not reported as custom")
 	}
 }
 
