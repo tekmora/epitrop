@@ -19,6 +19,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/tekmora/epitrop/internal/gitexec"
 )
 
 const (
@@ -28,9 +30,13 @@ const (
 	maxNodes       = 1024
 	// go help buildconstraint lists these fixed toolchain-supplied tags.
 	fixedTags = "unix cgo gc gccgo"
-	// go help buildconstraint (go 1.27.4) lists these defined architecture feature build tags.
-	featureTags = "386.387 386.sse2 " +
-		"amd64.v1 amd64.v2 amd64.v3 " +
+	// featureTags lists the feature tags the go command sets for each
+	// GOARCH (internal/buildcfg gogoarchTags, go 1.27.4; values from
+	// go help environment); go help buildconstraint omits amd64.v4 and
+	// 386.softfloat, and TestFeatureTagsMatchToolchain checks the list
+	// against the go command.
+	featureTags = "386.387 386.sse2 386.softfloat " +
+		"amd64.v1 amd64.v2 amd64.v3 amd64.v4 " +
 		"arm.5 arm.6 arm.7 " +
 		"arm64.v8.0 arm64.v8.1 arm64.v8.2 arm64.v8.3 arm64.v8.4 " +
 		"arm64.v8.5 arm64.v8.6 arm64.v8.7 arm64.v8.8 arm64.v8.9 " +
@@ -44,16 +50,6 @@ const (
 )
 
 var releaseTag = regexp.MustCompile(`^go1\.[0-9]+$`)
-
-func gitCommand(args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", args...).Output() // #nosec G204 -- fixed git executable; arguments are supplied by discovery
-	if err != nil {
-		return nil, fmt.Errorf("git: %w", err)
-	}
-	return out, nil
-}
 
 func goCommand(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
@@ -303,7 +299,9 @@ func scanFile(root, name string, known map[string]bool, all map[string]bool) err
 }
 
 func discoveryInputs(root string) ([]string, []string, map[string]bool, error) {
-	files, err := gitCommand("-C", root, "ls-files", "-z", "--", "*.go")
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	files, err := gitexec.Run(ctx, root, gitexec.Env(os.Environ()), nil, "ls-files", "-z", "--", "*.go")
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("%s: not a readable git work tree: %w", root, err)
 	}
@@ -318,7 +316,7 @@ func discoveryInputs(root string) ([]string, []string, map[string]bool, error) {
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	names := strings.Split(strings.TrimSuffix(string(files), "\x00"), "\x00")
+	names := strings.Split(strings.TrimSuffix(files, "\x00"), "\x00")
 	if len(names) > maxFiles {
 		return nil, nil, nil, fmt.Errorf("%s: exceeds file limit", root)
 	}
