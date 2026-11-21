@@ -228,6 +228,19 @@ func TestNonGitDirectory(t *testing.T) {
 	}
 }
 
+// TestDiscoverIgnoresGitEnvironment checks that a GIT_DIR handed down by a
+// parent process does not make discovery list another repository's files.
+func TestDiscoverIgnoresGitEnvironment(t *testing.T) {
+	dir := fixture(t, map[string]string{"a.go": "//go:build alpha\n\npackage a\n"})
+	other := fixture(t, map[string]string{"b.go": "//go:build beta\n\npackage b\n"})
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	t.Setenv("GIT_WORK_TREE", other)
+	got, err := discover(dir)
+	if err != nil || !reflect.DeepEqual(got, []string{"alpha"}) {
+		t.Fatalf("discover = %v, %v; want [alpha]", got, err)
+	}
+}
+
 func TestInheritedTags(t *testing.T) {
 	for _, tc := range []struct {
 		flags string
