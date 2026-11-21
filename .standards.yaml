@@ -84,3 +84,10 @@ docs_surfaces:
 release:
   e2e:
     since: 011ac7d867c2a67e57bfe69355f6717b737af8e7
+exceptions:
+  - rule: job-timeout
+    path: .github/workflows/praetor-api.yml
+    reason: "The managed API compatibility job sets timeout-minutes 60, above its 30-minute job-timeout bound; the file is locked to the Praetor engine, so the bound arrives with the engine's template (MEL category C)."
+    category: C
+    entered: "2026-11-21"
+    expires: "2026-12-01"
