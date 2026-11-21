@@ -39,6 +39,11 @@ jobs:
     # restart policy decides. 0 (the default) turns the check off.
     heartbeat:
       max_age_seconds: 0
+    # Bound the active log file at max_bytes (4096..1073741824) and keep keep_files (1..100)
+    # rotated log_path.1..log_path.<keep_files> files on whole-line boundaries; 0 takes the default.
+    log_rotation:
+      max_bytes: 67108864
+      keep_files: 5
     sandbox:
       mode: enforce
       # Use a dedicated directory per job; it is the only path the job can write.
