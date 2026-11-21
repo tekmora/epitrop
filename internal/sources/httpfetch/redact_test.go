@@ -27,7 +27,7 @@ func TestURLParseCause(t *testing.T) {
 	}{
 		{"nil", nil, "", nil},
 		{"plain", plain, "plain failure", plain},
-		{"nil inner", &url.Error{Op: "parse", URL: "https://user:s3cret@example.invalid/"}, "invalid URL", nil},
+		{"nil inner", &url.Error{Op: "parse", URL: "https://user:s3cret@example.invalid/"}, "invalid URL", nil}, // #nosec G101 -- synthetic input verifies credential redaction
 		{"unknown", &url.Error{Err: plain}, "invalid URL", nil},
 		{"escape", &url.Error{Err: url.EscapeError("%zz")}, "invalid URL escape", nil},
 		{"invalid port", invalidPort, "invalid URL", nil},
@@ -50,7 +50,7 @@ func TestURLParseCause(t *testing.T) {
 	} {
 		t.Run(text, func(t *testing.T) {
 			cause := errors.New(text)
-			input := &url.Error{Op: "parse", URL: "https://user:s3cret@example.invalid/", Err: cause}
+			input := &url.Error{Op: "parse", URL: "https://user:s3cret@example.invalid/", Err: cause} // #nosec G101 -- synthetic input verifies credential redaction
 			checkParseCause(t, URLParseCause(input), text, cause)
 		})
 	}
@@ -73,7 +73,7 @@ func checkParseCause(t *testing.T, got error, want string, same error) {
 }
 
 func TestRedactedURL(t *testing.T) {
-	raw := "https://user:s3cret@example.invalid/p"
+	raw := "https://user:s3cret@example.invalid/p" // #nosec G101 -- synthetic input verifies credential redaction
 	got := RedactedURL(raw)
 	if strings.Contains(got, "s3cret") || !strings.Contains(got, "user") || !strings.Contains(got, "example.invalid") {
 		t.Fatalf("redaction: %q", got)
@@ -186,7 +186,7 @@ func TestSanitizeRequestError(t *testing.T) {
 		{name: "nil"},
 		{name: "plain", input: plain, wantSame: plain, wantText: "plain"},
 		{name: "plain secret", input: secret, wantSame: secret},
-		{name: "URL", input: &url.Error{Op: "Get", URL: "http://user:s3cret@host/", Err: plain}, wantSame: plain, wantURL: "http://user:xxxxx@host/", wantText: "plain"},
+		{name: "URL", input: &url.Error{Op: "Get", URL: "http://user:s3cret@host/", Err: plain}, wantSame: plain, wantURL: "http://user:xxxxx@host/", wantText: "plain"}, // #nosec G101 -- synthetic input verifies credential redaction
 		{name: "timeout secret", input: &url.Error{Op: "Get", URL: "http://host/", Err: timeout}, wantSame: context.DeadlineExceeded, wantURL: "http://host/", isTimeout: true},
 	}
 	for _, tc := range cases {

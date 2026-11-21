@@ -144,7 +144,7 @@ func startLookalike(t *testing.T, sup *Supervisor, name string) (shim *exec.Cmd,
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
-	shim = exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcessJob", "--", "__job-shim",
+	shim = exec.CommandContext(ctx, os.Args[0], "-test.run=TestHelperProcessJob", "--", "__job-shim", // #nosec G204 G702 -- current test binary runs a fixed helper selector
 		"--name", name, "--lock", sup.lockPath(name), "--record", sup.recordPath(name))
 	shim.Env = append(os.Environ(), "EPITROP_TEST_JOB=spawn-child")
 	shim.SysProcAttr = &unix.SysProcAttr{Setpgid: true}

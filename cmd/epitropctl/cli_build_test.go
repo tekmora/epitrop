@@ -67,7 +67,7 @@ func buildCLIOnce() (string, error) {
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}
-	out, err := exec.CommandContext(ctx, "go", "build", "-ldflags=-X main.version="+cliTestVersion, "-o", bin, ".").CombinedOutput()
+	out, err := exec.CommandContext(ctx, "go", "build", "-ldflags=-X main.version="+cliTestVersion, "-o", bin, ".").CombinedOutput() // #nosec G204 -- fixed go build writes the CLI into a temporary directory
 	if err != nil {
 		return "", fmt.Errorf("build epitropctl: %w\n%s", err, out)
 	}
@@ -92,7 +92,7 @@ func runSystemCLIWithDeadline(t *testing.T, bin string, deadline time.Duration, 
 	ctx, cancel := context.WithTimeout(t.Context(), deadline)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := exec.CommandContext(ctx, bin, args...) // #nosec G204 -- callers pass the CLI built by buildCLI and fixture arguments
 	cmd.Env = isolatedCLIEnv(t, extraEnv...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

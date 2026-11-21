@@ -55,7 +55,7 @@ func assertRefusedStart(t *testing.T, sup *Supervisor, name string, logPath stri
 	}
 	job := eventlogJob(t, sup, name)
 	checkRefusedJobEventLog(t, job, wantReason)
-	log, err := os.ReadFile(logPath)
+	log, err := os.ReadFile(logPath) // #nosec G304 -- logPath is the refused test job log
 	if err != nil || !strings.Contains(string(log), "epitrop: job-shim: "+name+" refused: "+wantReason) {
 		t.Fatalf("job log = %q, %v, want the refusal line", log, err)
 	}

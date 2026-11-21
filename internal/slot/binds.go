@@ -100,7 +100,7 @@ func checkRawChanges(fields []string, blobs map[string]string) error {
 			return fmt.Errorf("unexpected change record %q", meta)
 		}
 		i++
-		path := fields[i]
+		path := fields[i] // #nosec G602 -- the preceding i+1 length check bounds the incremented index
 		if path == config.SandboxHomeTop || strings.HasPrefix(path, config.SandboxHomeTop+"/") {
 			return fmt.Errorf("a commit touches %s, the job's home; nothing there is the run's work", path)
 		}

@@ -42,7 +42,7 @@ func (s *Supervisor) replayState(ctx context.Context) (eventlog.State, error) {
 
 func (s *Supervisor) replayStateWithReducer(ctx context.Context, reducer eventlog.Reducer) (eventlog.State, error) {
 	events := filepath.Join(s.cfg.EventLog.Dir, "events")
-	if _, err := os.Stat(events); os.IsNotExist(err) {
+	if _, err := os.Stat(events); os.IsNotExist(err) { // #nosec G703 -- events is the configured event log directory plus a fixed component
 		return eventlog.State{Jobs: map[string]eventlog.Job{}}, nil
 	} else if err != nil {
 		return eventlog.State{}, fmt.Errorf("supervisor: stat %s: %w", events, err)

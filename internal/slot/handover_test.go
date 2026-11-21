@@ -251,7 +251,7 @@ func TestWriteResumeNoteReplacesTheFile(t *testing.T) {
 		if err := WriteResumeNote(path, []byte(body)); err != nil {
 			t.Fatalf("WriteResumeNote() = %v, want nil", err)
 		}
-		got, err := os.ReadFile(path)
+		got, err := os.ReadFile(path) // #nosec G304 -- path is resume.md under t.TempDir
 		if err != nil || string(got) != body {
 			t.Fatalf("resume.md = %q, %v; want %q", got, err, body)
 		}

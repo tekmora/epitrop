@@ -344,7 +344,7 @@ func jobsTempDir(t *testing.T) string {
 		t.Fatalf("MkdirTemp(%s) = %v, want nil", root, err)
 	}
 	t.Cleanup(func() {
-		if err := os.RemoveAll(base); err != nil {
+		if err := os.RemoveAll(base); err != nil { // #nosec G703 -- base was created by MkdirTemp for this test
 			t.Fatalf("RemoveAll(%s) = %v, want nil", base, err)
 		}
 	})
@@ -373,7 +373,7 @@ func logJobState(t *testing.T, sup *supervisor.Supervisor, base, name string) {
 	t.Helper()
 	st, err := sup.Status(testContext(t), name)
 	t.Logf("status: %+v, %v", st, err)
-	body, err := os.ReadFile(filepath.Join(base, "state", "jobs", name+".json"))
+	body, err := os.ReadFile(filepath.Join(base, "state", "jobs", name+".json")) // #nosec G304 -- base is the temporary jobs fixture and name is the test job name
 	t.Logf("record: %q, %v", body, err)
 	var rec struct {
 		PID     int `json:"pid"`
@@ -385,7 +385,7 @@ func logJobState(t *testing.T, sup *supervisor.Supervisor, base, name string) {
 			t.Logf("pid %d: %q, %v", pid, stat, statErr)
 		}
 	}
-	logBody, err := os.ReadFile(filepath.Join(base, name+".log"))
+	logBody, err := os.ReadFile(filepath.Join(base, name+".log")) // #nosec G304 -- base is the temporary jobs fixture and name is the test job name
 	t.Logf("job log: %q, %v", logBody, err)
 }
 

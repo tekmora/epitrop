@@ -41,7 +41,7 @@ func TestWriteRecordInterrupted(t *testing.T) {
 		t.Fatalf("err = %v, want cause %v", err, simErr)
 	}
 
-	got, err := os.ReadFile(recordPath)
+	got, err := os.ReadFile(recordPath) // #nosec G304 -- recordPath is the test record under t.TempDir
 	if err != nil {
 		t.Fatalf("read record: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestWriteRecordReplacesContentAndMode(t *testing.T) {
 		t.Fatalf("writeRecord() = %v, want nil", err)
 	}
 
-	got, err := os.ReadFile(recordPath)
+	got, err := os.ReadFile(recordPath) // #nosec G304 -- recordPath is the test record under t.TempDir
 	if err != nil {
 		t.Fatalf("read record: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestWriteRecordCreatesMissingDir(t *testing.T) {
 		t.Fatalf("writeRecord(missing dir) = %v, want nil", err)
 	}
 
-	got, err := os.ReadFile(recordPath)
+	got, err := os.ReadFile(recordPath) // #nosec G304 -- recordPath is the test record under t.TempDir
 	if err != nil {
 		t.Fatalf("read record: %v", err)
 	}

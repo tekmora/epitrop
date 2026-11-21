@@ -35,7 +35,7 @@ func TestCatalogImportsStdlibOnly(t *testing.T) {
 
 func checkCatalogSourceImports(t *testing.T, fset *token.FileSet, file string) {
 	t.Helper()
-	src, err := os.ReadFile(file)
+	src, err := os.ReadFile(file) // #nosec G304 -- file comes from the local *.go glob
 	if err != nil {
 		t.Fatalf("read %s: %v", file, err)
 	}

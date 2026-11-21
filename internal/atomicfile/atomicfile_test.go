@@ -57,7 +57,7 @@ func runReplaceTestCase(t *testing.T, tc replaceTestCase) {
 	if err := Replace(target, tc.body, tc.mode); err != nil {
 		t.Fatalf("Replace() = %v, want nil", err)
 	}
-	got, err := os.ReadFile(target)
+	got, err := os.ReadFile(target) // #nosec G304 -- target is the file created by this temporary-directory test
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestReplaceWithSyncNilDefaultsToFsync(t *testing.T) {
 	if err := ReplaceWithSync(target, []byte("data"), 0o600, nil); err != nil {
 		t.Fatalf("ReplaceWithSync(nil syncFn) = %v, want nil", err)
 	}
-	got, err := os.ReadFile(target)
+	got, err := os.ReadFile(target) // #nosec G304 -- target is the file created by this temporary-directory test
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}

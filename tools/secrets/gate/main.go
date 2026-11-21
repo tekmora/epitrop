@@ -122,11 +122,11 @@ func executeGitleaks(ctx context.Context, dir, cfg string) (findings []Finding, 
 		"detect", "--no-banner", "--redact", "--config", cfg,
 		"--log-opts=" + logOpts, "--report-format", "json", "--report-path", reportPath,
 	}
-	cmd := exec.CommandContext(ctx, "gitleaks", cmdArgs...)
+	cmd := exec.CommandContext(ctx, "gitleaks", cmdArgs...) // #nosec G204 -- fixed gitleaks executable receives config and report as argv
 	cmd.Dir = dir
 	out, runErr := cmd.CombinedOutput()
 
-	data, readErr := os.ReadFile(reportPath)
+	data, readErr := os.ReadFile(reportPath) // #nosec G304 -- reportPath is the temporary file created immediately above
 	if readErr != nil {
 		if runErr != nil {
 			return nil, fmt.Errorf("gitleaks execution failed: %w: %s", runErr, out)

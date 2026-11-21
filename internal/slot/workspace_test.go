@@ -25,7 +25,7 @@ func slotCtx(t *testing.T) context.Context {
 func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	full := append([]string{"-c", "user.name=slot test", "-c", "user.email=slot@example.invalid", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"}, args...)
-	cmd := exec.CommandContext(slotCtx(t), "git", full...)
+	cmd := exec.CommandContext(slotCtx(t), "git", full...) // #nosec G204 -- fixture callers supply git argv in their temporary repository
 	cmd.Dir = dir
 	cmd.Env = gitexec.Env(os.Environ())
 	out, err := cmd.CombinedOutput()
@@ -67,7 +67,7 @@ func request(t *testing.T, repo string, base string) Request {
 
 func readFile(t *testing.T, path string) string {
 	t.Helper()
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(path) // #nosec G304 -- callers read files in temporary slot workspaces
 	if err != nil {
 		t.Fatalf("ReadFile(%s) = %v, want nil", path, err)
 	}

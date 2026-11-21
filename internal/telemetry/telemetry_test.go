@@ -225,7 +225,7 @@ func TestDocsMetricListMatchesCatalog(t *testing.T) {
 
 func parseDocsMetricNames(t *testing.T, docsPath string) map[string]bool {
 	t.Helper()
-	f, err := os.Open(docsPath)
+	f, err := os.Open(docsPath) // #nosec G304 -- docsPath is the fixed repository telemetry document
 	if err != nil {
 		t.Fatalf("Open docs/telemetry.md: %v", err)
 	}

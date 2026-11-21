@@ -76,7 +76,7 @@ func recordTypes(t *testing.T, dir string) []string {
 	sort.Strings(names)
 	types := make([]string, 0, len(names))
 	for i := 0; i < len(names); i++ {
-		body, err := os.ReadFile(filepath.Join(dir, "events", names[i]))
+		body, err := os.ReadFile(filepath.Join(dir, "events", names[i])) // #nosec G304 -- names are directory entries from the test event log
 		if err != nil {
 			t.Fatalf("ReadFile(%s) = %v, want nil", names[i], err)
 		}

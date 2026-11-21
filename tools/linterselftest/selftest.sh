@@ -86,9 +86,11 @@ run_make_gosec() {
   LC_ALL=C MAKEFLAGS="" GOSEC_SELFTEST_MODFILE="$modfile" \
     make -s -C "$plant" -f "$repo/Makefile" gosec \
     GOTOOL='go tool -modfile="$$GOSEC_SELFTEST_MODFILE"' "$@" > "$out" 2>&1 || make_rc="$?"
-  # GNU make exits 2 whenever a target fails; map recipe exit 1 ("Error 1") back to 1 only when
-  # gosec printed Results: (not when go list failed or zero args printed usage), so 1 = findings.
-  if [[ "$make_rc" -eq 2 ]] && grep -qE '(\[|: )gosec\] Error 1$' "$out" && grep -q '^Results:' "$out"; then
+  # Only map a failed recipe to findings if every failed pass printed its own Results section.
+  if [[ "$make_rc" -eq 2 ]] && grep -qE '(\[|: )gosec\] Error 1$' "$out" &&
+    awk '/^gosec pass: / { results = 0 } /^Results:/ { results = 1 }
+         /^gosec pass failed: / { failed++; if (!results) bad = 1 }
+         END { exit !(failed && !bad) }' "$out"; then
     return 1
   fi
   return "$make_rc"
@@ -316,6 +318,33 @@ case "$tool" in
     printf '%s\n' 'package dotsmid' '' 'import "os"' '' \
       'func weakPermissions() error { return os.WriteFile("plant", nil, 0o777) }' \
       > "$plant/dots...mid/h.go"
+    # J-N: distinguish test files, each tag pass, fully tagged packages, and malformed nosec.
+    mkdir -p "$plant/only" "$plant/negative"
+    printf '%s\n' 'package real' 'import _ "crypto/md5"' > "$plant/real/j_test.go"
+    printf '%s\n' '//go:build planttag' '' 'package real' 'import _ "crypto/des"' > "$plant/real/k.go"
+    printf '%s\n' '//go:build !planttag' '' 'package real' 'import _ "crypto/rc4"' > "$plant/real/l.go"
+    printf '%s\n' '//go:build plantonly' '' 'package only' 'import _ "crypto/md5"' > "$plant/only/m.go"
+    printf '%s\n' 'package negative' 'import _ "crypto/md5" // #nosec G501' > "$plant/negative/n1.go"
+    printf '%s\n' 'package negative' 'import _ "crypto/des" // #nosec -- missing rule' > "$plant/negative/n2.go"
+    # Strip inherited Git variables and disable global and system config for the fixture.
+    fixture_git() {
+      sh "$launcher" - "$plant" "$@" <<'PYGIT'
+import os
+import subprocess
+import sys
+
+GIT_TIMEOUT_SECONDS = 30
+MAX_ENV_VARS = 65536
+if len(os.environ) > MAX_ENV_VARS:
+    raise RuntimeError("fixture environment exceeds variable limit")
+env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+env["GIT_CONFIG_GLOBAL"] = os.devnull
+env["GIT_CONFIG_NOSYSTEM"] = "1"
+subprocess.run(["git", "-C", sys.argv[1], *sys.argv[2:]], env=env, check=True, timeout=GIT_TIMEOUT_SECONDS)
+PYGIT
+    }
+    fixture_git init -q
+    fixture_git add -- .
     expected=(G501 G502 G503 G404 G306)
     rc=0
     run_make_gosec "$log" || rc="$?"
@@ -507,6 +536,59 @@ if [[ "$tool" == "gosec" ]]; then
   run_make_gosec "$neg_log" "GOSEC_PACKAGES=echo ./..." || neg_rc="$?"
   require_findings "$tool (GOSEC_PACKAGES='echo ./...')" "$neg_rc" "$neg_log" G504 G505 G108
 
+  for file in real/j_test.go real/k.go real/l.go only/m.go negative/n1.go negative/n2.go; do
+    if ! grep -qF -- "$plant/$file:" "$log"; then
+      echo "$tool: missing planted finding $file" >&2
+      exit 1
+    fi
+  done
+  for control in tests tags nosec; do
+    case "$control" in
+      tests) override='GOSEC_TESTS='; missed=(real/j_test.go) ;;
+      tags) override='GOSEC_TAGS=printf ""'; missed=(real/k.go only/m.go) ;;
+      nosec) override='GOSEC_NOSEC='; missed=(negative/n1.go negative/n2.go) ;;
+    esac
+    control_rc=0
+    run_make_gosec "$plant/control-$control.log" "$override" || control_rc="$?"
+    if [[ "$control_rc" -ne 1 ]]; then
+      echo "$tool: $control control exited $control_rc, want findings" >&2
+      exit 1
+    fi
+    for file in "${missed[@]}"; do
+      if grep -qF -- "$plant/$file:" "$plant/control-$control.log"; then
+        echo "$tool: $control control unexpectedly found $file" >&2
+        exit 1
+      fi
+    done
+  done
+
+  # O: a file reachable only under an intermediate assignment must be refused.
+  printf '%s\n' '//go:build planttag && !plantother' '' 'package real' > "$plant/real/o.go"
+  fixture_git add -- real/o.go
+  gap_rc=0
+  run_make_gosec "$plant/gap.log" || gap_rc="$?"
+  if [[ "$gap_rc" -ne 2 ]] || ! grep -qF 'real/o.go' "$plant/gap.log" || grep -q '^Results:' "$plant/gap.log"; then
+    echo "$tool: O gap refusal failed (exit $gap_rc)" >&2
+    cat "$plant/gap.log" >&2
+    exit 1
+  fi
+  rm "$plant/real/o.go"
+  fixture_git add -A
+
+  # T: a legacy +build constraint with no //go:build line must be refused.
+  printf '%s\n' '// +build planttag' '' 'package real' > "$plant/real/t.go"
+  fixture_git add -- real/t.go
+  plusbuild_rc=0
+  run_make_gosec "$plant/plusbuild.log" || plusbuild_rc="$?"
+  if [[ "$plusbuild_rc" -ne 2 ]] || ! grep -qF 'real/t.go' "$plant/plusbuild.log" ||
+    ! grep -qF '//go:build' "$plant/plusbuild.log" || grep -q '^Results:' "$plant/plusbuild.log"; then
+    echo "$tool: T legacy +build constraint not refused (exit $plusbuild_rc)" >&2
+    cat "$plant/plusbuild.log" >&2
+    exit 1
+  fi
+  rm "$plant/real/t.go"
+  fixture_git add -A
+
   # I: folder name ending in a dot -> go list must fail before gosec runs.
   mkdir "$plant/trail..."
   printf '%s\n' 'package trail' > "$plant/trail.../i.go"
@@ -521,10 +603,11 @@ if [[ "$tool" == "gosec" ]]; then
   fi
   rm -r "$plant/trail..."
 
-  rm -r "$plant/real" "$plant/xclaude" "$plant/notes.claude" "$plant/dots...mid"
+  rm -r "$plant/real" "$plant/xclaude" "$plant/notes.claude" "$plant/dots...mid" "$plant/only" "$plant/negative"
   rm "$plant/g.go"
   mkdir -p "$plant/clean"
   printf '%s\n' 'package clean' > "$plant/clean/clean.go"
+  fixture_git add -A
   clean_log="$plant/clean-scan.log"
   clean_rc=0
   run_make_gosec "$clean_log" || clean_rc="$?"
@@ -534,7 +617,64 @@ if [[ "$tool" == "gosec" ]]; then
     exit 1
   fi
 
-  echo "$tool: ${#expected[@]} planted findings reported (exit 1), G module root and H mid-name dots scanned, nested worktrees and dot folders excluded, negative control reported excluded findings (exit 1), I trailing-dot folder rejected before scan (exit 2), clean tree passed (exit 0)"
+  # P and Q: isolate each pass so losing either pass's exit status is observable.
+  for case_id in P Q; do
+    if [[ "$case_id" == P ]]; then
+      printf '%s\n' '//go:build !planttag' '' 'package clean' 'import _ "crypto/md5"' > "$plant/clean/negative.go"
+      printf '%s\n' '//go:build planttag' '' 'package clean' > "$plant/clean/positive.go"
+    else
+      printf '%s\n' '//go:build !planttag' '' 'package clean' > "$plant/clean/negative.go"
+      printf '%s\n' '//go:build planttag' '' 'package clean' 'import _ "crypto/md5"' > "$plant/clean/positive.go"
+    fi
+    fixture_git add -- clean/negative.go clean/positive.go
+    pass_rc=0
+    run_make_gosec "$plant/pass-$case_id.log" || pass_rc="$?"
+    if [[ "$case_id" == P ]]; then
+      wanted='gosec pass failed: tests'
+      forbidden='^gosec pass failed: tests tags='
+    else
+      wanted='gosec pass failed: tests tags=planttag'
+      forbidden='^gosec pass failed: tests$'
+    fi
+    if [[ "$pass_rc" -ne 1 ]] || ! grep -qxF "$wanted" "$plant/pass-$case_id.log" ||
+      grep -q "$forbidden" "$plant/pass-$case_id.log"; then
+      echo "$tool: $case_id isolated pass failed (exit $pass_rc)" >&2
+      cat "$plant/pass-$case_id.log" >&2
+      exit 1
+    fi
+  done
+
+  rm "$plant/clean/negative.go" "$plant/clean/positive.go"
+  fixture_git add -A
+  # R: inherited tags can invalidate the untagged scan.
+  inherited_index=0
+  for inherited_flags in '-tags=planttag' "'-tags=planttag'" '"-tags=planttag"'; do
+    inherited_log="$plant/inherited-$inherited_index.log"
+    inherited_index=$((inherited_index + 1))
+    inherited_rc=0
+    GOFLAGS="$inherited_flags" run_make_gosec "$inherited_log" || inherited_rc="$?"
+    if [[ "$inherited_rc" -ne 2 ]] || ! grep -qF 'GOFLAGS' "$inherited_log" || grep -q '^Results:' "$inherited_log"; then
+      echo "$tool: R inherited GOFLAGS $inherited_flags not refused (exit $inherited_rc)" >&2
+      cat "$inherited_log" >&2
+      exit 1
+    fi
+  done
+
+  # S: testdata is outside the Go package walker.
+  mkdir -p "$plant/testdata"
+  printf '%s\n' '//go:build planttag && !plantother' '' 'package testdata' > "$plant/testdata/s.go"
+  fixture_git add -f -- testdata/s.go
+  testdata_rc=0
+  run_make_gosec "$plant/testdata.log" || testdata_rc="$?"
+  if [[ "$testdata_rc" -ne 0 ]]; then
+    echo "$tool: S testdata constraint not skipped (exit $testdata_rc)" >&2
+    cat "$plant/testdata.log" >&2
+    exit 1
+  fi
+  rm "$plant/testdata/s.go"
+  fixture_git add -A
+
+  echo "$tool: ${#expected[@]} planted findings reported (exit 1), G module root and H mid-name dots scanned, nested worktrees and dot folders excluded, negative control reported excluded findings (exit 1), I trailing-dot folder rejected, J-N found, controls miss their plants, O refused, T legacy +build constraint refused, P and Q isolated passes detected, clean tree passed (exit 0), R inherited GOFLAGS tags refused (plain, single- and double-quoted), S testdata constraint skipped"
 else
   echo "$tool: ${#expected[@]} planted findings reported, exit 1 as required"
 fi

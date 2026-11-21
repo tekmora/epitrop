@@ -68,7 +68,7 @@ func assertTakeUpUnitEvidence(t *testing.T, runB *testRun, unitA, unitB eventlog
 	if unitB.Evidence == nil || unitB.Evidence.Path != wantPath {
 		t.Fatalf("unit B evidence pointer = %+v, want path %s", unitB.Evidence, wantPath)
 	}
-	body, err := os.ReadFile(wantPath)
+	body, err := os.ReadFile(wantPath) // #nosec G304 -- wantPath is the temporary output file of the test run
 	if err != nil {
 		t.Fatalf("ReadFile(report B) = %v", err)
 	}
@@ -312,7 +312,7 @@ func assertImplementingUnitEvidence(t *testing.T, run *testRun) {
 	if unit.Evidence == nil || unit.Evidence.Path != wantPath {
 		t.Fatalf("unit.Evidence = %+v, want pointer to %s", unit.Evidence, wantPath)
 	}
-	body, err := os.ReadFile(wantPath)
+	body, err := os.ReadFile(wantPath) // #nosec G304 -- wantPath is the temporary output file of the test run
 	if err != nil {
 		t.Fatalf("ReadFile(start.json): %v", err)
 	}

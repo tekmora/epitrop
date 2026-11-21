@@ -95,12 +95,13 @@ func TestWriteSnapshotFile_ReaderSeesWholeSnapshot(t *testing.T) {
 	if err := writeSnapshotFile(path, versions[0]); err != nil {
 		t.Fatalf("writeSnapshotFile() = %v, want nil", err)
 	}
+	root := openSnapshotRoot(t, path)
 	var done atomic.Bool
 	torn := make(chan int, 1)
 	go func() {
 		defer close(torn)
 		for i := 0; i < 100*rounds && !done.Load(); i++ {
-			got, err := os.ReadFile(path)
+			got, err := root.ReadFile(filepath.Base(path))
 			if err == nil && !bytes.Equal(got, versions[0]) && !bytes.Equal(got, versions[1]) {
 				torn <- len(got)
 				return
@@ -222,12 +223,33 @@ func setupClaudeSyncFixtures(t *testing.T) (string, string) {
 	return claudeDir, claudeStateDir
 }
 
-func checkSyncSnapshot(t *testing.T, out string) {
+func openSnapshotRoot(t *testing.T, path string) *os.Root {
 	t.Helper()
-	data, err := os.ReadFile(out)
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("open snapshot directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close snapshot directory: %v", err)
+		}
+	})
+	return root
+}
+
+func readSnapshot(t *testing.T, path string) []byte {
+	t.Helper()
+	root := openSnapshotRoot(t, path)
+	data, err := root.ReadFile(filepath.Base(path))
 	if err != nil {
 		t.Fatalf("read snapshot: %v", err)
 	}
+	return data
+}
+
+func checkSyncSnapshot(t *testing.T, out string) {
+	t.Helper()
+	data := readSnapshot(t, out)
 	if !bytes.Contains(data, []byte(`"schema_version": 1`)) {
 		t.Fatalf("snapshot JSON missing schema_version 1: %s", data)
 	}
@@ -340,10 +362,7 @@ func TestRunSync_Boundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runSync() = %v, want a completed run with a skipped source", err)
 	}
-	data, readErr := os.ReadFile(out)
-	if readErr != nil {
-		t.Fatalf("read snapshot: %v", readErr)
-	}
+	data := readSnapshot(t, out)
 	snap, parseErr := catalog.ParseSnapshot(data)
 	if parseErr != nil {
 		t.Fatalf("ParseSnapshot() = %v", parseErr)
@@ -383,10 +402,7 @@ func TestRunSync_GatewayUnsetBase_ZeroRequests(t *testing.T) {
 	if got := atomic.LoadInt32(&requestCount); got != 0 {
 		t.Fatalf("httptest server received %d requests, want 0", got)
 	}
-	data, err := os.ReadFile(out)
-	if err != nil {
-		t.Fatalf("read snapshot: %v", err)
-	}
+	data := readSnapshot(t, out)
 	snap, err := catalog.ParseSnapshot(data)
 	if err != nil {
 		t.Fatalf("ParseSnapshot() = %v", err)
@@ -443,10 +459,7 @@ func TestRunSync_RejectsInvalidRecordsAndWritesRest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runSync() = %v, want ok with invalid record rejected", err)
 	}
-	data, err := os.ReadFile(out)
-	if err != nil {
-		t.Fatalf("read snapshot: %v", err)
-	}
+	data := readSnapshot(t, out)
 	snap, err := catalog.ParseSnapshot(data)
 	if err != nil {
 		t.Fatalf("ParseSnapshot() = %v", err)
@@ -602,10 +615,7 @@ func TestRunSync_ClaudeLocal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runSync() = %v", err)
 	}
-	data, err := os.ReadFile(out)
-	if err != nil {
-		t.Fatalf("read snapshot: %v", err)
-	}
+	data := readSnapshot(t, out)
 	snap, err := catalog.ParseSnapshot(data)
 	if err != nil {
 		t.Fatalf("ParseSnapshot() = %v", err)

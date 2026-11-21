@@ -24,7 +24,7 @@ const detachWaitPolls = 360
 
 // systemctlUser asks the user manager about a unit and returns what it printed.
 func systemctlUser(ctx context.Context, args ...string) string {
-	out, err := exec.CommandContext(ctx, "systemctl", append([]string{"--user"}, args...)...).Output()
+	out, err := exec.CommandContext(ctx, "systemctl", append([]string{"--user"}, args...)...).Output() // #nosec G204 -- test callers select actions for their generated user unit
 	if err != nil && len(out) == 0 {
 		return err.Error()
 	}
@@ -68,7 +68,7 @@ func TestSlotRunDetachedOutlivesItsCaller(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute+30*time.Second)
 	defer cancel()
 	callerArgs := append([]string{"--user", "--scope", "--quiet", "--collect", "--expand-environment=no", "--unit=" + caller, "--", bin, "slot", "run", "--detach"}, run.args[1:]...)
-	printed, err := exec.CommandContext(ctx, "systemd-run", callerArgs...).CombinedOutput()
+	printed, err := exec.CommandContext(ctx, "systemd-run", callerArgs...).CombinedOutput() // #nosec G204 -- argv starts the test-built CLI in the generated user scope
 	if err != nil {
 		skipWithoutSandbox(t, "the caller's scope or the runner's service did not start", fmt.Sprintf("%v: %s", err, printed))
 	}
@@ -130,7 +130,7 @@ func waitDetachedReport(ctx context.Context, t *testing.T, out string) slot.Repo
 	t.Helper()
 	service := slotServiceName(out)
 	for i := 0; i < detachWaitPolls; i++ {
-		body, err := os.ReadFile(filepath.Join(out, slot.ReportFile))
+		body, err := os.ReadFile(filepath.Join(out, slot.ReportFile)) // #nosec G304 -- out is the test-created slot output directory
 		state := systemctlUser(ctx, "is-active", service)
 		if err == nil && state != "active" && state != "activating" && state != "deactivating" {
 			var report slot.Report

@@ -124,7 +124,7 @@ func loadSnapshotSchemaForTest(t *testing.T) map[string]any {
 	if path == "" {
 		path = filepath.Join("snapshot.schema.json")
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 G703 -- schema path is an explicit test override or the local snapshot schema
 	if err != nil {
 		t.Fatalf("read snapshot schema %s: %v", path, err)
 	}

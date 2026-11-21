@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -88,6 +89,7 @@ func TestShellMetacharactersRunLiterally(t *testing.T) {
 		t.Fatalf("Start() = %v, want nil", err)
 	}
 	waitForState(t, sup, "literal", StateDead)
+	// #nosec G304 -- logPath is the temporary log of this test job
 	body, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("ReadFile(log) = %v, want nil", err)
@@ -766,6 +768,7 @@ func TestShimErrorHelpers(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "append.log")
 	checkOpenAppendLogWrites(t, path)
+	// #nosec G304 -- path is append.log under t.TempDir
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile(%s) = %v, want nil", path, err)
@@ -1640,6 +1643,7 @@ func countingShimSupervisor(t *testing.T, name string) (*Supervisor, testRuntime
 }
 
 func countProbeStarts(path string) int {
+	// #nosec G304 -- path is the starts counter created under t.TempDir
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return 0
@@ -1656,7 +1660,7 @@ func corruptEventLog(t *testing.T, dir string) {
 			return walkErr
 		}
 		changed++
-		return os.WriteFile(path, []byte("garbage"), 0o600)
+		return os.WriteFile(path, []byte("garbage"), 0o600) // #nosec G122 -- walk targets test-owned event files in a private temporary directory
 	})
 	if err != nil {
 		t.Fatalf("WalkDir(%s) = %v, want nil", events, err)
@@ -1683,13 +1687,13 @@ func testRuntime(t *testing.T) testRuntimeConfig {
 		t.Fatalf("MkdirTemp(/var/tmp) = %v, want nil", err)
 	}
 	t.Cleanup(func() {
-		if err := os.RemoveAll(base); err != nil {
+		if err := os.RemoveAll(base); err != nil { // #nosec G703 -- base was created by MkdirTemp for this test
 			t.Fatalf("RemoveAll(%s) = %v, want nil", base, err)
 		}
 	})
 	keyPath := filepath.Join(base, "seed.hex")
 	seed := bytes.Repeat([]byte{3}, 32)
-	if err = os.WriteFile(keyPath, []byte(hex.EncodeToString(seed)), 0o600); err != nil {
+	if err = os.WriteFile(keyPath, []byte(hex.EncodeToString(seed)), 0o600); err != nil { // #nosec G703 -- keyPath is the seed file under the newly created test directory
 		t.Fatalf("WriteFile(key) = %v, want nil", err)
 	}
 	cfg := config.Default()
@@ -1905,6 +1909,7 @@ func appendFailingWriter(t *testing.T) *eventlog.Writer {
 func preclosedFile(t *testing.T) *os.File {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "preclosed")
+	// #nosec G304 -- path is preclosed under t.TempDir
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatalf("OpenFile(%s) = %v, want nil", path, err)
@@ -2023,6 +2028,7 @@ func waitForChildPIDInLog(t *testing.T, path string) int {
 	t.Helper()
 	pid := 0
 	found := waitUntil(func() bool {
+		// #nosec G304 -- caller passes the temporary child process log
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return false
@@ -2064,12 +2070,24 @@ func waitForUnlock(t *testing.T, sup *Supervisor, job config.JobConfig) {
 func countEvents(t *testing.T, dir string, typ string) int {
 	t.Helper()
 	events := filepath.Join(dir, "events")
+	root, err := os.OpenRoot(events)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("OpenRoot(events) = %v, want nil", err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close events root %s: %v", events, err)
+		}
+	}()
 	count := 0
-	err := filepath.WalkDir(events, func(path string, d os.DirEntry, walkErr error) error {
+	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil || d.IsDir() {
 			return walkErr
 		}
-		body, err := os.ReadFile(path)
+		body, err := root.ReadFile(path)
 		if err != nil {
 			return err
 		}

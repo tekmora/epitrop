@@ -483,7 +483,7 @@ func raw(s string) []byte {
 
 func readText(t *testing.T, path string) string {
 	t.Helper()
-	body, err := os.ReadFile(path)
+	body, err := os.ReadFile(path) // #nosec G304 -- callers pass test fixture files and temporary event log paths
 	if err != nil {
 		t.Fatalf("ReadFile(%s) = %v, want nil", path, err)
 	}
@@ -492,7 +492,7 @@ func readText(t *testing.T, path string) string {
 
 func writeFile(t *testing.T, path string, body []byte, mode os.FileMode) {
 	t.Helper()
-	if err := os.WriteFile(path, body, mode); err != nil {
+	if err := os.WriteFile(path, body, mode); err != nil { // #nosec G703 -- callers write fixture files and temporary event log paths
 		t.Fatalf("WriteFile(%s) = %v, want nil", path, err)
 	}
 }
@@ -572,7 +572,7 @@ func twoLogs(t *testing.T) (string, string, *corereceipt.Signer, Limits) {
 
 func copyFile(t *testing.T, from, to string) {
 	t.Helper()
-	body, err := os.ReadFile(from)
+	body, err := os.ReadFile(from) // #nosec G304 -- callers copy numbered records between temporary event logs
 	if err != nil {
 		t.Fatalf("ReadFile(%s) = %v", from, err)
 	}
@@ -769,7 +769,7 @@ func replayStableWithHeadBackAfter(t *testing.T, delay, lockTimeout time.Duratio
 	limits.LockTimeout = lockTimeout
 	appendEvent(t, dir, signer, limits, Event{Type: "task.created", TaskID: "task-1", Payload: raw(`{"state":"open"}`)})
 	head := filepath.Join(dir, "events", "HEAD.json")
-	body, err := os.ReadFile(head)
+	body, err := os.ReadFile(head) // #nosec G304 -- head is the event log head created by testLog
 	if err != nil {
 		t.Fatalf("ReadFile(HEAD) = %v, want nil", err)
 	}

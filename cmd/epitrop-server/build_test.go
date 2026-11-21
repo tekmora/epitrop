@@ -58,7 +58,7 @@ func buildServerOnce() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), serverBuildTimeout)
 	defer cancel()
 	bin := filepath.Join(dir, "epitrop-server")
-	out, err := exec.CommandContext(ctx, "go", "build", "-o", bin, ".").CombinedOutput()
+	out, err := exec.CommandContext(ctx, "go", "build", "-o", bin, ".").CombinedOutput() // #nosec G204 -- fixed go build writes the test binary to a temporary directory
 	if err != nil {
 		return "", fmt.Errorf("build epitrop-server: %w\n%s", err, out)
 	}
@@ -73,7 +73,7 @@ func TestBuiltServerStartsAndStopsAJob(t *testing.T) {
 	}
 	bin := buildServer(t)
 	ctx := testContext(t)
-	cmd := exec.CommandContext(ctx, bin, "--config="+writeConfigServing(t, `{"allow_mutations":true}`))
+	cmd := exec.CommandContext(ctx, bin, "--config="+writeConfigServing(t, `{"allow_mutations":true}`)) // #nosec G204 -- bin is the server built by this test
 	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "test-client", Version: "test"}, nil)
 	cs, err := client.Connect(ctx, &sdkmcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {

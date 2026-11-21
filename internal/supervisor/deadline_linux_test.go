@@ -95,7 +95,7 @@ func TestJobGetsItsStopSignalAndGraceAtTheDeadline(t *testing.T) {
 	if exited.LastReason != "deadline" || exited.LastExitCode == nil || *exited.LastExitCode != 0 {
 		t.Fatalf("job.exited = %+v, want reason deadline and the job's own exit code 0", exited)
 	}
-	if body, err := os.ReadFile(stopped); err != nil || strings.TrimSpace(string(body)) != "stopped" {
+	if body, err := os.ReadFile(stopped); err != nil || strings.TrimSpace(string(body)) != "stopped" { // #nosec G304 -- stopped is the temporary marker written by the test job
 		t.Fatalf("stop marker = %q, %v, want the job to have handled its stop signal", body, err)
 	}
 	assertGroupGone(t, marker)
