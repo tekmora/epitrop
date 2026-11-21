@@ -222,10 +222,13 @@ func writeHomeFile(path string, body []byte) error {
 	return nil
 }
 
-// checkHomeBind refuses a bind file that is no regular file, one that names no expiry, and
-// one whose token expires before until. The token itself never leaves this function, not in
-// an error either.
+// checkHomeBind refuses a bind file that is a refused client login, one that is no regular
+// file, one that names no expiry, and one whose token expires before until. The token itself
+// never leaves this function, not in an error either.
 func checkHomeBind(source string, entry config.SandboxHomeBind, until time.Time) error {
+	if err := config.RefusedHomeLogin(entry.File); err != nil {
+		return err
+	}
 	body, err := readHomeSource(source, entry.File)
 	if err != nil {
 		return err

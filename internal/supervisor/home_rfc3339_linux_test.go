@@ -3,6 +3,7 @@
 package supervisor
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,26 +14,24 @@ import (
 	"github.com/tekmora/epitrop/internal/config"
 )
 
-const homeAgyLogin = ".gemini/antigravity-cli/antigravity-oauth-token"
-
 // homeTestAgyToken is a login file shaped as the Antigravity CLI keeps its token: the
 // expiry an RFC 3339 string beside the tokens.
 func homeTestAgyToken(expiry string) string {
 	return fmt.Sprintf(`{"token":{"access_token":"at-secret-value","token_type":"Bearer","refresh_token":"rt-secret-value","expiry":%q},"auth_method":"oauth"}`, expiry)
 }
 
-// homeAgySandbox makes a home that takes HOME and binds the agy login file with its expiry
-// at token.expiry.
-func homeAgySandbox(t *testing.T, expiry string) config.SandboxConfig {
+// homeNestedSandbox makes a home that takes HOME and binds a nested login file with its
+// expiry at token.expiry.
+func homeNestedSandbox(t *testing.T, expiry string) config.SandboxConfig {
 	t.Helper()
 	sandbox := homeTestSandbox(t, time.Now().Add(time.Hour).Unix())
 	source := sandbox.Home.Source
-	if err := os.MkdirAll(filepath.Join(source, ".gemini", "antigravity-cli"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(source, ".client", "login"), 0o700); err != nil {
 		t.Fatalf("MkdirAll() = %v, want nil", err)
 	}
-	writeRT03File(t, filepath.Join(source, filepath.FromSlash(homeAgyLogin)), homeTestAgyToken(expiry))
+	writeRT03File(t, filepath.Join(source, filepath.FromSlash(homeNestedLogin)), homeTestAgyToken(expiry))
 	sandbox.Home.Env = "HOME"
-	sandbox.Home.Bind = []config.SandboxHomeBind{{File: homeAgyLogin, ExpiresRFC3339: "token.expiry"}}
+	sandbox.Home.Bind = []config.SandboxHomeBind{{File: homeNestedLogin, ExpiresRFC3339: "token.expiry"}}
 	return sandbox
 }
 
@@ -74,26 +73,26 @@ func TestRFC3339Expiry(t *testing.T) {
 	}
 }
 
-// An agy login whose expiry ends at the margin's end is refused, one a second later taken;
-// its two folders are made in the fresh home and the placeholder lies where agy looks.
+// A nested login whose expiry ends at the margin's end is refused, one a second later taken;
+// its two folders are made in the fresh home and the placeholder lies where the client looks.
 func TestPrepareHomeChecksAnRFC3339Expiry(t *testing.T) {
 	until := time.Now().Truncate(time.Second).Add(time.Hour)
 	limit := until.Add(homeTokenMargin)
-	err := prepareHome(homeAgySandbox(t, limit.Format(time.RFC3339)), until)
+	err := prepareHome(homeNestedSandbox(t, limit.Format(time.RFC3339)), until)
 	if err == nil || !strings.Contains(err.Error(), "expires before the run can end") {
 		t.Fatalf("prepareHome(expiry at the margin's end) = %v, want it refused", err)
 	}
-	sandbox := homeAgySandbox(t, limit.Add(time.Second).Format(time.RFC3339))
+	sandbox := homeNestedSandbox(t, limit.Add(time.Second).Format(time.RFC3339))
 	if err = prepareHome(sandbox, until); err != nil {
 		t.Fatalf("prepareHome(expiry a second beyond) = %v, want nil", err)
 	}
-	info, err := os.Lstat(filepath.Join(homeDir(sandbox), filepath.FromSlash(homeAgyLogin)))
+	info, err := os.Lstat(filepath.Join(homeDir(sandbox), filepath.FromSlash(homeNestedLogin)))
 	if err != nil || !info.Mode().IsRegular() || info.Size() != 0 || info.Mode().Perm() != 0o600 {
-		t.Errorf("placeholder %s = %v, %v, want an empty 0600 file", homeAgyLogin, info, err)
+		t.Errorf("placeholder %s = %v, %v, want an empty 0600 file", homeNestedLogin, info, err)
 	}
 }
 
-func TestPrepareHomeRefusesAnAgyLoginItCannotRead(t *testing.T) {
+func TestPrepareHomeRefusesALoginItCannotRead(t *testing.T) {
 	until := time.Now().Truncate(time.Second).Add(time.Hour)
 	valid := until.Add(homeTokenMargin + time.Minute).Format(time.RFC3339)
 	cases := []struct {
@@ -107,8 +106,8 @@ func TestPrepareHomeRefusesAnAgyLoginItCannotRead(t *testing.T) {
 		{"expiry only in the id token", `{"id_token":"a.b.c","token":{"refresh_token":"rt-secret-value"}}`, "names no value"},
 	}
 	for _, tc := range cases {
-		sandbox := homeAgySandbox(t, valid)
-		writeRT03File(t, filepath.Join(sandbox.Home.Source, filepath.FromSlash(homeAgyLogin)), tc.body)
+		sandbox := homeNestedSandbox(t, valid)
+		writeRT03File(t, filepath.Join(sandbox.Home.Source, filepath.FromSlash(homeNestedLogin)), tc.body)
 		err := prepareHome(sandbox, until)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: prepareHome() = %v, want an error holding %q", tc.name, err, tc.want)
@@ -119,12 +118,52 @@ func TestPrepareHomeRefusesAnAgyLoginItCannotRead(t *testing.T) {
 	}
 }
 
+func TestPrepareHomeRefusesTheConsumerAgyLogin(t *testing.T) {
+	const agyLogin = ".gemini/antigravity-cli/antigravity-oauth-token"
+	until := time.Now().Truncate(time.Second).Add(time.Hour)
+	valid := until.Add(homeTokenMargin + time.Minute).Format(time.RFC3339)
+	sandbox := homeTestSandbox(t, until.Add(homeTokenMargin+time.Minute).Unix())
+	sourceFile := filepath.Join(sandbox.Home.Source, filepath.FromSlash(agyLogin))
+	if err := os.MkdirAll(filepath.Dir(sourceFile), 0o700); err != nil {
+		t.Fatalf("MkdirAll() = %v, want nil", err)
+	}
+	writeRT03File(t, sourceFile, homeTestAgyToken(valid))
+	sandbox.Home.Env = "HOME"
+	sandbox.Home.Bind = []config.SandboxHomeBind{{File: agyLogin, ExpiresRFC3339: "token.expiry"}}
+
+	err := prepareHome(sandbox, until)
+	if err == nil || !strings.Contains(err.Error(), "#368") {
+		t.Fatalf("prepareHome(consumer agy login) = %v, want an error holding #368", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(homeDir(sandbox), ".gemini")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("Lstat(.gemini) = %v, want ErrNotExist", statErr)
+	}
+	walkErr := filepath.WalkDir(homeDir(sandbox), func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if filepath.Base(path) == "antigravity-oauth-token" {
+			t.Errorf("found %s in prepared home after refusal", path)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("WalkDir(homeDir) = %v, want nil", walkErr)
+	}
+	if err = os.Remove(sourceFile); err != nil {
+		t.Fatalf("Remove(source login) = %v, want nil", err)
+	}
+	if err = prepareHome(sandbox, until); err == nil || !strings.Contains(err.Error(), "#368") {
+		t.Errorf("prepareHome(missing consumer agy login) = %v, want #368 before reading source", err)
+	}
+}
+
 // The shim gets every expiry kind through its flags, the RFC 3339 one included.
 func TestHomeFlagsCarryEveryExpiryKind(t *testing.T) {
 	home := &config.SandboxHome{Source: "/s", Env: "HOME", Bind: []config.SandboxHomeBind{
 		{File: "auth.json", JWT: "tokens.access_token"},
 		{File: ".credentials.json", ExpiresMS: "claudeAiOauth.expiresAt"},
-		{File: homeAgyLogin, ExpiresRFC3339: "token.expiry"},
+		{File: homeNestedLogin, ExpiresRFC3339: "token.expiry"},
 	}}
 	args := homeFlagArgs(home)
 	var flags homeFlags
