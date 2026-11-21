@@ -521,6 +521,26 @@ func applyLogRotationDefaults(rot *JobLogRotation) {
 	}
 }
 
+// NormalizeLogRotation returns rot with zero fields set to DefaultLogMaxBytes and
+// DefaultLogKeepFiles.
+func NormalizeLogRotation(rot JobLogRotation) JobLogRotation {
+	applyLogRotationDefaults(&rot)
+	return rot
+}
+
+// ValidateLogRotation applies default values for unset fields and checks that max_bytes and
+// keep_files lie within their allowed bounds.
+func ValidateLogRotation(rot JobLogRotation) error {
+	applyLogRotationDefaults(&rot)
+	if rot.MaxBytes < MinLogMaxBytes || rot.MaxBytes > MaxLogMaxBytes {
+		return fmt.Errorf("log_rotation.max_bytes must be %d..%d", MinLogMaxBytes, MaxLogMaxBytes)
+	}
+	if rot.KeepFiles < MinLogKeepFiles || rot.KeepFiles > MaxLogKeepFiles {
+		return fmt.Errorf("log_rotation.keep_files must be %d..%d", MinLogKeepFiles, MaxLogKeepFiles)
+	}
+	return nil
+}
+
 func validateJobsLoaded(jobs []JobConfig) error {
 	for i := 0; i < len(jobs); i++ {
 		if err := ValidateJobTrigger(jobs[i]); err != nil {
@@ -534,11 +554,8 @@ func validateJobsLoaded(jobs []JobConfig) error {
 }
 
 func validateJobLogRotation(index int, rot JobLogRotation) error {
-	if rot.MaxBytes < MinLogMaxBytes || rot.MaxBytes > MaxLogMaxBytes {
-		return fmt.Errorf("config: jobs/%d/log_rotation.max_bytes: must be %d..%d", index, MinLogMaxBytes, MaxLogMaxBytes)
-	}
-	if rot.KeepFiles < MinLogKeepFiles || rot.KeepFiles > MaxLogKeepFiles {
-		return fmt.Errorf("config: jobs/%d/log_rotation.keep_files: must be %d..%d", index, MinLogKeepFiles, MaxLogKeepFiles)
+	if err := ValidateLogRotation(rot); err != nil {
+		return fmt.Errorf("config: jobs/%d/%w", index, err)
 	}
 	return nil
 }

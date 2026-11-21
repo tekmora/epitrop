@@ -365,6 +365,97 @@ func assertNoInterleavedLines(t *testing.T, lines []string, count int) {
 	}
 }
 
+func TestLogRotationHeartbeatOnPartialLine(t *testing.T) {
+	t.Run("partial_chunk_moves_mtime_without_writing_partial_line", func(t *testing.T) {
+		assertPartialChunkTouchesLog(t)
+	})
+	t.Run("newline_chunk_leaves_pending_empty", func(t *testing.T) {
+		assertNewlineChunkLeavesPendingEmpty(t)
+	})
+	t.Run("touch_failure_wraps_and_preserves_first_error", func(t *testing.T) {
+		assertTouchErrorWrappedAndKept(t)
+	})
+}
+
+func assertPartialChunkTouchesLog(t *testing.T) {
+	t.Helper()
+	logPath := filepath.Join(t.TempDir(), "heartbeat.log")
+	log, err := openRotatingLog(logPath, config.JobLogRotation{MaxBytes: 4096, KeepFiles: 3})
+	if err != nil {
+		t.Fatalf("openRotatingLog() = %v, want nil", err)
+	}
+	defer func() {
+		if closeErr := log.Close(); closeErr != nil {
+			t.Errorf("Close() = %v, want nil", closeErr)
+		}
+	}()
+	past := time.Now().Add(-time.Hour)
+	if err = os.Chtimes(logPath, past, past); err != nil {
+		t.Fatalf("Chtimes(1h back) = %v, want nil", err)
+	}
+	before := time.Now().Add(-5 * time.Second)
+	splitter := newLineSplitter(log)
+	if err = splitter.writeChunk([]byte("progress 50%\r")); err != nil {
+		t.Fatalf("writeChunk(no newline) = %v, want nil", err)
+	}
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("Stat(%s) = %v, want nil", logPath, err)
+	}
+	if info.ModTime().Before(before) || time.Since(info.ModTime()) > 10*time.Second {
+		t.Fatalf("mtime = %v, want within a few seconds of now (after %v)", info.ModTime(), before)
+	}
+	if got := mustReadLogFile(t, logPath); len(got) != 0 {
+		t.Fatalf("active log content = %q, want empty (no partial line written)", got)
+	}
+}
+
+func assertNewlineChunkLeavesPendingEmpty(t *testing.T) {
+	t.Helper()
+	logPath := filepath.Join(t.TempDir(), "exact-nl.log")
+	log, err := openRotatingLog(logPath, config.JobLogRotation{MaxBytes: 4096, KeepFiles: 3})
+	if err != nil {
+		t.Fatalf("openRotatingLog() = %v, want nil", err)
+	}
+	splitter := newLineSplitter(log)
+	if err = splitter.writeChunk([]byte("exact-line\n")); err != nil {
+		t.Fatalf("writeChunk(newline) = %v, want nil", err)
+	}
+	if err = log.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+	if len(splitter.pending) != 0 {
+		t.Fatalf("pending len = %d, want 0", len(splitter.pending))
+	}
+	if got := string(mustReadLogFile(t, logPath)); got != "exact-line\n" {
+		t.Fatalf("active log content = %q, want %q", got, "exact-line\n")
+	}
+}
+
+func assertTouchErrorWrappedAndKept(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	sink, err := openAppendLog(filepath.Join(dir, "sink.log"))
+	if err != nil {
+		t.Fatalf("openAppendLog(sink) = %v, want nil", err)
+	}
+	broken := &rotatingLog{
+		path:      filepath.Join(dir, "missing", "job.log"),
+		maxBytes:  4096,
+		keepFiles: 3,
+		file:      sink,
+	}
+	defer func() {
+		if closeErr := broken.Close(); closeErr != nil {
+			t.Errorf("Close() = %v, want nil", closeErr)
+		}
+	}()
+	err = copyJobLines(&smallChunkReader{data: []byte("progress\r"), step: 9}, broken)
+	if err == nil || !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "job-shim: touch log") {
+		t.Fatalf("copyJobLines(touch error) = %v, want wrapped os.ErrNotExist with context", err)
+	}
+}
+
 func TestLogRotationSupervisorBoundsAndShimFlags(t *testing.T) {
 	base := config.JobConfig{
 		Name:    "rot",
@@ -378,6 +469,27 @@ func TestLogRotationSupervisorBoundsAndShimFlags(t *testing.T) {
 	}
 	assertLogRotationBounds(t, base)
 	assertShimRotationFlags(t, base)
+	assertShimRotationBounds(t)
+}
+
+func assertShimRotationBounds(t *testing.T) {
+	t.Helper()
+	if err := checkShimLogRotation(config.JobLogRotation{MaxBytes: config.MaxLogMaxBytes, KeepFiles: config.MaxLogKeepFiles}); err != nil {
+		t.Fatalf("checkShimLogRotation(max) = %v, want nil", err)
+	}
+	bad := []struct {
+		rot  config.JobLogRotation
+		want string
+	}{
+		{config.JobLogRotation{MaxBytes: config.MinLogMaxBytes - 1}, "job-shim: log_rotation.max_bytes must be 4096..1073741824"},
+		{config.JobLogRotation{MaxBytes: config.MaxLogMaxBytes + 1}, "job-shim: log_rotation.max_bytes must be 4096..1073741824"},
+		{config.JobLogRotation{KeepFiles: config.MaxLogKeepFiles + 1}, "job-shim: log_rotation.keep_files must be 1..100"},
+	}
+	for i := 0; i < len(bad); i++ {
+		if err := checkShimLogRotation(bad[i].rot); err == nil || err.Error() != bad[i].want {
+			t.Fatalf("checkShimLogRotation(%+v) = %v, want %q", bad[i].rot, err, bad[i].want)
+		}
+	}
 }
 
 func assertLogRotationBounds(t *testing.T, base config.JobConfig) {

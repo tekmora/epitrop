@@ -493,6 +493,38 @@ func TestLoadJobLogRotation(t *testing.T) {
 	assertJobLogRotationDefaultsAndBounds(t)
 	assertJobLogRotationRefusals(t)
 	assertJobLogRotationSchemaDefaults(t)
+	assertNormalizeAndValidateLogRotation(t)
+}
+
+func assertNormalizeAndValidateLogRotation(t *testing.T) {
+	t.Helper()
+	if got := NormalizeLogRotation(JobLogRotation{}); got != (JobLogRotation{MaxBytes: DefaultLogMaxBytes, KeepFiles: DefaultLogKeepFiles}) {
+		t.Fatalf("NormalizeLogRotation(zero) = %+v, want defaults", got)
+	}
+	if got := NormalizeLogRotation(JobLogRotation{MaxBytes: 8192, KeepFiles: 7}); got != (JobLogRotation{MaxBytes: 8192, KeepFiles: 7}) {
+		t.Fatalf("NormalizeLogRotation(explicit) = %+v, want explicit values", got)
+	}
+	good := []JobLogRotation{{}, {MaxBytes: MinLogMaxBytes, KeepFiles: MinLogKeepFiles}, {MaxBytes: MaxLogMaxBytes, KeepFiles: MaxLogKeepFiles}}
+	for i := 0; i < len(good); i++ {
+		if err := ValidateLogRotation(good[i]); err != nil {
+			t.Fatalf("ValidateLogRotation(%+v) = %v, want nil", good[i], err)
+		}
+	}
+	bad := []struct {
+		rot  JobLogRotation
+		want string
+	}{
+		{JobLogRotation{MaxBytes: MinLogMaxBytes - 1}, "log_rotation.max_bytes must be 4096..1073741824"},
+		{JobLogRotation{MaxBytes: MaxLogMaxBytes + 1}, "log_rotation.max_bytes must be 4096..1073741824"},
+		{JobLogRotation{MaxBytes: -1}, "log_rotation.max_bytes must be 4096..1073741824"},
+		{JobLogRotation{KeepFiles: -1}, "log_rotation.keep_files must be 1..100"},
+		{JobLogRotation{KeepFiles: MaxLogKeepFiles + 1}, "log_rotation.keep_files must be 1..100"},
+	}
+	for i := 0; i < len(bad); i++ {
+		if err := ValidateLogRotation(bad[i].rot); err == nil || err.Error() != bad[i].want {
+			t.Fatalf("ValidateLogRotation(%+v) = %v, want %q", bad[i].rot, err, bad[i].want)
+		}
+	}
 }
 
 func assertJobLogRotationDefaultsAndBounds(t *testing.T) {

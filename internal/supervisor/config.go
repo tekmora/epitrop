@@ -57,7 +57,6 @@ func checkJob(job config.JobConfig) error {
 }
 
 func checkJobBounds(job config.JobConfig) error {
-	rot := normalizeLogRotation(job.LogRotation)
 	bounds := []struct {
 		name            string
 		value, min, max int
@@ -68,15 +67,13 @@ func checkJobBounds(job config.JobConfig) error {
 		{"stop.grace_seconds", job.Stop.GraceSeconds, 0, config.MaxStopGraceSeconds},
 		{"max_runtime_seconds", job.MaxRuntimeSeconds, 0, config.MaxJobRuntimeSeconds},
 		{"heartbeat.max_age_seconds", job.Heartbeat.MaxAgeSeconds, 0, config.MaxHeartbeatSeconds},
-		{"log_rotation.max_bytes", rot.MaxBytes, config.MinLogMaxBytes, config.MaxLogMaxBytes},
-		{"log_rotation.keep_files", rot.KeepFiles, config.MinLogKeepFiles, config.MaxLogKeepFiles},
 	}
 	for i := 0; i < len(bounds); i++ {
 		if bounds[i].value < bounds[i].min || bounds[i].value > bounds[i].max {
 			return fmt.Errorf("%s must be %d..%d", bounds[i].name, bounds[i].min, bounds[i].max)
 		}
 	}
-	return nil
+	return config.ValidateLogRotation(job.LogRotation)
 }
 
 func (s *Supervisor) selectedJobs(name string) ([]config.JobConfig, error) {
@@ -109,19 +106,9 @@ func normalizeJob(job config.JobConfig) config.JobConfig {
 	if job.Stop.Signal == "" {
 		job.Stop.Signal = "TERM"
 	}
-	job.LogRotation = normalizeLogRotation(job.LogRotation)
+	job.LogRotation = config.NormalizeLogRotation(job.LogRotation)
 	job.Sandbox = config.NormalizeSandbox(job.Sandbox)
 	return job
-}
-
-func normalizeLogRotation(rot config.JobLogRotation) config.JobLogRotation {
-	if rot.MaxBytes == 0 {
-		rot.MaxBytes = config.DefaultLogMaxBytes
-	}
-	if rot.KeepFiles == 0 {
-		rot.KeepFiles = config.DefaultLogKeepFiles
-	}
-	return rot
 }
 
 func readyContext(ctx context.Context, op string) error {

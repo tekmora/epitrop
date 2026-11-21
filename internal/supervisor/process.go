@@ -17,7 +17,7 @@ func (s *Supervisor) shimCmd(ctx context.Context, job config.JobConfig) *exec.Cm
 }
 
 func (s *Supervisor) shimCmdFor(ctx context.Context, job config.JobConfig, unlessStopped bool, expected *eventlog.Job) *exec.Cmd {
-	rot := normalizeLogRotation(job.LogRotation)
+	rot := config.NormalizeLogRotation(job.LogRotation)
 	args := make([]string, 0, len(s.shimCommand)+len(job.Command)+23)
 	args = append(args, s.shimCommand[1:]...)
 	args = append(args,

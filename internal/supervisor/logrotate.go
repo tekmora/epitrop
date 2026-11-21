@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/tekmora/epitrop/internal/config"
 )
@@ -30,7 +31,7 @@ type rotatingLog struct {
 }
 
 func openRotatingLog(path string, rot config.JobLogRotation) (*rotatingLog, error) {
-	rot = normalizeLogRotation(rot)
+	rot = config.NormalizeLogRotation(rot)
 	if rot.MaxBytes < 1 || rot.KeepFiles < 1 {
 		return nil, fmt.Errorf("job-shim: invalid log rotation bounds %d/%d", rot.MaxBytes, rot.KeepFiles)
 	}
@@ -69,6 +70,16 @@ func (l *rotatingLog) Close() error {
 	err := l.file.Close()
 	l.file = nil
 	return err
+}
+
+func (l *rotatingLog) touch() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	if err := os.Chtimes(l.path, now, now); err != nil {
+		return fmt.Errorf("job-shim: touch log %s: %w", l.path, err)
+	}
+	return nil
 }
 
 func (l *rotatingLog) writeLine(line []byte) error {
@@ -208,17 +219,25 @@ func newLineSplitter(log *rotatingLog) *lineSplitter {
 }
 
 func (s *lineSplitter) writeChunk(chunk []byte) error {
+	if len(chunk) == 0 {
+		return nil
+	}
 	var firstErr error
+	wrote := false
 	limit := len(chunk)
 	for step := 0; step < limit && len(chunk) > 0; step++ {
-		take, err := s.consumeStep(chunk)
+		take, didWrite, err := s.consumeStep(chunk)
+		wrote = wrote || didWrite
 		recordFirstErr(&firstErr, err)
 		chunk = chunk[take:]
+	}
+	if !wrote && len(s.pending) > 0 {
+		recordFirstErr(&firstErr, s.log.touch())
 	}
 	return firstErr
 }
 
-func (s *lineSplitter) consumeStep(chunk []byte) (int, error) {
+func (s *lineSplitter) consumeStep(chunk []byte) (int, bool, error) {
 	room := s.cap - len(s.pending)
 	window := chunk
 	if len(window) > room {
@@ -227,20 +246,20 @@ func (s *lineSplitter) consumeStep(chunk []byte) (int, error) {
 	if nl := bytes.IndexByte(window, '\n'); nl >= 0 {
 		take := nl + 1
 		if len(s.pending) == 0 {
-			return take, s.log.writeLine(window[:take])
+			return take, true, s.log.writeLine(window[:take])
 		}
 		s.pending = appendBounded(s.pending, window[:take], s.cap)
 		err := s.log.writeLine(s.pending)
 		s.pending = s.pending[:0]
-		return take, err
+		return take, true, err
 	}
 	s.pending = appendBounded(s.pending, window, s.cap)
 	if len(s.pending) < s.cap {
-		return len(window), nil
+		return len(window), false, nil
 	}
 	err := s.log.writeLine(s.pending)
 	s.pending = s.pending[:0]
-	return len(window), err
+	return len(window), true, err
 }
 
 func (s *lineSplitter) flush() error {

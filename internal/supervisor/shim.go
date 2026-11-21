@@ -97,7 +97,7 @@ func parseShimArgs(args []string) (shimConfig, error) {
 	if err = checkShimConfig(cfg); err != nil {
 		return shimConfig{}, err
 	}
-	cfg.LogRotation = normalizeLogRotation(cfg.LogRotation)
+	cfg.LogRotation = config.NormalizeLogRotation(cfg.LogRotation)
 	return cfg, nil
 }
 
@@ -182,12 +182,9 @@ func checkShimStop(cfg shimConfig) error {
 }
 
 func checkShimLogRotation(rot config.JobLogRotation) error {
-	rot = normalizeLogRotation(rot)
-	if rot.MaxBytes < config.MinLogMaxBytes || rot.MaxBytes > config.MaxLogMaxBytes {
-		return fmt.Errorf("job-shim: log max bytes must be %d..%d", config.MinLogMaxBytes, config.MaxLogMaxBytes)
-	}
-	if rot.KeepFiles < config.MinLogKeepFiles || rot.KeepFiles > config.MaxLogKeepFiles {
-		return fmt.Errorf("job-shim: log keep files must be %d..%d", config.MinLogKeepFiles, config.MaxLogKeepFiles)
+	rot = config.NormalizeLogRotation(rot)
+	if err := config.ValidateLogRotation(rot); err != nil {
+		return fmt.Errorf("job-shim: %w", err)
 	}
 	return nil
 }
