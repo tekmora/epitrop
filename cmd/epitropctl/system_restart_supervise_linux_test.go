@@ -58,7 +58,7 @@ func startSupervise(t *testing.T, bin, cfgPath string) *superviseProc {
 	outFile, errFile := openSuperviseLogs(t)
 	outPath, errPath := outFile.Name(), errFile.Name()
 	ctx, cancel := context.WithTimeout(t.Context(), superviseRunBound)
-	cmd := exec.CommandContext(ctx, bin, "jobs", "supervise", "--config="+cfgPath) // #nosec G204 -- bin is built by buildCLI and cfgPath is a temporary fixture
+	cmd := newCLICommand(ctx, bin, "jobs", "supervise", "--config="+cfgPath)
 	cmd.Env = isolatedCLIEnv(t)
 	cmd.Stdout = outFile
 	cmd.Stderr = errFile

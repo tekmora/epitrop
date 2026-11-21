@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -111,7 +110,7 @@ func stopDaemonCleanup(t *testing.T, bin, cfgPath string, env []string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "jobs", "stop", "--config="+cfgPath, restartJobName) // #nosec G204 -- bin is built by buildCLI and cfgPath is a temporary fixture
+	cmd := newCLICommand(ctx, bin, "jobs", "stop", "--config="+cfgPath, restartJobName)
 	cmd.Env = env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Errorf("cleanup jobs stop (%s): %v: %s", cfgPath, err, out)
