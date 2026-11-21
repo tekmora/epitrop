@@ -66,9 +66,9 @@ func TestDiscover(t *testing.T) {
 		{"tagged packages", map[string]string{"a.go": "//go:build alpha\n\npackage a\n", "nested/b.go": "//go:build beta\n\npackage b\n"}, []string{"alpha", "beta"}, ""},
 		{"toolchain", map[string]string{"a.go": "//go:build linux || windows || amd64 || unix || cgo || gc || gccgo || go1.21 || goexperiment.x || amd64.v2\n\npackage a\n"}, []string{}, ""},
 		{"os feature name", map[string]string{"a.go": "//go:build linux.x\n\npackage a\n"}, []string{"linux.x"}, ""},
-		{"defined feature tags", map[string]string{"a.go": "//go:build 386.387 || 386.sse2 || amd64.v1 || amd64.v3 || arm.5 || arm.7 || arm64.v8.0 || arm64.v9.5 || mips.hardfloat || mipsle.softfloat || mips64.softfloat || mips64le.hardfloat || ppc64.power8 || ppc64le.power10 || riscv64.rva20u64 || riscv64.rva23u64 || wasm.satconv || wasm.signext\n\npackage a\n"}, []string{}, ""},
+		{"defined feature tags", map[string]string{"a.go": "//go:build 386.387 || 386.sse2 || 386.softfloat || amd64.v1 || amd64.v3 || amd64.v4 || arm.5 || arm.7 || arm64.v8.0 || arm64.v9.5 || mips.hardfloat || mipsle.softfloat || mips64.softfloat || mips64le.hardfloat || ppc64.power8 || ppc64le.power10 || riscv64.rva20u64 || riscv64.rva23u64 || wasm.satconv || wasm.signext\n\npackage a\n"}, []string{}, ""},
 		{"arch prefix custom", map[string]string{"a.go": "//go:build amd64.audit\n\npackage a\n"}, []string{"amd64.audit"}, ""},
-		{"undefined feature names", map[string]string{"a.go": "//go:build amd64.v4 || arm64.v9.6 || arm64.v8 || riscv64.rva23 || wasm.audit\n\npackage a\n"}, []string{"amd64.v4", "arm64.v8", "arm64.v9.6", "riscv64.rva23", "wasm.audit"}, ""},
+		{"undefined feature names", map[string]string{"a.go": "//go:build amd64.v5 || 386.sse3 || arm64.v9.6 || arm64.v8 || riscv64.rva23 || wasm.audit\n\npackage a\n"}, []string{"386.sse3", "amd64.v5", "arm64.v8", "arm64.v9.6", "riscv64.rva23", "wasm.audit"}, ""},
 		{"feature and custom", map[string]string{"a.go": "//go:build amd64.v2 || amd64.audit\n\npackage a\n"}, []string{"amd64.audit"}, ""},
 		{"negation", map[string]string{"a.go": "//go:build !alpha\n\npackage a\n"}, []string{"alpha"}, ""},
 		{"disjunction", map[string]string{"a.go": "//go:build alpha || beta\n\npackage a\n"}, []string{"alpha", "beta"}, ""},
@@ -157,6 +157,66 @@ func TestHostToolTags(t *testing.T) {
 	}
 	if !isCustom("amd64.audit", known) {
 		t.Error("amd64.audit is not reported as custom")
+	}
+}
+
+// featureTagsFor asks the go command which feature tags it sets for one spec:
+// GOOS, GOARCH and optional NAME=value feature settings.
+func featureTagsFor(t *testing.T, spec string) []string {
+	t.Helper()
+	fields := strings.Fields(spec)
+	t.Setenv("GOOS", fields[0])
+	t.Setenv("GOARCH", fields[1])
+	for _, pair := range fields[2:] {
+		name, value, _ := strings.Cut(pair, "=")
+		t.Setenv(name, value)
+	}
+	out, err := goCommand("list", "-find", "-f", "{{join context.ToolTags \" \"}}", "unsafe")
+	if err != nil {
+		t.Fatalf("%s: %v", spec, err)
+	}
+	var tags []string
+	for _, tag := range strings.Fields(string(out)) {
+		if !strings.HasPrefix(tag, "goexperiment.") {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
+
+// TestFeatureTagsMatchToolchain checks featureTags both ways against the go
+// command: each architecture at its highest level, and each value where levels
+// do not include each other. A tag the toolchain sets must be listed, and a
+// listed tag must be one the toolchain sets.
+func TestFeatureTagsMatchToolchain(t *testing.T) {
+	listed := map[string]bool{}
+	for _, word := range strings.Fields(featureTags) {
+		listed[word] = true
+	}
+	seen := map[string]bool{}
+	for _, spec := range []string{
+		"linux 386 GO386=387", "linux 386 GO386=sse2", "linux 386 GO386=softfloat",
+		"linux amd64 GOAMD64=v4", "linux arm GOARM=7", "linux arm64 GOARM64=v9.5",
+		"linux mips GOMIPS=hardfloat", "linux mips GOMIPS=softfloat",
+		"linux mipsle GOMIPS=hardfloat", "linux mipsle GOMIPS=softfloat",
+		"linux mips64 GOMIPS64=hardfloat", "linux mips64 GOMIPS64=softfloat",
+		"linux mips64le GOMIPS64=hardfloat", "linux mips64le GOMIPS64=softfloat",
+		"linux ppc64 GOPPC64=power10", "linux ppc64le GOPPC64=power10",
+		"linux riscv64 GORISCV64=rva23u64", "js wasm",
+	} {
+		t.Run(spec, func(t *testing.T) {
+			for _, tag := range featureTagsFor(t, spec) {
+				seen[tag] = true
+				if !listed[tag] {
+					t.Errorf("toolchain tag %q is missing from featureTags", tag)
+				}
+			}
+		})
+	}
+	for word := range listed {
+		if !seen[word] {
+			t.Errorf("featureTags word %q is not set by the toolchain", word)
+		}
 	}
 }
 
