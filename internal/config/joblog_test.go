@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -212,6 +213,45 @@ func unresolvedAbsCases(wd string) []unresolvedAbsCase {
 	}
 }
 
+type spliceLogPathTargetCase struct {
+	name         string
+	resolved     string
+	target       string
+	rest         []string
+	wantResolved string
+	wantPending  []string
+}
+
+func TestSpliceLogPathTarget(t *testing.T) {
+	cases := spliceLogPathTargetCases()
+	for i := 0; i < len(cases); i++ {
+		tc := cases[i]
+		t.Run(tc.name, func(t *testing.T) {
+			gotResolved, gotPending := spliceLogPathTarget(tc.resolved, tc.target, tc.rest)
+			if gotResolved != tc.wantResolved || !slices.Equal(gotPending, tc.wantPending) {
+				t.Fatalf("spliceLogPathTarget(%q, %q, %q) = (%q, %q), want (%q, %q)", tc.resolved, tc.target, tc.rest, gotResolved, gotPending, tc.wantResolved, tc.wantPending)
+			}
+		})
+	}
+}
+
+func spliceLogPathTargetCases() []spliceLogPathTargetCase {
+	rest := []string{"z"}
+	if runtime.GOOS == "windows" {
+		return []spliceLogPathTargetCase{
+			{"absolute_target_on_other_drive", `C:\r\d`, `D:\x\a.log`, rest, `D:\`, []string{"x", "a.log", "z"}},
+			{"root_relative_target_on_windows", `C:\r\d`, `\x\a.log`, rest, `C:\`, []string{"x", "a.log", "z"}},
+			{"unc_target_on_windows", `C:\r\d`, `\\srv\share\a.log`, rest, `\\srv\share\`, []string{"a.log", "z"}},
+			{"relative_target_on_windows", `C:\r\d`, `x\a.log`, rest, `C:\r\d`, []string{"x", "a.log", "z"}},
+		}
+	}
+	return []spliceLogPathTargetCase{
+		{"absolute_target", "/r/d", "/x/a.log", rest, "/", []string{"x", "a.log", "z"}},
+		{"relative_target", "/r/d", "x/a.log", rest, "/r/d", []string{"x", "a.log", "z"}},
+		{"dot_dot_target", "/r/d", "../y/a.log", rest, "/r/d", []string{"..", "y", "a.log", "z"}},
+	}
+}
+
 func TestResolveExistingAncestor(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -227,6 +267,8 @@ func TestResolveExistingAncestor(t *testing.T) {
 		{"dangling_file_link_follows_to_target", ancestorDanglingFileLink},
 		{"dangling_link_absolute_target_below_missing", ancestorDanglingLinkAbsTargetBelowMissing},
 		{"dangling_link_chain", ancestorDanglingLinkChain},
+		{"dangling_link_chain_at_hop_cap", ancestorDanglingLinkChainAtHopCap},
+		{"dangling_link_chain_past_hop_cap", ancestorDanglingLinkChainPastHopCap},
 		{"link_cycle_stops_at_hop_cap", ancestorLinkCycleStopsAtHopCap},
 	}
 	for i := 0; i < len(cases); i++ {
@@ -318,6 +360,36 @@ func ancestorDanglingLinkChain(t *testing.T) (string, string) {
 		t.Fatalf("Symlink(%s) = %v, want nil", secondLink, err)
 	}
 	return firstLink, filepath.Join(root, "real.log")
+}
+
+func ancestorDanglingLinkChainAtHopCap(t *testing.T) (string, string) {
+	t.Helper()
+	root := newResolvedTempDir(t)
+	buildDanglingLinkChain(t, root, 40)
+	// On Linux, O_CREAT open through a 40-symlink chain succeeds and creates real.log.
+	return filepath.Join(root, "l1"), filepath.Join(root, "real.log")
+}
+
+func ancestorDanglingLinkChainPastHopCap(t *testing.T) (string, string) {
+	t.Helper()
+	root := newResolvedTempDir(t)
+	buildDanglingLinkChain(t, root, 41)
+	// On Linux, O_CREAT open through a 41-symlink chain fails with ELOOP.
+	return filepath.Join(root, "l1"), filepath.Join(root, "l41")
+}
+
+func buildDanglingLinkChain(t *testing.T, root string, linkCount int) {
+	t.Helper()
+	for i := 1; i <= linkCount; i++ {
+		target := fmt.Sprintf("l%d", i+1)
+		if i == linkCount {
+			target = "real.log"
+		}
+		linkPath := filepath.Join(root, fmt.Sprintf("l%d", i))
+		if err := os.Symlink(target, linkPath); err != nil {
+			t.Fatalf("Symlink(%s -> %s) = %v, want nil", linkPath, target, err)
+		}
+	}
 }
 
 func ancestorLinkCycleStopsAtHopCap(t *testing.T) (string, string) {

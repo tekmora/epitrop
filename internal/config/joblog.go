@@ -117,12 +117,16 @@ func readLogPathSymlink(path string) (string, bool) {
 	return target, true
 }
 
-// spliceLogPathTarget prepends target's components before rest, restarting at target's root when absolute.
+// spliceLogPathTarget prepends target's components before rest, restarting at
+// target's own root when absolute, at the link's volume root when root-relative
+// on Windows, or keeping the link's directory when relative.
 func spliceLogPathTarget(resolved, target string, rest []string) (string, []string) {
 	if filepath.IsAbs(target) {
 		vol := filepath.VolumeName(target)
 		resolved = vol + string(filepath.Separator)
 		target = target[len(vol):]
+	} else if target != "" && filepath.VolumeName(target) == "" && os.IsPathSeparator(target[0]) {
+		resolved = filepath.VolumeName(resolved) + string(filepath.Separator)
 	}
 	return resolved, append(splitLogPathComponents(target), rest...)
 }
