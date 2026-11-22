@@ -195,11 +195,14 @@ func restartPubKeyHex() string {
 	return hex.EncodeToString(priv[ed25519.SeedSize:])
 }
 
-// countRestartEvents counts records of typ in eventLogDir. eventlog.ReplayAfter verifies
-// that the tail record matches HEAD.json: Supervise's writer.RepairTail removes any
-// interrupted tail record at startup, and a persisting unlinked tail record is a replay
-// error that fails the test.
-func countRestartEvents(t *testing.T, eventLogDir, typ string) int {
+// wantEventCount pairs an event record type with its expected committed count.
+type wantEventCount struct {
+	typ   string
+	count int
+}
+
+// countRestartEventsByType replays eventLogDir once and counts every committed record type.
+func countRestartEventsByType(t *testing.T, eventLogDir string) map[string]int {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -207,13 +210,20 @@ func countRestartEvents(t *testing.T, eventLogDir, typ string) int {
 	if err != nil {
 		t.Fatalf("replay committed events in %s: %v", eventLogDir, err)
 	}
-	count := 0
+	counts := make(map[string]int, len(records))
 	for i := 0; i < len(records); i++ {
-		if records[i].Type == typ {
-			count++
-		}
+		counts[records[i].Type]++
 	}
-	return count
+	return counts
+}
+
+// countRestartEvents counts records of typ in eventLogDir. eventlog.ReplayAfter verifies
+// that the tail record matches HEAD.json: Supervise's writer.RepairTail removes any
+// interrupted tail record at startup, and a persisting unlinked tail record is a replay
+// error that fails the test.
+func countRestartEvents(t *testing.T, eventLogDir, typ string) int {
+	t.Helper()
+	return countRestartEventsByType(t, eventLogDir)[typ]
 }
 
 func waitEventCountAtLeast(t *testing.T, eventLogDir, typ string, wantMin int) int {
@@ -231,19 +241,25 @@ func waitEventCountAtLeast(t *testing.T, eventLogDir, typ string, wantMin int) i
 	return 0
 }
 
-// assertEventCountSettles polls countRestartEvents every restartPollInterval across
-// restartSettleWindow and fails at once if the count of typ ever differs from want.
-func assertEventCountSettles(t *testing.T, eventLogDir, typ string, want int) {
+// assertEventCountsSettle replays the event log once per restartPollInterval across
+// restartSettleWindow and fails at once when any count in want differs.
+func assertEventCountsSettle(t *testing.T, eventLogDir string, want []wantEventCount) {
 	t.Helper()
 	deadline := time.Now().Add(restartSettleWindow)
 	for i := 0; i < restartPollCap && time.Now().Before(deadline); i++ {
-		if got := countRestartEvents(t, eventLogDir, typ); got != want {
-			t.Fatalf("event %q count = %d during %s settle window, want %d", typ, got, restartSettleWindow, want)
+		counts := countRestartEventsByType(t, eventLogDir)
+		for j := 0; j < len(want); j++ {
+			if got := counts[want[j].typ]; got != want[j].count {
+				t.Fatalf("event %q count = %d during %s settle window, want %d", want[j].typ, got, restartSettleWindow, want[j].count)
+			}
 		}
 		time.Sleep(restartPollInterval)
 	}
-	if got := countRestartEvents(t, eventLogDir, typ); got != want {
-		t.Fatalf("event %q count = %d after %s settle window, want %d", typ, got, restartSettleWindow, want)
+	counts := countRestartEventsByType(t, eventLogDir)
+	for j := 0; j < len(want); j++ {
+		if got := counts[want[j].typ]; got != want[j].count {
+			t.Fatalf("event %q count = %d after %s settle window, want %d", want[j].typ, got, restartSettleWindow, want[j].count)
+		}
 	}
 }
 
@@ -379,9 +395,11 @@ func assertPostRestartJobs(t *testing.T, fix *restartFixture, snap restartSnapsh
 	if restartsShown != restarted {
 		t.Fatalf("jobs status restarts = %d, want event log restart count %d", restartsShown, restarted)
 	}
-	assertEventCountSettles(t, fix.eventLogDir, "job.adopted", 1)
-	assertEventCountSettles(t, fix.eventLogDir, "job.started", 1)
-	assertEventCountSettles(t, fix.eventLogDir, "job.restarted", 0)
+	assertEventCountsSettle(t, fix.eventLogDir, []wantEventCount{
+		{"job.adopted", 1},
+		{"job.started", 1},
+		{"job.restarted", 0},
+	})
 }
 
 func assertPostRestartUnitsAndWatch(t *testing.T, fix *restartFixture, snap restartSnapshot) {
@@ -435,7 +453,7 @@ func TestSystemRestart_Boundary(t *testing.T) {
 	sup3 := restartSupervise(t, sup2, fix.bin, fix.cfgPath)
 
 	assertSuperviseAlive(t, sup3)
-	assertEventCountSettles(t, fix.eventLogDir, "job.adopted", 1)
+	assertEventCountsSettle(t, fix.eventLogDir, []wantEventCount{{"job.adopted", 1}})
 	assertSuperviseAlive(t, sup3)
 	assertPostRestartJobs(t, fix, snap)
 	assertSuperviseAlive(t, sup3)
