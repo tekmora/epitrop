@@ -2,7 +2,9 @@ package catalog
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"slices"
@@ -54,20 +56,70 @@ type readingExpect struct {
 	Reason      string   `json:"reason,omitempty"`
 }
 
+func openContractFile(name string) ([]byte, error) {
+	root, err := os.OpenRoot(contractDir)
+	if err != nil {
+		return nil, err
+	}
+	body, readErr := root.ReadFile(name)
+	closeErr := root.Close()
+	return body, errors.Join(readErr, closeErr)
+}
+
 func readContractFile(t *testing.T, name string) []byte {
 	t.Helper()
-	root, err := os.OpenRoot(contractDir)
+	body, err := openContractFile(name)
 	if err != nil {
 		t.Fatalf("ReadFile(%s) = %v, want nil", name, err)
 	}
-	body, readErr := root.ReadFile(name)
-	if closeErr := root.Close(); closeErr != nil {
-		t.Errorf("close contract root: %v", closeErr)
-	}
-	if readErr != nil {
-		t.Fatalf("ReadFile(%s) = %v, want nil", name, readErr)
-	}
 	return body
+}
+
+func checkContractNameErr(t *testing.T, fn, name, want string, err error) {
+	t.Helper()
+	switch want {
+	case "ok":
+		if err != nil {
+			t.Fatalf("%s(%q) = %v, want %s", fn, name, err, want)
+		}
+	case "escapes":
+		if err == nil {
+			t.Fatalf("%s(%q) = %v, want %s", fn, name, err, want)
+		}
+		if !strings.Contains(err.Error(), "path escapes from parent") {
+			t.Fatalf("%s(%q) = %v, want %s", fn, name, err, want)
+		}
+	case "missing":
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("%s(%q) = %v, want %s", fn, name, err, want)
+		}
+	default:
+		t.Fatalf("unknown want %q", want)
+	}
+}
+
+func TestSnapshotContractFixturesReadRefusesAnEscapingName(t *testing.T) {
+	rows := []struct {
+		name string
+		want string
+	}{
+		{name: "valid.snapshot.json", want: "ok"},
+		{name: "../contract/valid.snapshot.json", want: "escapes"},
+		{name: "/etc/hostname", want: "escapes"},
+		{name: "missing.snapshot.json", want: "missing"},
+	}
+	for i := 0; i < len(rows); i++ {
+		row := rows[i]
+		t.Run(row.name, func(t *testing.T) {
+			body, err := openContractFile(row.name)
+			checkContractNameErr(t, "openContractFile", row.name, row.want, err)
+			if row.want == "ok" && len(body) == 0 {
+				t.Fatalf("openContractFile(%q) body length 0, want > 0", row.name)
+			}
+			statErr := statContractFile(row.name)
+			checkContractNameErr(t, "statContractFile", row.name, row.want, statErr)
+		})
+	}
 }
 
 func loadContractManifest(t *testing.T) contractManifest {
