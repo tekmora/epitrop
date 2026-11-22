@@ -5,8 +5,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+func TestSameFoldedLogPath(t *testing.T) {
+	prefix := statAliasTempDir(t)
+	tail := []string{"probe", "a.log"}
+	t.Run("same_prefix_case_tails_equal", func(t *testing.T) {
+		first := foldedLogPath{prefix: prefix, tail: []string{"New", "a.log"}}
+		second := foldedLogPath{prefix: prefix, tail: []string{"new", "A.LOG"}}
+		assertSameFoldedLogPath(t, first, second, true)
+	})
+	t.Run("same_prefix_shorter_tail_differs", func(t *testing.T) {
+		first := foldedLogPath{prefix: prefix, tail: []string{"new"}}
+		second := foldedLogPath{prefix: prefix, tail: []string{"new", "a.log"}}
+		assertSameFoldedLogPathBothOrders(t, first, second, false)
+	})
+	t.Run("no_prefix_same_root_case_variant", func(t *testing.T) {
+		assertSameFoldedLogPath(t, foldedLogPath{root: `Q:\`, tail: tail}, foldedLogPath{root: `q:\`, tail: tail}, true)
+	})
+	t.Run("no_prefix_other_root", func(t *testing.T) {
+		assertSameFoldedLogPath(t, foldedLogPath{root: `Q:\`, tail: tail}, foldedLogPath{root: `R:\`, tail: tail}, false)
+	})
+	t.Run("no_prefix_against_existing_prefix", func(t *testing.T) {
+		missing := foldedLogPath{root: `Q:\`, tail: tail}
+		assertSameFoldedLogPathBothOrders(t, missing, foldedLogPath{prefix: prefix, tail: tail}, false)
+		assertSameFoldedLogPathBothOrders(t, missing, foldedLogPath{prefix: prefix, root: `Q:\`, tail: tail}, false)
+	})
+}
 
 func TestLoadJobLogPathAliases(t *testing.T) {
 	t.Run("hard_link_refused", assertHardLinkJobLogRefused)
@@ -16,15 +43,20 @@ func TestLoadJobLogPathAliases(t *testing.T) {
 	t.Run("case_alias_of_rotated_name_refused", assertCaseAliasOfRotatedNameRefused)
 	t.Run("case_alias_through_rotated_directory_refused", assertCaseAliasThroughRotatedDirectoryRefused)
 	t.Run("hard_link_to_rotated_file_refused", assertHardLinkToRotatedFileRefused)
+	t.Run("hard_link_to_rotated_file_with_existing_log_refused", assertHardLinkToRotatedFileWithExistingLogRefused)
 	t.Run("distinct_names_load", assertDistinctAliasNamesLoad)
 	t.Run("case_name_in_other_directory_loads", assertCaseNameInOtherDirectoryLoads)
 	t.Run("hard_link_to_unrelated_file_loads", assertHardLinkToUnrelatedFileLoads)
 	t.Run("hard_link_to_highest_rotated_index_refused", assertHardLinkToHighestRotatedIndexRefused)
+	t.Run("hard_link_to_rotated_index_zero_loads", assertHardLinkToRotatedIndexZeroLoads)
 	t.Run("hard_link_past_highest_rotated_index_loads", assertHardLinkPastHighestRotatedIndexLoads)
 	t.Run("case_alias_of_highest_rotated_index_refused", assertCaseAliasOfHighestRotatedIndexRefused)
 	t.Run("case_alias_of_rotated_index_zero_loads", assertCaseAliasOfRotatedIndexZeroLoads)
 	t.Run("unicode_simple_fold_refused", assertUnicodeSimpleFoldRefused)
 	t.Run("distinct_case_directories_load", assertDistinctCaseDirectoriesLoad)
+	t.Run("missing_volume_identical_refused", assertMissingVolumeIdenticalRefused)
+	t.Run("missing_volume_rotated_name_refused", assertMissingVolumeRotatedNameRefused)
+	t.Run("missing_volume_case_variant_refused", assertMissingVolumeCaseVariantRefused)
 }
 
 func assertHardLinkJobLogRefused(t *testing.T) {
@@ -68,7 +100,11 @@ func assertCaseAliasThroughRotatedDirectoryRefused(t *testing.T) {
 }
 
 func assertHardLinkToRotatedFileRefused(t *testing.T) {
-	assertHardLinkToRotatedIndexRefused(t, "a.log.1")
+	assertHardLinkToRotatedIndexRefused(t, "a.log.1", false)
+}
+
+func assertHardLinkToRotatedFileWithExistingLogRefused(t *testing.T) {
+	assertHardLinkToRotatedIndexRefused(t, "a.log.1", true)
 }
 
 func assertDistinctAliasNamesLoad(t *testing.T) {
@@ -100,16 +136,25 @@ func assertHardLinkToUnrelatedFileLoads(t *testing.T) {
 }
 
 func assertHardLinkToHighestRotatedIndexRefused(t *testing.T) {
-	assertHardLinkToRotatedIndexRefused(t, "a.log.101")
+	assertHardLinkToRotatedIndexRefused(t, "a.log.101", false)
+}
+
+func assertHardLinkToRotatedIndexZeroLoads(t *testing.T) {
+	assertHardLinkToUnrotatedIndexLoads(t, "a.log.0")
 }
 
 func assertHardLinkPastHighestRotatedIndexLoads(t *testing.T) {
+	assertHardLinkToUnrotatedIndexLoads(t, "a.log.102")
+}
+
+func assertHardLinkToUnrotatedIndexLoads(t *testing.T, otherName string) {
+	t.Helper()
 	root := newAliasTempDir(t)
 	first := filepath.Join(root, "a.log")
-	past := filepath.Join(root, "a.log.102")
+	other := filepath.Join(root, otherName)
 	second := filepath.Join(root, "b.log")
-	mustWriteAliasLogFile(t, past)
-	mustHardLink(t, past, second)
+	mustWriteAliasLogFile(t, other)
+	mustHardLink(t, other, second)
 	assertJobLogPairLoads(t, first, second)
 }
 
@@ -146,10 +191,71 @@ func assertDistinctCaseDirectoriesLoad(t *testing.T) {
 	assertJobLogPairLoads(t, first, second)
 }
 
-func assertHardLinkToRotatedIndexRefused(t *testing.T, rotatedName string) {
+func assertMissingVolumeIdenticalRefused(t *testing.T) {
+	drive := missingWindowsDrive(t)
+	logPath := fmt.Sprintf(`%c:\probe\a.log`, drive)
+	assertSameJobLogFileRefused(t, logPath, logPath)
+}
+
+func assertMissingVolumeRotatedNameRefused(t *testing.T) {
+	drive := missingWindowsDrive(t)
+	first := fmt.Sprintf(`%c:\probe\a.log`, drive)
+	second := fmt.Sprintf(`%c:\probe\a.log.1`, drive)
+	assertRotatedJobLogRefused(t, first, second, 1, 0)
+}
+
+func assertMissingVolumeCaseVariantRefused(t *testing.T) {
+	drive := missingWindowsDrive(t)
+	lowerDrive := drive + ('a' - 'A')
+	first := fmt.Sprintf(`%c:\probe\A.log`, drive)
+	second := fmt.Sprintf(`%c:\probe\a.log`, lowerDrive)
+	assertSameJobLogFileRefused(t, first, second)
+}
+
+func missingWindowsDrive(t *testing.T) byte {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		t.Skip("drive-letter volumes exist only on Windows")
+	}
+	for letter := byte('Q'); letter <= 'Y'; letter++ {
+		root := string([]byte{letter, ':', '\\'})
+		if _, err := os.Stat(root); err != nil {
+			return letter
+		}
+	}
+	t.Skip("every drive root from Q:\\ to Y:\\ exists on this Windows host")
+	return 0
+}
+
+func statAliasTempDir(t *testing.T) os.FileInfo {
+	t.Helper()
+	info, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatalf("Stat(temporary directory) = %v, want nil", err)
+	}
+	return info
+}
+
+func assertSameFoldedLogPath(t *testing.T, first, second foldedLogPath, want bool) {
+	t.Helper()
+	if got := sameFoldedLogPath(first, second); got != want {
+		t.Fatalf("sameFoldedLogPath(%+v, %+v) = %v, want %v", first, second, got, want)
+	}
+}
+
+func assertSameFoldedLogPathBothOrders(t *testing.T, first, second foldedLogPath, want bool) {
+	t.Helper()
+	assertSameFoldedLogPath(t, first, second, want)
+	assertSameFoldedLogPath(t, second, first, want)
+}
+
+func assertHardLinkToRotatedIndexRefused(t *testing.T, rotatedName string, writeActive bool) {
 	t.Helper()
 	root := newAliasTempDir(t)
 	first := filepath.Join(root, "a.log")
+	if writeActive {
+		mustWriteAliasLogFile(t, first)
+	}
 	rotated := filepath.Join(root, rotatedName)
 	second := filepath.Join(root, "b.log")
 	mustWriteAliasLogFile(t, rotated)

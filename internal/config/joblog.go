@@ -20,6 +20,7 @@ const (
 
 type foldedLogPath struct {
 	prefix os.FileInfo
+	root   string
 	tail   []string
 }
 
@@ -61,16 +62,18 @@ func validateJobNamesAndLogPaths(jobs []JobConfig) error {
 // joins on lexically. Two paths name one file when (A) os.Stat succeeds on both
 // and os.SameFile reports one file (hard links, and existing case aliases on a
 // case-folding volume), or (B) walking up from filepath.Dir reaches deepest
-// existing prefixes that satisfy os.SameFile and the remaining missing
-// directories and base name match one by one under strings.EqualFold; (B)
-// applies on every volume, refusing case-only names on a case-sensitive volume
-// too, because the case rule of a volume holding a missing file is not known at
-// load. Names differing only by Unicode normalization (APFS) or full case
-// folding ("ß" vs "SS"), and aliases created after load, are not refused. Job i
-// is refused when its open target matches an earlier job's open target under
-// (A) or (B), when rotatedLogBase of its open, entry, or walked via paths
-// matches any job's entry under (B), or when its existing open target matches
-// an existing entry.1 to entry.101 of any job under (A).
+// existing prefixes that satisfy os.SameFile (or, when neither path has an
+// existing ancestor, volume roots that match under strings.EqualFold) and the
+// remaining missing directories and base name match one by one under
+// strings.EqualFold; (B) applies on every volume, refusing case-only names on a
+// case-sensitive volume too, because the case rule of a volume holding a
+// missing file is not known at load. Names differing only by Unicode
+// normalization (APFS) or full case folding ("ß" vs "SS"), and aliases created
+// after load, are not refused. Job i is refused when its open target matches an
+// earlier job's open target under (A) or (B), when rotatedLogBase of its open,
+// entry, or walked via paths matches any job's entry under (B), or when its
+// existing open target matches an existing entry.1 to entry.101 of any job
+// under (A).
 func validateJobLogPaths(jobs []JobConfig) error {
 	records := make([]jobLogRecord, 0, len(jobs))
 	for i := 0; i < len(jobs); i++ {
@@ -249,12 +252,13 @@ func sameExistingFile(first, second os.FileInfo) bool {
 	return first != nil && second != nil && os.SameFile(first, second)
 }
 
-// foldLogPath walks up from filepath.Dir(key) to the deepest existing prefix
-// and records the remaining missing-directory and base-name components for (B).
+// foldLogPath walks up from filepath.Dir(key) to the deepest existing prefix,
+// or to the volume root when no ancestor exists, and records the remaining
+// missing-directory and base-name components for (B).
 func foldLogPath(key string) foldedLogPath {
 	cur := filepath.Clean(key)
 	if filepath.Dir(cur) == cur {
-		return foldedLogPath{prefix: statExisting(cur)}
+		return foldedLogPath{prefix: statExisting(cur), root: cur}
 	}
 	bound := len(splitLogPathComponents(cur[len(filepath.VolumeName(cur)):]))
 	rev := make([]string, 0, bound)
@@ -270,12 +274,24 @@ func foldLogPath(key string) foldedLogPath {
 			return foldedLogPath{prefix: info, tail: rev}
 		}
 	}
-	return foldedLogPath{}
+	slices.Reverse(rev)
+	return foldedLogPath{root: cur, tail: rev}
 }
 
-// sameFoldedLogPath checks rule (B): one existing ancestor directory and case-equal tail components.
+// sameFoldedLogPrefix compares existing ancestor directories under os.SameFile,
+// or volume roots under strings.EqualFold when neither path has an existing ancestor.
+func sameFoldedLogPrefix(first, second foldedLogPath) bool {
+	if first.prefix == nil && second.prefix == nil {
+		return strings.EqualFold(first.root, second.root)
+	}
+	return sameExistingFile(first.prefix, second.prefix)
+}
+
+// sameFoldedLogPath checks rule (B): matching existing prefixes (or volume
+// roots under strings.EqualFold when no ancestor exists) and case-equal tail
+// components.
 func sameFoldedLogPath(first, second foldedLogPath) bool {
-	if first.prefix == nil || second.prefix == nil || !os.SameFile(first.prefix, second.prefix) || len(first.tail) != len(second.tail) {
+	if !sameFoldedLogPrefix(first, second) || len(first.tail) != len(second.tail) {
 		return false
 	}
 	for i := 0; i < len(first.tail); i++ {
