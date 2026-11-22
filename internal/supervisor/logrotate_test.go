@@ -269,14 +269,7 @@ func assertOpenFailsWhenStaleRemoveFails(t *testing.T) {
 	logPath := filepath.Join(dir, "ro-open.log")
 	mustWriteRawFile(t, logPath, "existing\n")
 	mustWriteRawFile(t, logPath+".3", "stale\n")
-	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- read-only directory simulates stale backup unlink permission failure
-		t.Fatalf("Chmod(0500) = %v, want nil", err)
-	}
-	t.Cleanup(func() {
-		if chmodErr := os.Chmod(dir, 0o700); chmodErr != nil { // #nosec G302 -- restore temp dir permissions for cleanup
-			t.Errorf("Chmod(0700) = %v, want nil", chmodErr)
-		}
-	})
+	makeDirReadOnly(t, dir)
 	_, err := openRotatingLog(logPath, config.JobLogRotation{MaxBytes: 4096, KeepFiles: 2})
 	if err == nil || !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "remove stale log") {
 		t.Fatalf("openRotatingLog(read-only stale remove) = %v, want wrapped os.ErrPermission with context", err)
@@ -379,14 +372,7 @@ func assertReadOnlyDirKeepsAccepted(t *testing.T) {
 	logPath := filepath.Join(dir, "ro.log")
 	log := mustOpenRotatingLog(t, logPath, config.JobLogRotation{MaxBytes: 32, KeepFiles: 2})
 	mustWriteLine(t, log, "before chmod", "kept-before-chmod\n")
-	if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- read-only directory simulates rename permission failure
-		t.Fatalf("Chmod(0500) = %v, want nil", err)
-	}
-	t.Cleanup(func() {
-		if chmodErr := os.Chmod(dir, 0o700); chmodErr != nil { // #nosec G302 -- restore temp dir permissions for cleanup
-			t.Errorf("Chmod(0700) = %v, want nil", chmodErr)
-		}
-	})
+	makeDirReadOnly(t, dir)
 	err := log.writeLine([]byte("second-line-rotates\n"))
 	if err == nil || !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("writeLine(read-only dir) = %v, want wrapped permission error", err)
@@ -464,53 +450,6 @@ func mustCloseRotatingLog(t *testing.T, log *rotatingLog) {
 	if err := log.Close(); err != nil {
 		t.Fatalf("Close() = %v, want nil", err)
 	}
-}
-
-func mustReadLogFile(t *testing.T, path string) []byte {
-	t.Helper()
-	body, err := os.ReadFile(path) // #nosec G304 -- test reads temporary rotated log file
-	if err != nil {
-		t.Fatalf("ReadFile(%s) = %v, want nil", path, err)
-	}
-	return body
-}
-
-func assertEveryRotatedFileEndsWithNewline(t *testing.T, logPath string, maxKeep int) {
-	t.Helper()
-	for i := 1; i <= maxKeep; i++ {
-		body, err := os.ReadFile(rotatedLogPath(logPath, i)) // #nosec G304 -- test reads temporary rotated log file
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			t.Fatalf("ReadFile(rotated %d) = %v, want nil", i, err)
-		}
-		if len(body) == 0 || body[len(body)-1] != '\n' {
-			t.Fatalf("rotated file .%d does not end on a line boundary: %q", i, body)
-		}
-	}
-}
-
-func readOrderedLogRaw(t *testing.T, logPath string, maxKeep int) string {
-	t.Helper()
-	var out strings.Builder
-	for step := 0; step < maxKeep; step++ {
-		idx := maxKeep - step
-		body, err := os.ReadFile(rotatedLogPath(logPath, idx)) // #nosec G304 -- test reads temporary rotated log file
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			t.Fatalf("ReadFile(rotated %d) = %v, want nil", idx, err)
-		}
-		out.Write(body)
-	}
-	body, err := os.ReadFile(logPath) // #nosec G304 -- test reads temporary active log file
-	if err != nil {
-		t.Fatalf("ReadFile(%s) = %v, want nil", logPath, err)
-	}
-	out.Write(body)
-	return out.String()
 }
 
 func readOrderedLogLines(t *testing.T, logPath string, maxKeep int) []string {
