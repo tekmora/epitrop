@@ -8,8 +8,9 @@ import (
 	"testing"
 )
 
-// The guard resolves each protected path the way the open does, so a symlink in it, a
-// missing tail below a symlink, and a .. after a symlink all name the physical location.
+// The guard protects the location the open reaches and the lexically cleaned location the
+// event log writer joins, so a symlink in it, a missing tail below a symlink, and a ..
+// after a symlink are refused in both forms.
 func TestLoadResolvesProtectedPathsLikeTheOpen(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the sandbox does not run on Windows")
@@ -39,7 +40,7 @@ func TestLoadResolvesProtectedPathsLikeTheOpen(t *testing.T) {
 		{"event log through a symlinked directory", roots, evlink, state, "overlaps protected path " + filepath.Join(state, "events")},
 		{"missing event log below a symlinked directory", roots, filepath.Join(evlink, "new"), state, "overlaps protected path " + filepath.Join(state, "events", "new")},
 		{"dot-dot after a symlink climbs from the target", roots, w.root + "/evlink/../ev2", state, "overlaps protected path " + filepath.Join(state, "ev2")},
-		{"lexical dot-dot location is not protected", []string{state, logs, ev3}, w.root + "/evlink/../ev3", ev3, ""},
+		{"lexical dot-dot location is protected too", []string{state, logs, ev3}, w.root + "/evlink/../ev3", ev3, "overlaps protected path " + filepath.Join(w.root, "ev3")},
 		{"plain event log next to the workspace", roots, filepath.Join(logs, "events"), state, ""},
 	}
 	for _, tc := range cases {

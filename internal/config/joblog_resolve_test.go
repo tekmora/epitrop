@@ -106,6 +106,8 @@ func TestResolveExistingAncestor(t *testing.T) {
 		{"dangling_link_chain", ancestorDanglingLinkChain},
 		{"dangling_link_chain_at_hop_cap", ancestorDanglingLinkChainAtHopCap},
 		{"dangling_link_chain_past_hop_cap", ancestorDanglingLinkChainPastHopCap},
+		{"existing_link_chain_at_hop_cap", ancestorExistingLinkChainAtHopCap},
+		{"existing_link_chain_past_hop_cap", ancestorExistingLinkChainPastHopCap},
 		{"link_cycle_stops_at_hop_cap", ancestorLinkCycleStopsAtHopCap},
 	}
 	for i := 0; i < len(cases); i++ {
@@ -244,4 +246,65 @@ func ancestorLinkCycleStopsAtHopCap(t *testing.T) (string, string) {
 	// maxLogPathLinkHops = 40 completes 20 a->b->a pairs, so hop 40 leaves "a"
 	// pending and the cap stops before hop 41 at root/a.
 	return linkA, filepath.Join(root, "a")
+}
+
+func ancestorExistingLinkChainAtHopCap(t *testing.T) (string, string) {
+	t.Helper()
+	root := newExistingLinkChain(t, 40)
+	return filepath.Join(root, "l1"), filepath.Join(root, "real.log")
+}
+
+func ancestorExistingLinkChainPastHopCap(t *testing.T) (string, string) {
+	t.Helper()
+	root := newExistingLinkChain(t, 41)
+	return filepath.Join(root, "l1"), filepath.Join(root, "l41")
+}
+
+func newExistingLinkChain(t *testing.T, linkCount int) string {
+	t.Helper()
+	root := newResolvedTempDir(t)
+	realLog := filepath.Join(root, "real.log")
+	if err := os.WriteFile(realLog, []byte("log\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) = %v, want nil", realLog, err)
+	}
+	buildDanglingLinkChain(t, root, linkCount)
+	return root
+}
+
+func TestWalkLogPathRecordsWalkedEntries(t *testing.T) {
+	t.Run("chained_links_and_missing_target", func(t *testing.T) {
+		root := newResolvedTempDir(t)
+		first := filepath.Join(root, "a.log")
+		mid := filepath.Join(root, "a.log.1")
+		if err := os.Symlink("a.log.1", first); err != nil {
+			t.Fatalf("Symlink(%s) = %v, want nil", first, err)
+		}
+		if err := os.Symlink("t.log", mid); err != nil {
+			t.Fatalf("Symlink(%s) = %v, want nil", mid, err)
+		}
+		wantTail := []string{first, mid, filepath.Join(root, "t.log")}
+		assertWalkLogPathTail(t, first, filepath.Join(root, "t.log"), wantTail)
+	})
+	t.Run("missing_directories_and_leaf", func(t *testing.T) {
+		root := newResolvedTempDir(t)
+		in := root + "/missing/sub/y.log"
+		wantKey := filepath.Join(root, "missing", "sub", "y.log")
+		wantTail := []string{
+			filepath.Join(root, "missing"),
+			filepath.Join(root, "missing", "sub"),
+			wantKey,
+		}
+		assertWalkLogPathTail(t, in, wantKey, wantTail)
+	})
+}
+
+func assertWalkLogPathTail(t *testing.T, in, wantKey string, wantTail []string) {
+	t.Helper()
+	gotKey, gotWalked := walkLogPath(in)
+	if gotKey != wantKey {
+		t.Fatalf("walkLogPath(%q) key = %q, want %q", in, gotKey, wantKey)
+	}
+	if len(gotWalked) < len(wantTail) || !slices.Equal(gotWalked[len(gotWalked)-len(wantTail):], wantTail) {
+		t.Fatalf("walkLogPath(%q) walked = %q, want tail %q", in, gotWalked, wantTail)
+	}
 }

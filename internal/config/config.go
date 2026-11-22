@@ -993,11 +993,11 @@ func protectedPathList(cfg Config, configPath string) ([]string, error) {
 		if candidates[i] == "" {
 			continue
 		}
-		resolved, err := resolvePossiblyMissingAbs(candidates[i])
+		forms, err := protectedPathForms(candidates[i])
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, resolved)
+		out = append(out, forms...)
 	}
 	return out, nil
 }
