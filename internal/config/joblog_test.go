@@ -93,7 +93,7 @@ func assertJobLogMaxBytesSchemaRefused(t *testing.T) {
 }
 
 func TestLoadJobLogPathsUnique(t *testing.T) {
-	t.Run("distinct_and_rotated_neighbor_paths_load", func(t *testing.T) {
+	t.Run("distinct_paths_load", func(t *testing.T) {
 		assertDistinctJobLogPathsLoad(t)
 	})
 	t.Run("same_cleaned_path_refused", func(t *testing.T) {
@@ -303,7 +303,6 @@ func assertDistinctJobLogPathsLoad(t *testing.T) {
 	t.Helper()
 	pairs := [][2]string{
 		{"/var/log/a.log", "/var/log/b.log"},
-		{"/var/log/a.log", "/var/log/a.log.1"},
 	}
 	for i := 0; i < len(pairs); i++ {
 		body := twoJobsLogPathConfig(pairs[i][0], pairs[i][1])

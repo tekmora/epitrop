@@ -5,13 +5,22 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
+
+// MaxLogBackupIndex is the highest rotated index the job shim creates or prunes.
+const MaxLogBackupIndex = MaxLogKeepFiles + 1
 
 const (
 	maxLogPathResolveSteps = 4096
 	maxLogPathLinkHops     = 40
 )
+
+type jobLogKeyPair struct {
+	open  string
+	entry string
+}
 
 // validateJobNamesAndLogPaths refuses a repeated job name, then a repeated log file.
 func validateJobNamesAndLogPaths(jobs []JobConfig) error {
@@ -29,20 +38,80 @@ func validateJobNamesAndLogPaths(jobs []JobConfig) error {
 // for one path. From the first component that still cannot resolve (missing,
 // permission denied, not a directory, unreadable symlink, or past the
 // 40-symlink cap) the rest joins on lexically; a symlink created after load is
-// not seen.
+// not seen. A path the shim of another job renames or prunes, log_path.1 to
+// log_path.101 through any alias, is refused.
 func validateJobLogPaths(jobs []JobConfig) error {
 	seen := make(map[string]int, len(jobs))
+	entries := make(map[string]int, len(jobs))
+	keys := make([]jobLogKeyPair, len(jobs))
 	for i := 0; i < len(jobs); i++ {
-		resolved, err := resolvePossiblyMissingAbs(jobs[i].LogPath)
+		open, entry, err := jobLogKeys(jobs[i].LogPath)
 		if err != nil {
 			return fmt.Errorf("config: jobs/%d/log_path: %w", i, err)
 		}
-		if first, ok := seen[resolved]; ok {
+		if first, ok := seen[open]; ok {
 			return fmt.Errorf("config: jobs/%d/log_path: %q names the same file as jobs/%d (%q)", i, jobs[i].LogPath, first, jobs[first].LogPath)
 		}
-		seen[resolved] = i
+		seen[open] = i
+		entries[entry] = i
+		keys[i] = jobLogKeyPair{open: open, entry: entry}
+	}
+	return validateJobLogRotatedNames(jobs, keys, entries)
+}
+
+// validateJobLogRotatedNames refuses any job whose open target or directory
+// entry is a rotated name of any job's directory entry.
+func validateJobLogRotatedNames(jobs []JobConfig, keys []jobLogKeyPair, entries map[string]int) error {
+	for i := 0; i < len(keys); i++ {
+		if j, ok := rotatedLogOwner(keys[i], entries); ok {
+			return fmt.Errorf("config: jobs/%d/log_path: %q is a rotated name of jobs/%d (%q)", i, jobs[i].LogPath, j, jobs[j].LogPath)
+		}
 	}
 	return nil
+}
+
+// rotatedLogOwner checks pair.open and then pair.entry against entries.
+func rotatedLogOwner(pair jobLogKeyPair, entries map[string]int) (int, bool) {
+	candidates := [2]string{pair.open, pair.entry}
+	for k := 0; k < len(candidates); k++ {
+		if base, ok := rotatedLogBase(candidates[k]); ok {
+			if owner, exists := entries[base]; exists {
+				return owner, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// jobLogKeys returns open, the file the shim's open writes, and entry, the
+// directory entry its rotation renames, so a log_path that is itself a symlink
+// keeps its own name as entry.
+func jobLogKeys(path string) (string, string, error) {
+	abs, err := unresolvedAbs(path)
+	if err != nil {
+		return "", "", err
+	}
+	open := resolveExistingAncestor(abs)
+	dir, base := filepath.Split(abs)
+	if base == "" || base == "." || base == ".." {
+		return open, open, nil
+	}
+	entry := filepath.Join(resolveExistingAncestor(dir), base)
+	return open, entry, nil
+}
+
+// rotatedLogBase strips a canonical decimal suffix in 1..MaxLogBackupIndex.
+func rotatedLogBase(key string) (string, bool) {
+	dot := strings.LastIndexByte(key, '.')
+	if dot <= 0 {
+		return "", false
+	}
+	suffix := key[dot+1:]
+	n, err := strconv.Atoi(suffix)
+	if err != nil || n < 1 || n > MaxLogBackupIndex || strconv.Itoa(n) != suffix {
+		return "", false
+	}
+	return key[:dot], true
 }
 
 // unresolvedAbs on Unix returns path unchanged when absolute and otherwise
