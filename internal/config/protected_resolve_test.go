@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// The guard protects the location the open reaches and the lexically cleaned location the
-// event log writer joins, so a symlink in it, a missing tail below a symlink, and a ..
-// after a symlink are refused in both forms.
+// The guard protects the location the open reaches and the lexical form the event log writer
+// joins, resolved through its own symlinks too, so a symlink, a missing tail below one, a ..
+// after one, and a symlinked directory left after the lexical clean are refused in both forms.
 func TestLoadResolvesProtectedPathsLikeTheOpen(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the sandbox does not run on Windows")
@@ -29,6 +29,13 @@ func TestLoadResolvesProtectedPathsLikeTheOpen(t *testing.T) {
 	if err := os.Mkdir(ev3, 0o700); err != nil {
 		t.Fatalf("Mkdir(%s) = %v, want nil", ev3, err)
 	}
+	realdir := filepath.Join(w.root, "realdir")
+	ev5 := filepath.Join(realdir, "ev5")
+	if err := os.MkdirAll(ev5, 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s) = %v, want nil", ev5, err)
+	}
+	mustSymlink(t, "realdir", filepath.Join(w.root, "alias"))
+	mustSymlink(t, w.events, filepath.Join(realdir, "evl"))
 	roots := []string{state, logs}
 	cases := []struct {
 		name      string
@@ -41,6 +48,7 @@ func TestLoadResolvesProtectedPathsLikeTheOpen(t *testing.T) {
 		{"missing event log below a symlinked directory", roots, filepath.Join(evlink, "new"), state, "overlaps protected path " + filepath.Join(state, "events", "new")},
 		{"dot-dot after a symlink climbs from the target", roots, w.root + "/evlink/../ev2", state, "overlaps protected path " + filepath.Join(state, "ev2")},
 		{"lexical dot-dot location is protected too", []string{state, logs, ev3}, w.root + "/evlink/../ev3", ev3, "overlaps protected path " + filepath.Join(w.root, "ev3")},
+		{"lexical location through a symlinked directory is resolved", []string{state, logs, ev5}, w.root + "/alias/evl/../ev5", ev5, "overlaps protected path " + ev5},
 		{"plain event log next to the workspace", roots, filepath.Join(logs, "events"), state, ""},
 	}
 	for _, tc := range cases {
