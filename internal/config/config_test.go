@@ -1007,6 +1007,11 @@ func (w sandboxPathWorld) load(t *testing.T, workspace string, inputs []string) 
 
 func (w sandboxPathWorld) loadWithRoots(t *testing.T, roots []string, workspace string, inputs []string) error {
 	t.Helper()
+	return w.loadWithEventLog(t, roots, w.events, workspace, inputs)
+}
+
+func (w sandboxPathWorld) loadWithEventLog(t *testing.T, roots []string, events string, workspace string, inputs []string) error {
+	t.Helper()
 	sandbox, err := json.Marshal(map[string]any{"workspace": workspace, "inputs": inputs})
 	if err != nil {
 		t.Fatalf("marshal sandbox: %v", err)
@@ -1015,7 +1020,7 @@ func (w sandboxPathWorld) loadWithRoots(t *testing.T, roots []string, workspace 
 	if err != nil {
 		t.Fatalf("marshal roots: %v", err)
 	}
-	body := fmt.Sprintf(`{"sandbox_input_roots": %s, "event_log": {"dir": %q, "signing_key_path": %q}, "jobs": [{"name": "daemon", "command": ["/bin/true"], "log_path": "/tmp/daemon.log", "sandbox": %s}]}`, rootList, w.events, w.key, sandbox)
+	body := fmt.Sprintf(`{"sandbox_input_roots": %s, "event_log": {"dir": %q, "signing_key_path": %q}, "jobs": [{"name": "daemon", "command": ["/bin/true"], "log_path": "/tmp/daemon.log", "sandbox": %s}]}`, rootList, events, w.key, sandbox)
 	path := filepath.Join(w.confDir, "config.json")
 	if err = os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile(config) = %v, want nil", err)
@@ -1055,13 +1060,7 @@ func TestLoadRefusesSandboxPathsReachingTheControlPlane(t *testing.T) {
 		{"input relative", ws, []string{"rel"}, "inputs/0:"},
 	}
 	for _, tc := range cases {
-		err := w.load(t, tc.workspace, tc.inputs)
-		if tc.want == "" && err != nil {
-			t.Fatalf("%s: Load() = %v, want nil", tc.name, err)
-		}
-		if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
-			t.Fatalf("%s: Load() = %v, want error containing %q", tc.name, err, tc.want)
-		}
+		checkLoadWant(t, tc.name, w.load(t, tc.workspace, tc.inputs), tc.want)
 	}
 }
 
