@@ -17,18 +17,21 @@ const (
 	logReadBufferBytes = 32 * 1024
 	// maxLogReadSteps bounds the pipe read loop above any year-long byte stream.
 	maxLogReadSteps  int64 = 1 << 50
-	maxStaleLogIndex       = config.MaxLogKeepFiles + 1
+	maxStaleLogIndex       = config.MaxLogBackupIndex
 )
 
 // rotatingLog writes whole lines to path and rotates path.1 .. path.<keepFiles> before any
-// write that would push a non-empty active file past maxBytes.
+// write that would push a non-empty active file past maxBytes. A removal of the oldest
+// backup that failed stays pending and is retried before the next write, so at most
+// keepFiles+1 files exist after every successful write.
 type rotatingLog struct {
-	mu        sync.Mutex
-	path      string
-	maxBytes  int
-	keepFiles int
-	file      *os.File
-	size      int64
+	mu            sync.Mutex
+	path          string
+	maxBytes      int
+	keepFiles     int
+	file          *os.File
+	size          int64
+	oldestPending bool
 }
 
 func openRotatingLog(path string, rot config.JobLogRotation) (*rotatingLog, error) {
@@ -138,6 +141,11 @@ func (l *rotatingLog) writeLineLocked(line []byte) error {
 }
 
 func (l *rotatingLog) writePieceLocked(piece []byte) error {
+	if l.oldestPending {
+		if err := l.removeOldestLocked(); err != nil {
+			return err
+		}
+	}
 	if l.file == nil {
 		if err := l.reopen(); err != nil {
 			return err
@@ -178,10 +186,19 @@ func (l *rotatingLog) rotateLocked() error {
 	if err := renameIfExists(l.path, rotatedLogPath(l.path, 1)); err != nil {
 		return fmt.Errorf("job-shim: rotate log %s: %w", l.path, err)
 	}
+	l.oldestPending = true
+	if err := l.removeOldestLocked(); err != nil {
+		return err
+	}
+	return l.reopen()
+}
+
+func (l *rotatingLog) removeOldestLocked() error {
 	if err := removeIfExists(rotatedLogPath(l.path, l.keepFiles+1)); err != nil {
 		return fmt.Errorf("job-shim: remove oldest log %s: %w", l.path, err)
 	}
-	return l.reopen()
+	l.oldestPending = false
+	return nil
 }
 
 func firstMissingBackup(path string, keepFiles int) (int, error) {
