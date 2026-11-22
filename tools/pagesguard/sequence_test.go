@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 const (
@@ -43,7 +43,7 @@ type workflowJobSpec struct {
 
 func validatePagesWorkflow(raw []byte) error {
 	var wf workflowSpec
-	if err := yaml.Unmarshal(raw, &wf); err != nil {
+	if err := yaml.Load(raw, &wf); err != nil {
 		return fmt.Errorf("decode workflow yaml: %w", err)
 	}
 	if err := validateWorkflowConcurrency(wf.Concurrency); err != nil {
@@ -160,6 +160,27 @@ func workflowNegativeCases() []workflowCheckCase {
 			yaml: "concurrency:\n  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}\n  queue: max\n" +
 				"jobs:\n  deploy:\n    concurrency:\n      group: github-pages-deploy\n      queue: max\n",
 			wantErr: "must be absent at workflow level",
+		},
+		{
+			name: "second document fails",
+			yaml: "concurrency:\n  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}\n" +
+				"  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n" +
+				"jobs:\n  deploy:\n    concurrency:\n      group: github-pages-deploy\n      cancel-in-progress: false\n      queue: max\n---\nfoo: bar\n",
+			wantErr: "expected single document, found multiple",
+		},
+		{
+			name: "duplicate deploy key fails",
+			yaml: "concurrency:\n  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}\n" +
+				"  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n" +
+				"jobs:\n  deploy:\n    concurrency:\n      group: github-pages-deploy\n      cancel-in-progress: false\n      queue: max\n  deploy:\n    concurrency:\n      group: github-pages-deploy\n      queue: max\n",
+			wantErr: "mapping key \"deploy\" already defined",
+		},
+		{
+			name: "explicit single document passes",
+			yaml: "---\nconcurrency:\n  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}\n" +
+				"  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n" +
+				"jobs:\n  deploy:\n    concurrency:\n      group: github-pages-deploy\n      cancel-in-progress: false\n      queue: max\n...\n",
+			wantErr: "",
 		},
 	}
 }
