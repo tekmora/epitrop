@@ -1,0 +1,2 @@
+type: added
+title: 'A system test restarts the supervisor while a job, the release watch and open units are active and checks each returns to its state (#399)'

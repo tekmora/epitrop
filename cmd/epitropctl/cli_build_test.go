@@ -74,6 +74,12 @@ func buildCLIOnce() (string, error) {
 	return bin, nil
 }
 
+// newCLICommand constructs an exec.Cmd for the built CLI with fixture arguments.
+func newCLICommand(ctx context.Context, bin string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, bin, args...) // #nosec G204 -- callers pass the CLI built by buildCLI and fixture arguments
+	return cmd
+}
+
 // runSystemCLI runs the built binary with a deadline and an isolated child environment.
 func runSystemCLI(t *testing.T, bin string, args ...string) (string, string, int, error) {
 	t.Helper()
@@ -92,7 +98,7 @@ func runSystemCLIWithDeadline(t *testing.T, bin string, deadline time.Duration, 
 	ctx, cancel := context.WithTimeout(t.Context(), deadline)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, bin, args...) // #nosec G204 -- callers pass the CLI built by buildCLI and fixture arguments
+	cmd := newCLICommand(ctx, bin, args...)
 	cmd.Env = isolatedCLIEnv(t, extraEnv...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
