@@ -1,0 +1,2 @@
+type: added
+title: 'catalog/testdata/contract/ pins the snapshot contract with valid, degraded, stale, and incompatible-version fixtures a consumer replays against its decoder (#29)'

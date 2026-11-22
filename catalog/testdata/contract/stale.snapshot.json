@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-18T09:00:00Z",
+  "records": [
+    {
+      "model_id": "codex-cli/codex",
+      "provider": "openai",
+      "access_path": "subscription_cli",
+      "usage_window": {
+        "used_percent": 42,
+        "window_minutes": 10080,
+        "resets_at": "2026-10-21T00:00:00Z",
+        "burn_percent_per_hour": 12.5,
+        "active_agents": 3
+      },
+      "provenance": {"source": "codex-local", "fetched_at": "2026-10-18T09:00:00Z", "kind": "measured"}
+    }
+  ],
+  "source_runs": [
+    {"source": "codex-local", "status": "ok", "count": 1}
+  ]
+}

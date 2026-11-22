@@ -1,0 +1,154 @@
+{
+  "rule": "catalog-snapshot",
+  "schema_version": 1,
+  "max_records": 25000,
+  "cases": [
+    {
+      "id": "valid",
+      "file": "valid.snapshot.json",
+      "direction": "compliant",
+      "expect": {
+        "result": "accepted",
+        "source_runs": {
+          "codex-local": "ok",
+          "litellm-key-budget": "ok",
+          "public-catalog": "ok"
+        },
+        "headroom": [
+          {
+            "now": "2026-10-18T09:05:00Z",
+            "max_age": "15m",
+            "readings": [
+              {"model_id": "codex-cli/codex", "state": "known", "used_percent": 42},
+              {"model_id": "litellm-key/fleet", "state": "known", "used_percent": 10}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "degraded",
+      "file": "degraded.snapshot.json",
+      "direction": "compliant",
+      "expect": {
+        "result": "accepted",
+        "source_runs": {
+          "codex-local": "ok",
+          "litellm-key-budget": "ok",
+          "public-catalog": "degraded",
+          "ollama-local": "skip",
+          "claude-local": "fail"
+        }
+      }
+    },
+    {
+      "id": "stale",
+      "file": "stale.snapshot.json",
+      "direction": "compliant",
+      "expect": {
+        "result": "accepted",
+        "source_runs": {
+          "codex-local": "ok"
+        },
+        "headroom": [
+          {
+            "now": "2026-10-18T09:15:00Z",
+            "max_age": "15m",
+            "readings": [
+              {"model_id": "codex-cli/codex", "state": "known", "used_percent": 42}
+            ]
+          },
+          {
+            "now": "2026-10-18T09:15:01Z",
+            "max_age": "15m",
+            "readings": [
+              {"model_id": "codex-cli/codex", "state": "unknown", "reason": "stale: fetched 15m1s ago, max age 15m0s"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "unknown-headroom",
+      "file": "unknown-headroom.snapshot.json",
+      "direction": "compliant",
+      "expect": {
+        "result": "accepted",
+        "source_runs": {
+          "codex-local": "ok",
+          "litellm-key-budget": "ok",
+          "claude-local": "ok"
+        },
+        "headroom": [
+          {
+            "now": "2026-10-18T09:05:00Z",
+            "max_age": "15m",
+            "readings": [
+              {"model_id": "codex-cli/codex", "state": "unknown", "reason": "the source reported no used_percent"},
+              {"model_id": "litellm-key/fleet", "state": "unknown", "reason": "the window reset at"},
+              {"model_id": "claude-code/session", "state": "unknown", "reason": "fetched at"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "incompatible-version",
+      "file": "incompatible-version.snapshot.json",
+      "direction": "violation",
+      "expect": {
+        "result": "refused",
+        "says": "unsupported snapshot schema_version: found 2, supported 1"
+      }
+    },
+    {
+      "id": "missing-version",
+      "file": "missing-version.snapshot.json",
+      "direction": "violation",
+      "expect": {
+        "result": "refused",
+        "says": "found 0, supported 1"
+      }
+    },
+    {
+      "id": "negative-burn-rate",
+      "file": "negative-burn-rate.snapshot.json",
+      "direction": "violation",
+      "expect": {
+        "result": "refused",
+        "says": "usage_window.burn_percent_per_hour is not a finite number"
+      }
+    },
+    {
+      "id": "negative-active-agents",
+      "file": "negative-active-agents.snapshot.json",
+      "direction": "violation",
+      "expect": {
+        "result": "refused",
+        "says": "usage_window.active_agents is negative"
+      }
+    },
+    {
+      "id": "records-at-cap",
+      "generate": {"from": "valid.snapshot.json", "records": 25000},
+      "direction": "compliant",
+      "expect": {
+        "result": "accepted",
+        "source_runs": {
+          "codex-local": "ok",
+          "litellm-key-budget": "ok",
+          "public-catalog": "ok"
+        }
+      }
+    },
+    {
+      "id": "records-over-cap",
+      "generate": {"from": "valid.snapshot.json", "records": 25001},
+      "direction": "violation",
+      "expect": {
+        "result": "refused",
+        "says": "snapshot has 25001 records, exceeds 25000"
+      }
+    }
+  ]
+}
