@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -17,10 +18,30 @@ const (
 	maxLogPathLinkHops     = 40
 )
 
-type jobLogKeyPair struct {
-	open  string
-	entry string
-	via   []string
+type foldedLogPath struct {
+	prefix os.FileInfo
+	tail   []string
+}
+
+type rotatedLogVia struct {
+	walked   string
+	baseFold foldedLogPath
+}
+
+type existingLogFile struct {
+	path string
+	info os.FileInfo
+}
+
+type jobLogRecord struct {
+	open         string
+	entry        string
+	openInfo     os.FileInfo
+	openFold     foldedLogPath
+	entryFold    foldedLogPath
+	rotBases     []foldedLogPath
+	rotVia       []rotatedLogVia
+	rotatedFiles []existingLogFile
 }
 
 // validateJobNamesAndLogPaths refuses a repeated job name, then a repeated log file.
@@ -31,74 +52,238 @@ func validateJobNamesAndLogPaths(jobs []JobConfig) error {
 	return validateJobLogPaths(jobs)
 }
 
-// Each existing component resolves through symlinks in order, so on Unix a ..
-// after a symlink climbs from the link target, as the shim's open does (on
-// Windows .. is already gone after normalization). A symlink whose target does
-// not exist yet is followed to its target, because the shim's O_CREATE open
-// creates that target; at most 40 such symlinks are followed, the Linux limit
-// for one path. From the first component that still cannot resolve (missing,
-// permission denied, not a directory, unreadable symlink, or past the
-// 40-symlink cap) the rest joins on lexically; a symlink created after load is
-// not seen. A path the shim of another job renames or prunes, log_path.1 to
-// log_path.101 through any alias, is refused. A log path whose resolution walks
-// through a rotated name (a link in the chain, an existing directory, or a
-// missing directory the shim creates) is refused too.
+// validateJobLogPaths resolves each job's log_path through symlinks in order,
+// so on Unix a .. after a symlink climbs from the link target, as the shim's
+// open does (on Windows .. is already gone after normalization). A symlink
+// whose target does not exist yet is followed to its target, because the shim's
+// O_CREATE open creates that target; at most 40 links are followed, the Linux
+// limit for one path, and from the first component that cannot resolve the rest
+// joins on lexically. Two paths name one file when (A) os.Stat succeeds on both
+// and os.SameFile reports one file (hard links, and existing case aliases on a
+// case-folding volume), or (B) walking up from filepath.Dir reaches deepest
+// existing prefixes that satisfy os.SameFile and the remaining missing
+// directories and base name match one by one under strings.EqualFold; (B)
+// applies on every volume, refusing case-only names on a case-sensitive volume
+// too, because the case rule of a volume holding a missing file is not known at
+// load. Names differing only by Unicode normalization (APFS) or full case
+// folding ("ß" vs "SS"), and aliases created after load, are not refused. Job i
+// is refused when its open target matches an earlier job's open target under
+// (A) or (B), when rotatedLogBase of its open, entry, or walked via paths
+// matches any job's entry under (B), or when its existing open target matches
+// an existing entry.1 to entry.101 of any job under (A).
 func validateJobLogPaths(jobs []JobConfig) error {
-	seen := make(map[string]int, len(jobs))
-	entries := make(map[string]int, len(jobs))
-	keys := make([]jobLogKeyPair, len(jobs))
+	records := make([]jobLogRecord, 0, len(jobs))
 	for i := 0; i < len(jobs); i++ {
-		open, entry, via, err := jobLogKeys(jobs[i].LogPath)
+		rec, err := buildJobLogRecord(jobs[i].LogPath)
 		if err != nil {
 			return fmt.Errorf("config: jobs/%d/log_path: %w", i, err)
 		}
-		if first, ok := seen[open]; ok {
+		if first, ok := duplicateJobLogOpen(rec, records); ok {
 			return fmt.Errorf("config: jobs/%d/log_path: %q names the same file as jobs/%d (%q)", i, jobs[i].LogPath, first, jobs[first].LogPath)
 		}
-		seen[open] = i
-		entries[entry] = i
-		keys[i] = jobLogKeyPair{open: open, entry: entry, via: via}
+		records = append(records, rec)
 	}
-	return validateJobLogRotatedNames(jobs, keys, entries)
+	return validateJobLogRotatedNames(jobs, records)
 }
 
-// validateJobLogRotatedNames refuses any job whose open target, directory
-// entry, or resolution walk hits a rotated name of any job's directory entry.
-func validateJobLogRotatedNames(jobs []JobConfig, keys []jobLogKeyPair, entries map[string]int) error {
-	for i := 0; i < len(keys); i++ {
-		if j, ok := rotatedLogOwner(keys[i], entries); ok {
-			return fmt.Errorf("config: jobs/%d/log_path: %q is a rotated name of jobs/%d (%q)", i, jobs[i].LogPath, j, jobs[j].LogPath)
-		}
-		if walked, j, ok := rotatedLogViaOwner(keys[i].via, entries); ok {
-			return fmt.Errorf("config: jobs/%d/log_path: %q passes through %q, a rotated name of jobs/%d (%q)", i, jobs[i].LogPath, walked, j, jobs[j].LogPath)
-		}
+func buildJobLogRecord(path string) (jobLogRecord, error) {
+	open, entry, via, err := jobLogKeys(path)
+	if err != nil {
+		return jobLogRecord{}, err
 	}
-	return nil
+	openFold := foldLogPath(open)
+	entryFold := openFold
+	if entry != open {
+		entryFold = foldLogPath(entry)
+	}
+	return jobLogRecord{
+		open:      open,
+		entry:     entry,
+		openInfo:  statExisting(open),
+		openFold:  openFold,
+		entryFold: entryFold,
+		rotBases:  foldRotatedCandidates(open, entry),
+		rotVia:    foldRotatedVia(via),
+	}, nil
 }
 
-// rotatedLogOwner checks pair.open and then pair.entry against entries.
-func rotatedLogOwner(pair jobLogKeyPair, entries map[string]int) (int, bool) {
-	candidates := [2]string{pair.open, pair.entry}
-	for k := 0; k < len(candidates); k++ {
-		if base, ok := rotatedLogBase(candidates[k]); ok {
-			if owner, exists := entries[base]; exists {
-				return owner, true
-			}
+func foldRotatedCandidates(open, entry string) []foldedLogPath {
+	var out []foldedLogPath
+	if base, ok := rotatedLogBase(open); ok {
+		out = append(out, foldLogPath(base))
+	}
+	if entry != open {
+		if base, ok := rotatedLogBase(entry); ok {
+			out = append(out, foldLogPath(base))
+		}
+	}
+	return out
+}
+
+func foldRotatedVia(via []string) []rotatedLogVia {
+	var out []rotatedLogVia
+	for i := 0; i < len(via); i++ {
+		if base, ok := rotatedLogBase(via[i]); ok {
+			out = append(out, rotatedLogVia{walked: via[i], baseFold: foldLogPath(base)})
+		}
+	}
+	return out
+}
+
+func duplicateJobLogOpen(rec jobLogRecord, earlier []jobLogRecord) (int, bool) {
+	for j := 0; j < len(earlier); j++ {
+		if sameExistingFile(rec.openInfo, earlier[j].openInfo) || sameFoldedLogPath(rec.openFold, earlier[j].openFold) {
+			return j, true
 		}
 	}
 	return 0, false
 }
 
-// rotatedLogViaOwner checks each path the open walk stepped through against entries.
-func rotatedLogViaOwner(via []string, entries map[string]int) (string, int, bool) {
-	for k := 0; k < len(via); k++ {
-		if base, ok := rotatedLogBase(via[k]); ok {
-			if owner, exists := entries[base]; exists {
-				return via[k], owner, true
-			}
+// validateJobLogRotatedNames refuses any job whose open target, directory
+// entry, or resolution walk hits a rotated name or existing rotated file of any job.
+func validateJobLogRotatedNames(jobs []JobConfig, records []jobLogRecord) error {
+	populateExistingRotatedFiles(records)
+	for i := 0; i < len(records); i++ {
+		if j, ok := rotatedLogOwner(records[i], records); ok {
+			return fmt.Errorf("config: jobs/%d/log_path: %q is a rotated name of jobs/%d (%q)", i, jobs[i].LogPath, j, jobs[j].LogPath)
+		}
+		if walked, j, ok := rotatedLogViaOwner(records[i].rotVia, records); ok {
+			return fmt.Errorf("config: jobs/%d/log_path: %q passes through %q, a rotated name of jobs/%d (%q)", i, jobs[i].LogPath, walked, j, jobs[j].LogPath)
+		}
+		if rotPath, j, ok := rotatedLogFileOwner(records[i].openInfo, records); ok {
+			return fmt.Errorf("config: jobs/%d/log_path: %q names the same file as %q, a rotated name of jobs/%d (%q)", i, jobs[i].LogPath, rotPath, j, jobs[j].LogPath)
+		}
+	}
+	return nil
+}
+
+func populateExistingRotatedFiles(records []jobLogRecord) {
+	if !anyOpenFileExists(records) {
+		return
+	}
+	for i := 0; i < len(records); i++ {
+		records[i].rotatedFiles = existingRotatedLogFiles(records[i].entry)
+	}
+}
+
+func anyOpenFileExists(records []jobLogRecord) bool {
+	for i := 0; i < len(records); i++ {
+		if records[i].openInfo != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func existingRotatedLogFiles(entry string) []existingLogFile {
+	var found []existingLogFile
+	for n := 1; n <= MaxLogBackupIndex; n++ {
+		rotPath := entry + "." + strconv.Itoa(n)
+		if info := statExisting(rotPath); info != nil {
+			found = append(found, existingLogFile{path: rotPath, info: info})
+		}
+	}
+	return found
+}
+
+// rotatedLogOwner checks open and entry rotated bases against every job's entry under (B).
+func rotatedLogOwner(rec jobLogRecord, records []jobLogRecord) (int, bool) {
+	for k := 0; k < len(rec.rotBases); k++ {
+		if owner, ok := matchEntryFold(rec.rotBases[k], records); ok {
+			return owner, true
+		}
+	}
+	return 0, false
+}
+
+// rotatedLogViaOwner checks each rotated path the open walk stepped through against every job's entry under (B).
+func rotatedLogViaOwner(rotVia []rotatedLogVia, records []jobLogRecord) (string, int, bool) {
+	for k := 0; k < len(rotVia); k++ {
+		if owner, ok := matchEntryFold(rotVia[k].baseFold, records); ok {
+			return rotVia[k].walked, owner, true
 		}
 	}
 	return "", 0, false
+}
+
+func matchEntryFold(candidate foldedLogPath, records []jobLogRecord) (int, bool) {
+	for j := 0; j < len(records); j++ {
+		if sameFoldedLogPath(candidate, records[j].entryFold) {
+			return j, true
+		}
+	}
+	return 0, false
+}
+
+func rotatedLogFileOwner(openInfo os.FileInfo, records []jobLogRecord) (string, int, bool) {
+	if openInfo == nil {
+		return "", 0, false
+	}
+	for j := 0; j < len(records); j++ {
+		if rotPath, ok := matchExistingRotatedFile(openInfo, records[j].rotatedFiles); ok {
+			return rotPath, j, true
+		}
+	}
+	return "", 0, false
+}
+
+func matchExistingRotatedFile(openInfo os.FileInfo, files []existingLogFile) (string, bool) {
+	for k := 0; k < len(files); k++ {
+		if sameExistingFile(openInfo, files[k].info) {
+			return files[k].path, true
+		}
+	}
+	return "", false
+}
+
+func statExisting(path string) os.FileInfo {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	return info
+}
+
+// sameExistingFile checks rule (A): both paths exist and os.SameFile reports one file.
+func sameExistingFile(first, second os.FileInfo) bool {
+	return first != nil && second != nil && os.SameFile(first, second)
+}
+
+// foldLogPath walks up from filepath.Dir(key) to the deepest existing prefix
+// and records the remaining missing-directory and base-name components for (B).
+func foldLogPath(key string) foldedLogPath {
+	cur := filepath.Clean(key)
+	if filepath.Dir(cur) == cur {
+		return foldedLogPath{prefix: statExisting(cur)}
+	}
+	bound := len(splitLogPathComponents(cur[len(filepath.VolumeName(cur)):]))
+	rev := make([]string, 0, bound)
+	for step := 0; step < bound; step++ {
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+		rev = append(rev, filepath.Base(cur))
+		cur = parent
+		if info := statExisting(cur); info != nil {
+			slices.Reverse(rev)
+			return foldedLogPath{prefix: info, tail: rev}
+		}
+	}
+	return foldedLogPath{}
+}
+
+// sameFoldedLogPath checks rule (B): one existing ancestor directory and case-equal tail components.
+func sameFoldedLogPath(first, second foldedLogPath) bool {
+	if first.prefix == nil || second.prefix == nil || !os.SameFile(first.prefix, second.prefix) || len(first.tail) != len(second.tail) {
+		return false
+	}
+	for i := 0; i < len(first.tail); i++ {
+		if !strings.EqualFold(first.tail[i], second.tail[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // jobLogKeys returns open, the file the shim's open writes, entry, the
