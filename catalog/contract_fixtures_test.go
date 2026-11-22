@@ -3,9 +3,10 @@ package catalog
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -80,31 +81,6 @@ func loadContractCaseBytes(t *testing.T, c contractCase) []byte {
 	return body
 }
 
-func copyStringKeyedMap(m map[string]string) map[string]string {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	rv := reflect.ValueOf(m)
-	keys := rv.MapKeys()
-	for i := 0; i < len(keys); i++ {
-		k := keys[i].String()
-		out[k] = m[k]
-	}
-	return out
-}
-
-func copyRawRecordMap(m map[string]json.RawMessage) map[string]json.RawMessage {
-	out := make(map[string]json.RawMessage, len(m))
-	rv := reflect.ValueOf(m)
-	keys := rv.MapKeys()
-	for i := 0; i < len(keys); i++ {
-		k := keys[i].String()
-		out[k] = m[k]
-	}
-	return out
-}
-
 func generateParseFromFile(t *testing.T, fromName string) (map[string]json.RawMessage, map[string]json.RawMessage, string) {
 	t.Helper()
 	from, err := os.ReadFile(filepath.Join(contractDir, fromName))
@@ -142,7 +118,7 @@ func generateDuplicateRecords(t *testing.T, base map[string]json.RawMessage, mod
 	t.Helper()
 	outRecords := make([]map[string]json.RawMessage, n)
 	for i := 0; i < n; i++ {
-		rec := copyRawRecordMap(base)
+		rec := maps.Clone(base)
 		suffix, err := json.Marshal(modelID + "-" + strconv.Itoa(i))
 		if err != nil {
 			t.Fatalf("json.Marshal model_id suffix: %v", err)
@@ -197,17 +173,6 @@ func checkRefusal(c contractCase, err error) string {
 	return ""
 }
 
-func sourceRunKeys(want map[string]string) []string {
-	keys := make([]string, 0, len(want))
-	rv := reflect.ValueOf(want)
-	mapKeys := rv.MapKeys()
-	for i := 0; i < len(mapKeys); i++ {
-		keys = append(keys, mapKeys[i].String())
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 func checkSourceRuns(snap Snapshot, want map[string]string) string {
 	got := map[string]Status{}
 	for i := 0; i < len(snap.SourceRuns); i++ {
@@ -223,7 +188,7 @@ func checkSourceRuns(snap Snapshot, want map[string]string) string {
 	if len(got) != len(want) {
 		return fmt.Sprintf("source_runs count %d, want %d", len(got), len(want))
 	}
-	keys := sourceRunKeys(want)
+	keys := slices.Sorted(maps.Keys(want))
 	for i := 0; i < len(keys); i++ {
 		source := keys[i]
 		status := want[source]
@@ -285,6 +250,9 @@ func compareReading(got Headroom, want readingExpect) string {
 }
 
 func compareKnownReading(got Headroom, want readingExpect) string {
+	if want.Reason != "" {
+		return "known reading expectation names reason"
+	}
 	if want.UsedPercent == nil {
 		return "known reading expectation missing used_percent"
 	}
@@ -338,7 +306,11 @@ func TestSnapshotContractFixtures(t *testing.T) {
 
 func copyContractCase(c contractCase) contractCase {
 	out := c
-	out.Expect.SourceRuns = copyStringKeyedMap(c.Expect.SourceRuns)
+	out.Expect.SourceRuns = maps.Clone(c.Expect.SourceRuns)
+	if c.Generate != nil {
+		gen := *c.Generate
+		out.Generate = &gen
+	}
 	if len(c.Expect.Headroom) == 0 {
 		return out
 	}
@@ -347,6 +319,15 @@ func copyContractCase(c contractCase) contractCase {
 		out.Expect.Headroom[i] = c.Expect.Headroom[i]
 		out.Expect.Headroom[i].Readings = make([]readingExpect, len(c.Expect.Headroom[i].Readings))
 		copy(out.Expect.Headroom[i].Readings, c.Expect.Headroom[i].Readings)
+	}
+	return out
+}
+
+func copyContractManifest(m contractManifest) contractManifest {
+	out := m
+	out.Cases = make([]contractCase, len(m.Cases))
+	for i := 0; i < len(m.Cases); i++ {
+		out.Cases[i] = copyContractCase(m.Cases[i])
 	}
 	return out
 }
@@ -378,6 +359,7 @@ func TestSnapshotContractCheckerRefusesAWrongExpectation(t *testing.T) {
 		{"unknown-headroom wrong reason", plantWrongUnknownReason(unknown)},
 		{"valid missing source_runs expect", plantNoSourceRunsExpect(valid)},
 		{"valid missing used_percent expect", plantNoUsedPercentExpect(valid)},
+		{"valid known reading names reason", plantValidKnownReason(valid)},
 	}
 	for i := 0; i < len(plants); i++ {
 		data := loadContractCaseBytes(t, plants[i].c)
@@ -453,126 +435,511 @@ func plantNoUsedPercentExpect(c contractCase) contractCase {
 	return out
 }
 
-func TestSnapshotContractFixturesCoverTheFolder(t *testing.T) {
-	manifest := loadContractManifest(t)
-	coverManifestSchema(t, manifest)
-	fileCases := coverCollectCases(t, manifest)
-	coverSnapshotFiles(t, fileCases)
+func plantValidKnownReason(c contractCase) contractCase {
+	out := copyContractCase(c)
+	if len(out.Expect.Headroom) > 0 && len(out.Expect.Headroom[0].Readings) > 0 {
+		out.Expect.Headroom[0].Readings[0].Reason = "stale:"
+	}
+	return out
 }
 
-func coverManifestSchema(t *testing.T, manifest contractManifest) {
-	t.Helper()
-	if manifest.SchemaVersion != SnapshotSchemaVersion {
-		t.Fatalf("manifest schema_version %d, want %d", manifest.SchemaVersion, SnapshotSchemaVersion)
+func problemManifestSchemaVersion(m contractManifest) string {
+	if m.SchemaVersion != SnapshotSchemaVersion {
+		return fmt.Sprintf("schema_version %d, want %d", m.SchemaVersion, SnapshotSchemaVersion)
 	}
-	if manifest.MaxRecords != MaxSnapshotRecords {
-		t.Fatalf("manifest max_records %d, want %d", manifest.MaxRecords, MaxSnapshotRecords)
-	}
+	return ""
 }
 
-func coverCollectCases(t *testing.T, manifest contractManifest) map[string]string {
-	t.Helper()
+func problemManifestMaxRecords(m contractManifest) string {
+	if m.MaxRecords != MaxSnapshotRecords {
+		return fmt.Sprintf("max_records %d, want %d", m.MaxRecords, MaxSnapshotRecords)
+	}
+	return ""
+}
+
+func collectManifestFileCases(cases []contractCase) (map[string]string, string) {
 	ids := map[string]struct{}{}
 	fileCases := map[string]string{}
-	directions := map[string]int{}
-	for i := 0; i < len(manifest.Cases); i++ {
-		c := manifest.Cases[i]
+	for i := 0; i < len(cases); i++ {
+		c := cases[i]
 		if _, dup := ids[c.ID]; dup {
-			t.Fatalf("duplicate case id %q", c.ID)
+			return nil, fmt.Sprintf("duplicate case id %q", c.ID)
 		}
 		ids[c.ID] = struct{}{}
-		coverValidateCaseShape(t, c)
-		coverValidateCaseExpect(t, c)
-		if c.File != "" {
-			if prev := fileCases[c.File]; prev != "" {
-				t.Fatalf("file %q named by cases %q and %q", c.File, prev, c.ID)
-			}
-			fileCases[c.File] = c.ID
+		if c.File == "" {
+			continue
 		}
-		directions[c.Direction]++
-		compliant := c.Expect.Result == "accepted"
-		if (c.Direction == "compliant") != compliant {
-			t.Fatalf("case %q direction %q vs result %q", c.ID, c.Direction, c.Expect.Result)
+		if prev := fileCases[c.File]; prev != "" {
+			return nil, fmt.Sprintf("file %q named by cases %q and %q", c.File, prev, c.ID)
 		}
+		fileCases[c.File] = c.ID
 	}
-	if directions["compliant"] == 0 || directions["violation"] == 0 {
-		t.Fatalf("directions = %v, want compliant and violation", directions)
-	}
-	return fileCases
+	return fileCases, ""
 }
 
-func coverValidateCaseShape(t *testing.T, c contractCase) {
-	t.Helper()
+func problemCaseFileOrGenerate(c contractCase) string {
 	hasFile := c.File != ""
 	hasGen := c.Generate != nil
 	if hasFile == hasGen {
-		t.Fatalf("case %q must name exactly one of file or generate", c.ID)
+		return fmt.Sprintf("case %q must name exactly one of file or generate", c.ID)
 	}
-	if hasFile {
-		path := filepath.Join(contractDir, c.File)
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("case %q file %q: %v", c.ID, c.File, err)
-		}
-		return
+	return ""
+}
+
+func problemCaseNamedFileExists(c contractCase) string {
+	if c.File == "" {
+		return ""
+	}
+	path := filepath.Join(contractDir, c.File)
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Sprintf("case %q file %q: %v", c.ID, c.File, err)
+	}
+	return ""
+}
+
+func problemCaseGenerateFromExists(c contractCase) string {
+	if c.Generate == nil {
+		return ""
 	}
 	from := filepath.Join(contractDir, c.Generate.From)
 	if _, err := os.Stat(from); err != nil {
-		t.Fatalf("case %q generate.from %q: %v", c.ID, c.Generate.From, err)
+		return fmt.Sprintf("case %q generate.from %q: %v", c.ID, c.Generate.From, err)
 	}
+	return ""
 }
 
-func coverValidateCaseExpect(t *testing.T, c contractCase) {
-	t.Helper()
+func problemCaseResult(c contractCase) string {
+	if c.Expect.Result != "accepted" && c.Expect.Result != "refused" {
+		return fmt.Sprintf("case %q unknown result %q", c.ID, c.Expect.Result)
+	}
+	return ""
+}
+
+func problemCaseDirectionVsResult(c contractCase) string {
+	compliant := c.Expect.Result == "accepted"
+	if (c.Direction == "compliant") != compliant {
+		return fmt.Sprintf("case %q direction %q vs result %q", c.ID, c.Direction, c.Expect.Result)
+	}
+	return ""
+}
+
+func problemBothDirections(cases []contractCase) string {
+	directions := map[string]int{}
+	for i := 0; i < len(cases); i++ {
+		directions[cases[i].Direction]++
+	}
+	if directions["compliant"] == 0 || directions["violation"] == 0 {
+		return "directions missing compliant or violation"
+	}
+	return ""
+}
+
+func problemCaseExpectRules(c contractCase) string {
 	if c.Expect.Result == "refused" {
 		if c.Expect.Says == "" {
-			t.Fatalf("case %q refused with empty says", c.ID)
+			return fmt.Sprintf("case %q refused with empty says", c.ID)
 		}
-		return
+		if len(c.Expect.SourceRuns) > 0 {
+			return fmt.Sprintf("case %q refused names source_runs", c.ID)
+		}
+		if len(c.Expect.Headroom) > 0 {
+			return fmt.Sprintf("case %q refused names headroom", c.ID)
+		}
+		return ""
 	}
-	if c.Expect.Result != "accepted" {
-		t.Fatalf("case %q unknown result %q", c.ID, c.Expect.Result)
+	if c.Expect.Says != "" {
+		return fmt.Sprintf("case %q accepted names says", c.ID)
 	}
 	if len(c.Expect.SourceRuns) == 0 {
-		t.Fatalf("case %q accepted with no source_runs", c.ID)
+		return fmt.Sprintf("case %q accepted with no source_runs", c.ID)
 	}
 	for i := 0; i < len(c.Expect.Headroom); i++ {
-		coverValidateReadings(t, c.ID, c.Expect.Headroom[i].Readings)
+		if p := problemReadingRules(c.ID, c.Expect.Headroom[i].Readings); p != "" {
+			return p
+		}
 	}
+	return ""
 }
 
-func coverValidateReadings(t *testing.T, caseID string, readings []readingExpect) {
-	t.Helper()
+func problemReadingRules(caseID string, readings []readingExpect) string {
 	for i := 0; i < len(readings); i++ {
 		r := readings[i]
 		switch r.State {
 		case "known":
 			if r.UsedPercent == nil {
-				t.Fatalf("case %q reading[%d] known without used_percent", caseID, i)
+				return fmt.Sprintf("case %q reading[%d] known without used_percent", caseID, i)
+			}
+			if r.Reason != "" {
+				return fmt.Sprintf("case %q reading[%d] known with reason", caseID, i)
 			}
 		case "unknown":
 			if r.Reason == "" {
-				t.Fatalf("case %q reading[%d] unknown without reason", caseID, i)
+				return fmt.Sprintf("case %q reading[%d] unknown without reason", caseID, i)
 			}
 			if r.UsedPercent != nil {
-				t.Fatalf("case %q reading[%d] unknown with used_percent", caseID, i)
+				return fmt.Sprintf("case %q reading[%d] unknown with used_percent", caseID, i)
 			}
 		default:
-			t.Fatalf("case %q reading[%d] bad state %q", caseID, i, r.State)
+			return fmt.Sprintf("case %q reading[%d] bad state %q", caseID, i, r.State)
 		}
 	}
+	return ""
 }
 
-func coverSnapshotFiles(t *testing.T, fileCases map[string]string) {
+func problemFolderSnapshotListing(names []string, fileCases map[string]string) string {
+	for i := 0; i < len(names); i++ {
+		name := names[i]
+		if fileCases[name] == "" {
+			return fmt.Sprintf("%s is not named by cases", name)
+		}
+	}
+	return ""
+}
+
+func firstCoverCaseProblems(c contractCase) string {
+	if p := problemCaseFileOrGenerate(c); p != "" {
+		return p
+	}
+	if p := problemCaseNamedFileExists(c); p != "" {
+		return p
+	}
+	if p := problemCaseGenerateFromExists(c); p != "" {
+		return p
+	}
+	if p := problemCaseResult(c); p != "" {
+		return p
+	}
+	if p := problemCaseDirectionVsResult(c); p != "" {
+		return p
+	}
+	return problemCaseExpectRules(c)
+}
+
+func firstCoverProblem(m contractManifest, folderNames []string, checkFolder bool) string {
+	if p := problemManifestSchemaVersion(m); p != "" {
+		return p
+	}
+	if p := problemManifestMaxRecords(m); p != "" {
+		return p
+	}
+	fileCases, p := collectManifestFileCases(m.Cases)
+	if p != "" {
+		return p
+	}
+	for i := 0; i < len(m.Cases); i++ {
+		if p := firstCoverCaseProblems(m.Cases[i]); p != "" {
+			return p
+		}
+	}
+	if p := problemBothDirections(m.Cases); p != "" {
+		return p
+	}
+	if !checkFolder {
+		return ""
+	}
+	return problemFolderSnapshotListing(folderNames, fileCases)
+}
+
+func sortedContractSnapshotNames(t *testing.T) []string {
 	t.Helper()
 	paths, err := filepath.Glob(filepath.Join(contractDir, "*.snapshot.json"))
 	if err != nil {
 		t.Fatalf("Glob(contract) = %v", err)
 	}
 	sort.Strings(paths)
+	names := make([]string, len(paths))
 	for i := 0; i < len(paths); i++ {
-		base := filepath.Base(paths[i])
-		if fileCases[base] == "" {
-			t.Fatalf("%s is not named by any case", base)
+		names[i] = filepath.Base(paths[i])
+	}
+	return names
+}
+
+func TestSnapshotContractFixturesCoverTheFolder(t *testing.T) {
+	manifest := loadContractManifest(t)
+	names := sortedContractSnapshotNames(t)
+	if p := firstCoverProblem(manifest, names, true); p != "" {
+		t.Fatal(p)
+	}
+}
+
+func assertCoverPlant(t *testing.T, name, want string, m contractManifest, folder []string, checkFolder bool) {
+	t.Helper()
+	p := firstCoverProblem(m, folder, checkFolder)
+	if want == "" {
+		if p != "" {
+			t.Fatalf("%s problem %q, want clean", name, p)
 		}
+		return
+	}
+	if p == "" {
+		t.Fatalf("%s passed cover checks, want problem containing %q", name, want)
+	}
+	if !strings.Contains(p, want) {
+		t.Fatalf("%s problem %q, want substring %q", name, p, want)
+	}
+}
+
+func TestSnapshotContractFixturesCoverRefusesAPlantedManifest(t *testing.T) {
+	base := copyContractManifest(loadContractManifest(t))
+	realFolder := sortedContractSnapshotNames(t)
+	rows := coverPlantedManifestRows(base, realFolder)
+	for i := 0; i < len(rows); i++ {
+		r := rows[i]
+		t.Run(r.name, func(t *testing.T) {
+			assertCoverPlant(t, r.name, r.want, r.apply(base), r.folder, r.checkFolder)
+		})
+	}
+}
+
+func coverPlantedManifestRows(base contractManifest, realFolder []string) []struct {
+	name        string
+	want        string
+	apply       func(contractManifest) contractManifest
+	folder      []string
+	checkFolder bool
+} {
+	dupFile := copyContractCase(base.Cases[0])
+	dupFile.ID = "valid-dup-file"
+	extraFolder := append([]string{}, realFolder...)
+	extraFolder = append(extraFolder, "extra.snapshot.json")
+	sort.Strings(extraFolder)
+	return []struct {
+		name        string
+		want        string
+		apply       func(contractManifest) contractManifest
+		folder      []string
+		checkFolder bool
+	}{
+		{"control", "", func(m contractManifest) contractManifest { return m }, realFolder, true},
+		{"schema_version 2", "schema_version", plantManifestSchemaVersion(base, 2), nil, false},
+		{"max_records 20000", "max_records", plantManifestMaxRecords(base, 20000), nil, false},
+		{"duplicate case id", "duplicate case id", plantManifestDuplicateID(base), nil, false},
+		{"file named by two cases", "named by cases", plantManifestDuplicateFile(base, dupFile), nil, false},
+		{"both file and generate", "exactly one of file or generate", plantManifestBothFileGenerate(base), nil, false},
+		{"neither file nor generate", "exactly one of file or generate", plantManifestNeitherFileGenerate(base), nil, false},
+		{"missing case file", "missing.snapshot.json", plantManifestMissingFile(base), nil, false},
+		{"missing generate.from", "generate.from", plantManifestMissingGenerateFrom(base), nil, false},
+		{"result maybe", "unknown result", plantManifestResultMaybe(base), nil, false},
+		{"compliant refused", "direction", plantManifestCompliantRefused(base), nil, false},
+		{"only compliant", "violation", plantManifestOnlyCompliant(base), nil, false},
+		{"refused empty says", "empty says", plantManifestRefusedEmptySays(base), nil, false},
+		{"accepted names says", "names says", plantManifestAcceptedSays(base), nil, false},
+		{"refused names source_runs", "refused names source_runs", plantManifestRefusedSourceRuns(base), nil, false},
+		{"refused names headroom", "refused names headroom", plantManifestRefusedHeadroom(base), nil, false},
+		{"accepted no source_runs", "no source_runs", plantManifestAcceptedNoSourceRuns(base), nil, false},
+		{"known without used_percent", "without used_percent", plantManifestKnownNoUsedPercent(base), nil, false},
+		{"known with reason", "known with reason", plantManifestKnownWithReason(base), nil, false},
+		{"unknown without reason", "without reason", plantManifestUnknownNoReason(base), nil, false},
+		{"unknown with used_percent", "with used_percent", plantManifestUnknownWithUsedPercent(base), nil, false},
+		{"reading state stale", "bad state", plantManifestReadingStateStale(base), nil, false},
+		{"extra snapshot file", "named by cases", func(m contractManifest) contractManifest { return m }, extraFolder, true},
+	}
+}
+
+func plantManifestSchemaVersion(base contractManifest, v int) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		out.SchemaVersion = v
+		return out
+	}
+}
+
+func plantManifestMaxRecords(base contractManifest, n int) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		out.MaxRecords = n
+		return out
+	}
+}
+
+func plantManifestDuplicateID(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		dup := copyContractCase(out.Cases[0])
+		dup.ID = out.Cases[0].ID
+		out.Cases = append(out.Cases, dup)
+		return out
+	}
+}
+
+func plantManifestDuplicateFile(base contractManifest, dup contractCase) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		out.Cases = append(out.Cases, dup)
+		return out
+	}
+}
+
+func plantManifestBothFileGenerate(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		out.Cases[0].Generate = &generateSpec{From: "valid.snapshot.json", Records: 1}
+		return out
+	}
+}
+
+func plantManifestNeitherFileGenerate(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		out.Cases[0].File = ""
+		out.Cases[0].Generate = nil
+		return out
+	}
+}
+
+func plantManifestMissingFile(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		out.Cases[0].File = "missing.snapshot.json"
+		return out
+	}
+}
+
+func plantManifestMissingGenerateFrom(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		for i := 0; i < len(out.Cases); i++ {
+			if out.Cases[i].Generate != nil {
+				out.Cases[i].Generate.From = "missing.snapshot.json"
+				break
+			}
+		}
+		return out
+	}
+}
+
+func plantManifestResultMaybe(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		out.Cases[0].Expect.Result = "maybe"
+		return out
+	}
+}
+
+func plantManifestCompliantRefused(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		out.Cases[0].Expect.Result = "refused"
+		out.Cases[0].Expect.Says = "planted"
+		return out
+	}
+}
+
+func plantManifestOnlyCompliant(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		kept := make([]contractCase, 0, len(out.Cases))
+		for i := 0; i < len(out.Cases); i++ {
+			if out.Cases[i].Direction == "compliant" {
+				kept = append(kept, out.Cases[i])
+			}
+		}
+		out.Cases = kept
+		return out
+	}
+}
+
+func plantManifestRefusedEmptySays(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		for i := 0; i < len(out.Cases); i++ {
+			if out.Cases[i].Expect.Result == "refused" {
+				out.Cases[i].Expect.Says = ""
+				break
+			}
+		}
+		return out
+	}
+}
+
+func plantManifestAcceptedSays(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		out.Cases[0].Expect.Says = "should not be here"
+		return out
+	}
+}
+
+func plantManifestRefusedSourceRuns(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		for i := 0; i < len(out.Cases); i++ {
+			if out.Cases[i].Expect.Result == "refused" {
+				out.Cases[i].Expect.SourceRuns = map[string]string{"x": "ok"}
+				break
+			}
+		}
+		return out
+	}
+}
+
+func plantManifestRefusedHeadroom(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		for i := 0; i < len(out.Cases); i++ {
+			if out.Cases[i].Expect.Result == "refused" {
+				out.Cases[i].Expect.Headroom = []headroomCheck{{Now: "2026-01-01T00:00:00Z", MaxAge: "1m", Readings: nil}}
+				break
+			}
+		}
+		return out
+	}
+}
+
+func plantManifestAcceptedNoSourceRuns(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		out.Cases[0].Expect.SourceRuns = nil
+		return out
+	}
+}
+
+func plantManifestKnownNoUsedPercent(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		out.Cases[0].Expect.Headroom[0].Readings[0].UsedPercent = nil
+		return out
+	}
+}
+
+func plantManifestKnownWithReason(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		out.Cases[0].Expect.Headroom[0].Readings[0].Reason = "stale:"
+		return out
+	}
+}
+
+func plantManifestUnknownNoReason(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		for i := 0; i < len(out.Cases); i++ {
+			if out.Cases[i].ID == "unknown-headroom" {
+				out.Cases[i].Expect.Headroom[0].Readings[0].Reason = ""
+				break
+			}
+		}
+		return out
+	}
+}
+
+func plantManifestUnknownWithUsedPercent(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		for i := 0; i < len(out.Cases); i++ {
+			if out.Cases[i].ID == "unknown-headroom" {
+				out.Cases[i].Expect.Headroom[0].Readings[0].UsedPercent = float64Ptr(1)
+				break
+			}
+		}
+		return out
+	}
+}
+
+func plantManifestReadingStateStale(base contractManifest) func(contractManifest) contractManifest {
+	return func(m contractManifest) contractManifest {
+		out := copyContractManifest(base)
+		out.Cases[0].Expect.Headroom[0].Readings[0].State = "stale"
+		return out
 	}
 }
