@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -15,11 +16,11 @@ func validateJobNamesAndLogPaths(jobs []JobConfig) error {
 	return validateJobLogPaths(jobs)
 }
 
-// Each existing component resolves through symlinks in order, so a .. after a
-// symlink climbs from the link target, as the shim's open does; from the first
-// component that does not resolve (missing, permission denied, not a
-// directory) the rest joins on lexically; a symlink created after load is not
-// seen.
+// Each existing component resolves through symlinks in order, so on Unix a ..
+// after a symlink climbs from the link target, as the shim's open does (on
+// Windows .. is already gone after normalization); from the first component
+// that does not resolve (missing, permission denied, not a directory) the rest
+// joins on lexically; a symlink created after load is not seen.
 func validateJobLogPaths(jobs []JobConfig) error {
 	seen := make(map[string]int, len(jobs))
 	for i := 0; i < len(jobs); i++ {
@@ -35,9 +36,19 @@ func validateJobLogPaths(jobs []JobConfig) error {
 	return nil
 }
 
-// unresolvedAbs returns path unchanged when absolute; otherwise it prepends the
-// working directory without cleaning .. lexically.
+// unresolvedAbs on Unix returns path unchanged when absolute and otherwise
+// prepends the working directory without cleaning .., because the open follows
+// a symlink before a later ..; on Windows it returns filepath.Abs, because
+// Windows normalizes the path (drive-relative forms, .. lexically) before the
+// open.
 func unresolvedAbs(path string) (string, error) {
+	if runtime.GOOS == "windows" {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return "", fmt.Errorf("config: abs %s: %w", path, err)
+		}
+		return abs, nil
+	}
 	if filepath.IsAbs(path) {
 		return path, nil
 	}
@@ -49,10 +60,11 @@ func unresolvedAbs(path string) (string, error) {
 }
 
 // resolveExistingAncestor resolves each existing component of abs through
-// symlinks in order, so a .. after a symlink climbs from the link target, as
-// the shim's open does; from the first component that does not resolve
-// (missing, permission denied, or not a directory) the rest joins on lexically;
-// a symlink created after load is not seen.
+// symlinks in order, so on Unix a .. after a symlink climbs from the link
+// target, as the shim's open does (on Windows .. is already gone after
+// normalization); from the first component that does not resolve (missing,
+// permission denied, or not a directory) the rest joins on lexically; a
+// symlink created after load is not seen.
 func resolveExistingAncestor(abs string) string {
 	vol := filepath.VolumeName(abs)
 	rest := abs[len(vol):]

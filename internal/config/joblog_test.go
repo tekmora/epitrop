@@ -163,21 +163,18 @@ func assertDotDotAfterSymlinkAliasRefused(t *testing.T) {
 	assertSameJobLogFileRefused(t, firstPath, filepath.Join(outside, "a.log"))
 }
 
+type unresolvedAbsCase struct {
+	name string
+	in   string
+	want string
+}
+
 func TestUnresolvedAbs(t *testing.T) {
 	wd, wdErr := os.Getwd()
 	if wdErr != nil {
 		t.Fatalf("Getwd() = %v, want nil", wdErr)
 	}
-	sep := string(filepath.Separator)
-	absWithDotDot := strings.Join([]string{wd, "..", "a.log"}, sep)
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"absolute_preserves_dot_dot", absWithDotDot, absWithDotDot},
-		{"relative_prepends_getwd_uncleaned", "x/../a.log", wd + sep + "x/../a.log"},
-	}
+	cases := unresolvedAbsCases(wd)
 	for i := 0; i < len(cases); i++ {
 		tc := cases[i]
 		t.Run(tc.name, func(t *testing.T) {
@@ -186,6 +183,23 @@ func TestUnresolvedAbs(t *testing.T) {
 				t.Fatalf("unresolvedAbs(%q) = %q, %v, want %q, nil", tc.in, got, err, tc.want)
 			}
 		})
+	}
+}
+
+func unresolvedAbsCases(wd string) []unresolvedAbsCase {
+	if runtime.GOOS == "windows" {
+		absWithDotDot := strings.Join([]string{wd, "..", "a.log"}, "\\")
+		return []unresolvedAbsCase{
+			{"absolute_cleaned_on_windows", absWithDotDot, filepath.Join(filepath.Dir(wd), "a.log")},
+			{"relative_cleaned_on_windows", "x\\..\\a.log", filepath.Join(wd, "a.log")},
+			{"drive_root_relative_on_windows", "\\a.log", filepath.VolumeName(wd) + "\\a.log"},
+		}
+	}
+	sep := string(filepath.Separator)
+	absWithDotDot := strings.Join([]string{wd, "..", "a.log"}, sep)
+	return []unresolvedAbsCase{
+		{"absolute_preserves_dot_dot", absWithDotDot, absWithDotDot},
+		{"relative_prepends_getwd_uncleaned", "x/../a.log", wd + sep + "x/../a.log"},
 	}
 }
 
