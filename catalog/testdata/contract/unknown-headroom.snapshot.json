@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-18T09:00:00Z",
+  "records": [
+    {
+      "model_id": "codex-cli/codex",
+      "provider": "openai",
+      "access_path": "subscription_cli",
+      "usage_window": {"window_minutes": 300},
+      "provenance": {"source": "codex-local", "fetched_at": "2026-10-18T09:00:00Z", "kind": "measured"}
+    },
+    {
+      "model_id": "litellm-key/fleet",
+      "access_path": "gateway",
+      "usage_window": {
+        "used_percent": 10,
+        "window_minutes": 10080,
+        "resets_at": "2026-10-18T08:59:00Z"
+      },
+      "provenance": {"source": "litellm-key-budget", "fetched_at": "2026-10-18T09:00:00Z", "kind": "measured"}
+    },
+    {
+      "model_id": "claude-code/session",
+      "provider": "anthropic",
+      "access_path": "subscription_cli",
+      "usage_window": {
+        "used_percent": 5,
+        "window_minutes": 10080,
+        "resets_at": "2026-10-21T00:00:00Z"
+      },
+      "provenance": {"source": "claude-local", "fetched_at": "2026-10-18T09:10:00Z", "kind": "measured"}
+    }
+  ],
+  "source_runs": [
+    {"source": "codex-local", "status": "ok", "count": 1},
+    {"source": "litellm-key-budget", "status": "ok", "count": 1},
+    {"source": "claude-local", "status": "ok", "count": 1}
+  ]
+}

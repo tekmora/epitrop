@@ -53,6 +53,8 @@ cosign verify-blob-attestation --new-bundle-format --bundle provenance.json --ty
 
 Praetor reads snapshots through the catalog package, pinned as a Go module: `github.com/tekmora/epitrop/catalog` at a pseudo-version before the first tag, at a tag after it. The package imports only the standard library (`TestCatalogImportsStdlibOnly`) and embeds the schema as `catalog.SnapshotSchema()`. The binary comes from the release assets.
 
+The fixtures in `catalog/testdata/contract/` state the snapshot contract for a consumer: `cases.json` lists each case's expected outcome, and generated cases duplicate the first record of a source snapshot with suffixed `model_id` values instead of writing new files. The Go module archive carries the folder, so a consumer reads it from its module cache at the pinned version (`go list -m -f '{{.Dir}}' github.com/tekmora/epitrop`); `TestSnapshotContractFixtures` replays them here.
+
 ## Cutting a release
 
 1. Every merged user-visible change carries one fragment under `changelog.d/`: `type`, `title`, optional `issue`, and `breaking`.
