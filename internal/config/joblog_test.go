@@ -3,7 +3,9 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -100,6 +102,130 @@ func TestLoadJobLogPathsUnique(t *testing.T) {
 	t.Run("relative_and_absolute_same_file_refused", func(t *testing.T) {
 		assertRelativeAndAbsoluteJobLogPaths(t)
 	})
+	t.Run("symlinked_directory_alias_refused", func(t *testing.T) {
+		assertSymlinkedDirectoryAliasRefused(t)
+	})
+	t.Run("missing_directory_below_alias_refused", func(t *testing.T) {
+		assertMissingDirectoryBelowAliasRefused(t)
+	})
+	t.Run("symlinked_file_alias_refused", func(t *testing.T) {
+		assertSymlinkedFileAliasRefused(t)
+	})
+	t.Run("distinct_files_through_alias_load", func(t *testing.T) {
+		assertDistinctFilesThroughAliasLoad(t)
+	})
+	t.Run("unreadable_directory_through_alias_refused", func(t *testing.T) {
+		assertUnreadableDirectoryThroughAliasRefused(t)
+	})
+}
+
+func assertSymlinkedDirectoryAliasRefused(t *testing.T) {
+	t.Helper()
+	_, realDir, aliasDir := newJobLogAliasDirs(t)
+	assertSameJobLogFileRefused(t, filepath.Join(realDir, "a.log"), filepath.Join(aliasDir, "a.log"))
+}
+
+func assertMissingDirectoryBelowAliasRefused(t *testing.T) {
+	t.Helper()
+	_, realDir, aliasDir := newJobLogAliasDirs(t)
+	assertSameJobLogFileRefused(t, filepath.Join(realDir, "new", "a.log"), filepath.Join(aliasDir, "new", "a.log"))
+}
+
+func assertSymlinkedFileAliasRefused(t *testing.T) {
+	t.Helper()
+	root, realDir, _ := newJobLogAliasDirs(t)
+	realLog := filepath.Join(realDir, "a.log")
+	if err := os.WriteFile(realLog, []byte("log\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) = %v, want nil", realLog, err)
+	}
+	linkLog := filepath.Join(root, "link.log")
+	if err := os.Symlink(realLog, linkLog); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", linkLog, err)
+	}
+	assertSameJobLogFileRefused(t, realLog, linkLog)
+}
+
+func assertDistinctFilesThroughAliasLoad(t *testing.T) {
+	t.Helper()
+	_, realDir, aliasDir := newJobLogAliasDirs(t)
+	firstPath := filepath.Join(aliasDir, "a.log")
+	secondPath := filepath.Join(realDir, "b.log")
+	if _, err := Load(testContext(t), writeConfig(t, twoJobsLogPathConfig(firstPath, secondPath))); err != nil {
+		t.Fatalf("Load(%q vs %q) = %v, want nil", firstPath, secondPath, err)
+	}
+}
+
+func assertUnreadableDirectoryThroughAliasRefused(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root reads through mode 0000 directories")
+	}
+	root := newResolvedTempDir(t)
+	locked := filepath.Join(root, "locked")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s) = %v, want nil", locked, err)
+	}
+	lockAlias := filepath.Join(root, "lockalias")
+	if err := os.Symlink(locked, lockAlias); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", lockAlias, err)
+	}
+	lockTestDir(t, locked)
+	assertSameJobLogFileRefused(t, filepath.Join(locked, "sub", "a.log"), filepath.Join(lockAlias, "sub", "a.log"))
+}
+
+func newResolvedTempDir(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks(temporary directory) = %v, want nil", err)
+	}
+	return root
+}
+
+func newJobLogAliasDirs(t *testing.T) (string, string, string) {
+	t.Helper()
+	root := newResolvedTempDir(t)
+	realDir := filepath.Join(root, "real")
+	if err := os.MkdirAll(realDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s) = %v, want nil", realDir, err)
+	}
+	aliasDir := filepath.Join(root, "alias")
+	if err := os.Symlink(realDir, aliasDir); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", aliasDir, err)
+	}
+	return root, realDir, aliasDir
+}
+
+func assertSameJobLogFileRefused(t *testing.T, firstPath, secondPath string) {
+	t.Helper()
+	_, err := Load(testContext(t), writeConfig(t, twoJobsLogPathConfig(firstPath, secondPath)))
+	want := fmt.Sprintf("config: jobs/1/log_path: %q names the same file as jobs/0 (%q)", secondPath, firstPath)
+	if err == nil || err.Error() != want {
+		t.Fatalf("Load(%q vs %q) = %v, want %q", firstPath, secondPath, err, want)
+	}
+}
+
+func lockTestDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := chmodTestDir(dir, 0o000); err != nil {
+		t.Fatalf("chmodTestDir(%s, 0000) = %v, want nil", dir, err)
+	}
+	t.Cleanup(func() {
+		if err := chmodTestDir(dir, 0o700); err != nil {
+			t.Errorf("chmodTestDir(%s, 0700) = %v, want nil", dir, err)
+		}
+	})
+}
+
+// chmodTestDir sets file mode permissions on a test directory.
+func chmodTestDir(dir string, mode os.FileMode) error {
+	if err := os.Chmod(dir, mode); err != nil { // #nosec G302 -- callers set a test temp directory to 0o000 and restore 0o700
+		return fmt.Errorf("chmod %s %04o: %w", dir, mode, err)
+	}
+	return nil
 }
 
 func assertRelativeAndAbsoluteJobLogPaths(t *testing.T) {

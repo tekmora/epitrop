@@ -1061,7 +1061,7 @@ func resolvePossiblyMissingAbs(path string) (string, error) {
 	if err == nil {
 		return resolved, nil
 	}
-	return filepath.Clean(abs), nil
+	return resolveExistingAncestor(abs), nil
 }
 
 func pathOverlaps(a string, b string) bool {
