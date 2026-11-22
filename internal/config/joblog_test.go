@@ -133,15 +133,7 @@ func assertMissingDirectoryBelowAliasRefused(t *testing.T) {
 
 func assertSymlinkedFileAliasRefused(t *testing.T) {
 	t.Helper()
-	root, realDir, _ := newJobLogAliasDirs(t)
-	realLog := filepath.Join(realDir, "a.log")
-	if err := os.WriteFile(realLog, []byte("log\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%s) = %v, want nil", realLog, err)
-	}
-	linkLog := filepath.Join(root, "link.log")
-	if err := os.Symlink(realLog, linkLog); err != nil {
-		t.Fatalf("Symlink(%s) = %v, want nil", linkLog, err)
-	}
+	realLog, linkLog := newLinkedJobLogFile(t)
 	assertSameJobLogFileRefused(t, realLog, linkLog)
 }
 
@@ -157,20 +149,62 @@ func assertDistinctFilesThroughAliasLoad(t *testing.T) {
 
 func assertUnreadableDirectoryThroughAliasRefused(t *testing.T) {
 	t.Helper()
-	if os.Geteuid() == 0 {
-		t.Skip("root reads through mode 0000 directories")
-	}
-	root := newResolvedTempDir(t)
-	locked := filepath.Join(root, "locked")
-	if err := os.MkdirAll(locked, 0o700); err != nil {
-		t.Fatalf("MkdirAll(%s) = %v, want nil", locked, err)
-	}
-	lockAlias := filepath.Join(root, "lockalias")
-	if err := os.Symlink(locked, lockAlias); err != nil {
-		t.Fatalf("Symlink(%s) = %v, want nil", lockAlias, err)
-	}
-	lockTestDir(t, locked)
+	locked, lockAlias := newLockedJobLogAliasDirs(t)
 	assertSameJobLogFileRefused(t, filepath.Join(locked, "sub", "a.log"), filepath.Join(lockAlias, "sub", "a.log"))
+}
+
+func TestResolveExistingAncestor(t *testing.T) {
+	cases := []struct {
+		name  string
+		paths func(*testing.T) (string, string)
+	}{
+		{"two_missing_components_below_alias", ancestorTwoMissingBelowAlias},
+		{"existing_file_through_link", ancestorExistingFileThroughLink},
+		{"missing_file_in_real_dir", ancestorMissingFileInRealDir},
+		{"dot_dot_cleaned_before_resolution", ancestorDotDotBeforeResolution},
+		{"unreadable_directory_through_alias", ancestorUnreadableDirThroughAlias},
+	}
+	for i := 0; i < len(cases); i++ {
+		tc := cases[i]
+		t.Run(tc.name, func(t *testing.T) {
+			in, want := tc.paths(t)
+			if got := resolveExistingAncestor(in); got != want {
+				t.Fatalf("resolveExistingAncestor(%q) = %q, want %q", in, got, want)
+			}
+		})
+	}
+}
+
+func ancestorTwoMissingBelowAlias(t *testing.T) (string, string) {
+	t.Helper()
+	_, realDir, aliasDir := newJobLogAliasDirs(t)
+	return filepath.Join(aliasDir, "new", "sub", "a.log"), filepath.Join(realDir, "new", "sub", "a.log")
+}
+
+func ancestorExistingFileThroughLink(t *testing.T) (string, string) {
+	t.Helper()
+	realLog, linkLog := newLinkedJobLogFile(t)
+	return linkLog, realLog
+}
+
+func ancestorMissingFileInRealDir(t *testing.T) (string, string) {
+	t.Helper()
+	_, realDir, _ := newJobLogAliasDirs(t)
+	missingLog := filepath.Join(realDir, "a.log")
+	return missingLog, missingLog
+}
+
+func ancestorDotDotBeforeResolution(t *testing.T) (string, string) {
+	t.Helper()
+	_, realDir, aliasDir := newJobLogAliasDirs(t)
+	uncleaned := strings.Join([]string{aliasDir, "x", "..", "new", "a.log"}, string(filepath.Separator))
+	return uncleaned, filepath.Join(realDir, "new", "a.log")
+}
+
+func ancestorUnreadableDirThroughAlias(t *testing.T) (string, string) {
+	t.Helper()
+	locked, lockAlias := newLockedJobLogAliasDirs(t)
+	return filepath.Join(lockAlias, "sub", "a.log"), filepath.Join(locked, "sub", "a.log")
 }
 
 func newResolvedTempDir(t *testing.T) string {
@@ -197,6 +231,38 @@ func newJobLogAliasDirs(t *testing.T) (string, string, string) {
 		t.Fatalf("Symlink(%s) = %v, want nil", aliasDir, err)
 	}
 	return root, realDir, aliasDir
+}
+
+func newLinkedJobLogFile(t *testing.T) (string, string) {
+	t.Helper()
+	root, realDir, _ := newJobLogAliasDirs(t)
+	realLog := filepath.Join(realDir, "a.log")
+	if err := os.WriteFile(realLog, []byte("log\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) = %v, want nil", realLog, err)
+	}
+	linkLog := filepath.Join(root, "link.log")
+	if err := os.Symlink(realLog, linkLog); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", linkLog, err)
+	}
+	return realLog, linkLog
+}
+
+func newLockedJobLogAliasDirs(t *testing.T) (string, string) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root reads through mode 0000 directories")
+	}
+	root := newResolvedTempDir(t)
+	locked := filepath.Join(root, "locked")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s) = %v, want nil", locked, err)
+	}
+	lockAlias := filepath.Join(root, "lockalias")
+	if err := os.Symlink(locked, lockAlias); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", lockAlias, err)
+	}
+	lockTestDir(t, locked)
+	return locked, lockAlias
 }
 
 func assertSameJobLogFileRefused(t *testing.T, firstPath, secondPath string) {
