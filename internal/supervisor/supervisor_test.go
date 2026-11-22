@@ -744,7 +744,7 @@ func TestShimEventAppendAndCleanupErrors(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start(true) = %v, want nil", err)
 	}
-	err := waitAndRecordExit(testContext(t), writer, cfg, cmd)
+	err := waitAndRecordExit(testContext(t), writer, cfg, cmd, nil)
 	if err == nil {
 		t.Fatal("waitAndRecordExit(failing writer) = nil, want append error")
 	}

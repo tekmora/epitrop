@@ -21,13 +21,25 @@ import (
 )
 
 const (
-	MaxGraphDepth           = 64
-	MaxJobs                 = 64
-	MaxJobArgs              = 32
-	MaxWatches              = 64
-	MaxRouterAliases        = 32
-	MaxReplayRecords        = 1000000
-	MaxJobRestarts          = 32
+	MaxGraphDepth    = 64
+	MaxJobs          = 64
+	MaxJobArgs       = 32
+	MaxWatches       = 64
+	MaxRouterAliases = 32
+	MaxReplayRecords = 1000000
+	MaxJobRestarts   = 32
+	// DefaultLogMaxBytes is the active log byte bound when log_rotation.max_bytes is 0 or unset (64 MiB).
+	DefaultLogMaxBytes = 64 * 1024 * 1024
+	// MinLogMaxBytes is the smallest allowed log_rotation.max_bytes value (4 KiB).
+	MinLogMaxBytes = 4096
+	// MaxLogMaxBytes is the largest allowed log_rotation.max_bytes value (1 GiB).
+	MaxLogMaxBytes = 1024 * 1024 * 1024
+	// DefaultLogKeepFiles is the rotated log count when log_rotation.keep_files is 0 or unset.
+	DefaultLogKeepFiles = 5
+	// MinLogKeepFiles is the smallest allowed log_rotation.keep_files value.
+	MinLogKeepFiles = 1
+	// MaxLogKeepFiles is the largest allowed log_rotation.keep_files value.
+	MaxLogKeepFiles         = 100
 	MaxRestartBackoff       = 3600
 	MaxRestartWindowSeconds = 604800
 	MaxStopGraceSeconds     = 300
@@ -228,7 +240,15 @@ type JobConfig struct {
 	Restart           JobRestartConfig `koanf:"restart" json:"restart"`
 	Stop              JobStopConfig    `koanf:"stop" json:"stop"`
 	Heartbeat         JobHeartbeat     `koanf:"heartbeat" json:"heartbeat"`
+	LogRotation       JobLogRotation   `koanf:"log_rotation" json:"log_rotation"`
 	Sandbox           SandboxConfig    `koanf:"sandbox" json:"sandbox"`
+}
+
+// JobLogRotation bounds a job's active log size and the number of rotated files kept beside
+// it. Zero values take DefaultLogMaxBytes and DefaultLogKeepFiles.
+type JobLogRotation struct {
+	MaxBytes  int `koanf:"max_bytes" json:"max_bytes"`
+	KeepFiles int `koanf:"keep_files" json:"keep_files"`
 }
 
 // JobHeartbeat says how old a running job's last sign of life may be. A write to the job's
@@ -429,10 +449,8 @@ func validateLoaded(cfg *Config, path string) error {
 	if err := validateNames(*cfg); err != nil {
 		return err
 	}
-	for i := 0; i < len(cfg.Jobs); i++ {
-		if err := ValidateJobTrigger(cfg.Jobs[i]); err != nil {
-			return err
-		}
+	if err := validateJobsLoaded(cfg.Jobs); err != nil {
+		return err
 	}
 	if err := validateRouterAliases(*cfg); err != nil {
 		return err
@@ -489,8 +507,57 @@ func applyJobDefaults(jobs []JobConfig) {
 		if jobs[i].Stop.Signal == "" {
 			jobs[i].Stop.Signal = defaultStopSignal
 		}
+		applyLogRotationDefaults(&jobs[i].LogRotation)
 		applySandboxDefaults(&jobs[i].Sandbox)
 	}
+}
+
+func applyLogRotationDefaults(rot *JobLogRotation) {
+	if rot.MaxBytes == 0 {
+		rot.MaxBytes = DefaultLogMaxBytes
+	}
+	if rot.KeepFiles == 0 {
+		rot.KeepFiles = DefaultLogKeepFiles
+	}
+}
+
+// NormalizeLogRotation returns rot with zero fields set to DefaultLogMaxBytes and
+// DefaultLogKeepFiles.
+func NormalizeLogRotation(rot JobLogRotation) JobLogRotation {
+	applyLogRotationDefaults(&rot)
+	return rot
+}
+
+// ValidateLogRotation applies default values for unset fields and checks that max_bytes and
+// keep_files lie within their allowed bounds.
+func ValidateLogRotation(rot JobLogRotation) error {
+	applyLogRotationDefaults(&rot)
+	if rot.MaxBytes < MinLogMaxBytes || rot.MaxBytes > MaxLogMaxBytes {
+		return fmt.Errorf("log_rotation.max_bytes must be %d..%d", MinLogMaxBytes, MaxLogMaxBytes)
+	}
+	if rot.KeepFiles < MinLogKeepFiles || rot.KeepFiles > MaxLogKeepFiles {
+		return fmt.Errorf("log_rotation.keep_files must be %d..%d", MinLogKeepFiles, MaxLogKeepFiles)
+	}
+	return nil
+}
+
+func validateJobsLoaded(jobs []JobConfig) error {
+	for i := 0; i < len(jobs); i++ {
+		if err := ValidateJobTrigger(jobs[i]); err != nil {
+			return err
+		}
+		if err := validateJobLogRotation(i, jobs[i].LogRotation); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateJobLogRotation(index int, rot JobLogRotation) error {
+	if err := ValidateLogRotation(rot); err != nil {
+		return fmt.Errorf("config: jobs/%d/%w", index, err)
+	}
+	return nil
 }
 
 func applySandboxDefaults(sandbox *SandboxConfig) {
@@ -600,7 +667,7 @@ func insertPath(root map[string]any, parts []string, value any) error {
 }
 
 func validateNames(cfg Config) error {
-	if err := validateJobNames(cfg.Jobs); err != nil {
+	if err := validateJobNamesAndLogPaths(cfg.Jobs); err != nil {
 		return err
 	}
 	return validateWatchNames(cfg.Watches)
@@ -926,11 +993,11 @@ func protectedPathList(cfg Config, configPath string) ([]string, error) {
 		if candidates[i] == "" {
 			continue
 		}
-		resolved, err := resolvePossiblyMissingAbs(candidates[i])
+		forms, err := protectedPathForms(candidates[i])
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, resolved)
+		out = append(out, forms...)
 	}
 	return out, nil
 }
@@ -986,15 +1053,11 @@ func resolveExistingAbs(path string) (string, error) {
 }
 
 func resolvePossiblyMissingAbs(path string) (string, error) {
-	abs, err := filepath.Abs(path)
+	abs, err := unresolvedAbs(path)
 	if err != nil {
-		return "", fmt.Errorf("config: abs %s: %w", path, err)
+		return "", err
 	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err == nil {
-		return resolved, nil
-	}
-	return filepath.Clean(abs), nil
+	return resolveExistingAncestor(abs), nil
 }
 
 func pathOverlaps(a string, b string) bool {

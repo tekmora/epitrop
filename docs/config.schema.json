@@ -228,6 +228,38 @@
               }
             }
           },
+          "log_rotation": {
+            "type": "object",
+            "description": "Bounds the size of the job's active log file and the number of rotated files kept.",
+            "default": {
+              "max_bytes": 67108864,
+              "keep_files": 5
+            },
+            "additionalProperties": false,
+            "properties": {
+              "max_bytes": {
+                "type": "integer",
+                "description": "Byte bound of the active log file (4096..1073741824); 0 takes the default, 67108864.",
+                "default": 67108864,
+                "anyOf": [
+                  {
+                    "const": 0
+                  },
+                  {
+                    "minimum": 4096,
+                    "maximum": 1073741824
+                  }
+                ]
+              },
+              "keep_files": {
+                "type": "integer",
+                "description": "Number of rotated log files kept alongside log_path (1..100); 0 takes the default, 5.",
+                "default": 5,
+                "minimum": 0,
+                "maximum": 100
+              }
+            }
+          },
           "sandbox": {
             "type": "object",
             "default": {

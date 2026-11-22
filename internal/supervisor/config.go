@@ -58,22 +58,22 @@ func checkJob(job config.JobConfig) error {
 
 func checkJobBounds(job config.JobConfig) error {
 	bounds := []struct {
-		name       string
-		value, max int
+		name            string
+		value, min, max int
 	}{
-		{"restart.max_restarts", job.Restart.MaxRestarts, config.MaxJobRestarts},
-		{"restart.backoff_seconds", job.Restart.BackoffSeconds, config.MaxRestartBackoff},
-		{"restart.window_seconds", job.Restart.WindowSeconds, config.MaxRestartWindowSeconds},
-		{"stop.grace_seconds", job.Stop.GraceSeconds, config.MaxStopGraceSeconds},
-		{"max_runtime_seconds", job.MaxRuntimeSeconds, config.MaxJobRuntimeSeconds},
-		{"heartbeat.max_age_seconds", job.Heartbeat.MaxAgeSeconds, config.MaxHeartbeatSeconds},
+		{"restart.max_restarts", job.Restart.MaxRestarts, 0, config.MaxJobRestarts},
+		{"restart.backoff_seconds", job.Restart.BackoffSeconds, 0, config.MaxRestartBackoff},
+		{"restart.window_seconds", job.Restart.WindowSeconds, 0, config.MaxRestartWindowSeconds},
+		{"stop.grace_seconds", job.Stop.GraceSeconds, 0, config.MaxStopGraceSeconds},
+		{"max_runtime_seconds", job.MaxRuntimeSeconds, 0, config.MaxJobRuntimeSeconds},
+		{"heartbeat.max_age_seconds", job.Heartbeat.MaxAgeSeconds, 0, config.MaxHeartbeatSeconds},
 	}
 	for i := 0; i < len(bounds); i++ {
-		if bounds[i].value < 0 || bounds[i].value > bounds[i].max {
-			return fmt.Errorf("%s must be 0..%d", bounds[i].name, bounds[i].max)
+		if bounds[i].value < bounds[i].min || bounds[i].value > bounds[i].max {
+			return fmt.Errorf("%s must be %d..%d", bounds[i].name, bounds[i].min, bounds[i].max)
 		}
 	}
-	return nil
+	return config.ValidateLogRotation(job.LogRotation)
 }
 
 func (s *Supervisor) selectedJobs(name string) ([]config.JobConfig, error) {
@@ -106,6 +106,7 @@ func normalizeJob(job config.JobConfig) config.JobConfig {
 	if job.Stop.Signal == "" {
 		job.Stop.Signal = "TERM"
 	}
+	job.LogRotation = config.NormalizeLogRotation(job.LogRotation)
 	job.Sandbox = config.NormalizeSandbox(job.Sandbox)
 	return job
 }

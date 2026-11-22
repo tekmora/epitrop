@@ -489,6 +489,107 @@ func TestJobHeartbeatBoundIsTheSchemaBound(t *testing.T) {
 	}
 }
 
+func TestLoadJobLogRotation(t *testing.T) {
+	assertJobLogRotationDefaultsAndBounds(t)
+	assertJobLogRotationRefusals(t)
+	assertJobLogRotationSchemaDefaults(t)
+	assertNormalizeAndValidateLogRotation(t)
+}
+
+func assertNormalizeAndValidateLogRotation(t *testing.T) {
+	t.Helper()
+	if got := NormalizeLogRotation(JobLogRotation{}); got != (JobLogRotation{MaxBytes: DefaultLogMaxBytes, KeepFiles: DefaultLogKeepFiles}) {
+		t.Fatalf("NormalizeLogRotation(zero) = %+v, want defaults", got)
+	}
+	if got := NormalizeLogRotation(JobLogRotation{MaxBytes: 8192, KeepFiles: 7}); got != (JobLogRotation{MaxBytes: 8192, KeepFiles: 7}) {
+		t.Fatalf("NormalizeLogRotation(explicit) = %+v, want explicit values", got)
+	}
+	good := []JobLogRotation{{}, {MaxBytes: MinLogMaxBytes, KeepFiles: MinLogKeepFiles}, {MaxBytes: MaxLogMaxBytes, KeepFiles: MaxLogKeepFiles}}
+	for i := 0; i < len(good); i++ {
+		if err := ValidateLogRotation(good[i]); err != nil {
+			t.Fatalf("ValidateLogRotation(%+v) = %v, want nil", good[i], err)
+		}
+	}
+	bad := []struct {
+		rot  JobLogRotation
+		want string
+	}{
+		{JobLogRotation{MaxBytes: MinLogMaxBytes - 1}, "log_rotation.max_bytes must be 4096..1073741824"},
+		{JobLogRotation{MaxBytes: MaxLogMaxBytes + 1}, "log_rotation.max_bytes must be 4096..1073741824"},
+		{JobLogRotation{MaxBytes: -1}, "log_rotation.max_bytes must be 4096..1073741824"},
+		{JobLogRotation{KeepFiles: -1}, "log_rotation.keep_files must be 1..100"},
+		{JobLogRotation{KeepFiles: MaxLogKeepFiles + 1}, "log_rotation.keep_files must be 1..100"},
+	}
+	for i := 0; i < len(bad); i++ {
+		if err := ValidateLogRotation(bad[i].rot); err == nil || err.Error() != bad[i].want {
+			t.Fatalf("ValidateLogRotation(%+v) = %v, want %q", bad[i].rot, err, bad[i].want)
+		}
+	}
+}
+
+func assertJobLogRotationDefaultsAndBounds(t *testing.T) {
+	t.Helper()
+	cases := []struct {
+		name  string
+		field string
+		want  JobLogRotation
+	}{
+		{"absent", "", JobLogRotation{MaxBytes: DefaultLogMaxBytes, KeepFiles: DefaultLogKeepFiles}},
+		{"keep_files zero", `"log_rotation": {"keep_files": 0},`, JobLogRotation{MaxBytes: DefaultLogMaxBytes, KeepFiles: 5}},
+		{"max_bytes zero", `"log_rotation": {"max_bytes": 0},`, JobLogRotation{MaxBytes: 67108864, KeepFiles: 5}},
+		{"minimums", `"log_rotation": {"max_bytes": 4096, "keep_files": 1},`, JobLogRotation{MaxBytes: 4096, KeepFiles: 1}},
+		{"maximums", `"log_rotation": {"max_bytes": 1073741824, "keep_files": 100},`, JobLogRotation{MaxBytes: 1073741824, KeepFiles: 100}},
+	}
+	for i := 0; i < len(cases); i++ {
+		body := fmt.Sprintf(`{"jobs": [{"name": "rot", "command": ["/bin/true"], "log_path": "/tmp/rot.log", %s "sandbox": {"mode": "off", "reason": "test"}}]}`, cases[i].field)
+		cfg, err := Load(testContext(t), writeConfig(t, body))
+		if err != nil {
+			t.Fatalf("Load(%s) = %v, want nil", cases[i].name, err)
+		}
+		if got := cfg.Jobs[0].LogRotation; got != cases[i].want {
+			t.Fatalf("Load(%s) log_rotation = %+v, want %+v", cases[i].name, got, cases[i].want)
+		}
+	}
+}
+
+func assertJobLogRotationRefusals(t *testing.T) {
+	t.Helper()
+	refused := []struct {
+		name string
+		rot  string
+		want string
+	}{
+		{"max_bytes 4095", `{"max_bytes": 4095}`, "/jobs/0/log_rotation/max_bytes"},
+		{"max_bytes 1073741825", `{"max_bytes": 1073741825}`, "maximum"},
+		{"max_bytes -1", `{"max_bytes": -1}`, "minimum"},
+		{"keep_files -1", `{"keep_files": -1}`, "minimum"},
+		{"keep_files 101", `{"keep_files": 101}`, "maximum"},
+		{"max_bytes string", `{"max_bytes": "64M"}`, "integer"},
+		{"keep_files string", `{"keep_files": "5"}`, "integer"},
+	}
+	for i := 0; i < len(refused); i++ {
+		body := fmt.Sprintf(`{"jobs": [{"name": "rot", "command": ["/bin/true"], "log_path": "/tmp/rot.log", "log_rotation": %s, "sandbox": {"mode": "off", "reason": "test"}}]}`, refused[i].rot)
+		_, err := Load(testContext(t), writeConfig(t, body))
+		if err == nil || !strings.Contains(err.Error(), refused[i].want) {
+			t.Fatalf("Load(%s) = %v, want refusal containing %q", refused[i].name, err, refused[i].want)
+		}
+	}
+}
+
+func assertJobLogRotationSchemaDefaults(t *testing.T) {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(SchemaJSON(), &doc); err != nil {
+		t.Fatalf("Unmarshal(schema) = %v, want nil", err)
+	}
+	rot := schemaChild(t, doc, "properties", "jobs", "items", "properties", "log_rotation")
+	maxNode := schemaChild(t, rot, "properties", "max_bytes")
+	keepNode := schemaChild(t, rot, "properties", "keep_files")
+	if maxNode["default"] != float64(DefaultLogMaxBytes) || keepNode["default"] != float64(DefaultLogKeepFiles) {
+		t.Fatalf("schema log_rotation property defaults = %v/%v, want %d/%d", maxNode["default"], keepNode["default"], DefaultLogMaxBytes, DefaultLogKeepFiles)
+	}
+}
+
 func TestExampleConfigValidates(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the example uses Unix paths")
@@ -906,6 +1007,11 @@ func (w sandboxPathWorld) load(t *testing.T, workspace string, inputs []string) 
 
 func (w sandboxPathWorld) loadWithRoots(t *testing.T, roots []string, workspace string, inputs []string) error {
 	t.Helper()
+	return w.loadWithEventLog(t, roots, w.events, workspace, inputs)
+}
+
+func (w sandboxPathWorld) loadWithEventLog(t *testing.T, roots []string, events string, workspace string, inputs []string) error {
+	t.Helper()
 	sandbox, err := json.Marshal(map[string]any{"workspace": workspace, "inputs": inputs})
 	if err != nil {
 		t.Fatalf("marshal sandbox: %v", err)
@@ -914,7 +1020,7 @@ func (w sandboxPathWorld) loadWithRoots(t *testing.T, roots []string, workspace 
 	if err != nil {
 		t.Fatalf("marshal roots: %v", err)
 	}
-	body := fmt.Sprintf(`{"sandbox_input_roots": %s, "event_log": {"dir": %q, "signing_key_path": %q}, "jobs": [{"name": "daemon", "command": ["/bin/true"], "log_path": "/tmp/daemon.log", "sandbox": %s}]}`, rootList, w.events, w.key, sandbox)
+	body := fmt.Sprintf(`{"sandbox_input_roots": %s, "event_log": {"dir": %q, "signing_key_path": %q}, "jobs": [{"name": "daemon", "command": ["/bin/true"], "log_path": "/tmp/daemon.log", "sandbox": %s}]}`, rootList, events, w.key, sandbox)
 	path := filepath.Join(w.confDir, "config.json")
 	if err = os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile(config) = %v, want nil", err)
@@ -954,13 +1060,7 @@ func TestLoadRefusesSandboxPathsReachingTheControlPlane(t *testing.T) {
 		{"input relative", ws, []string{"rel"}, "inputs/0:"},
 	}
 	for _, tc := range cases {
-		err := w.load(t, tc.workspace, tc.inputs)
-		if tc.want == "" && err != nil {
-			t.Fatalf("%s: Load() = %v, want nil", tc.name, err)
-		}
-		if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
-			t.Fatalf("%s: Load() = %v, want error containing %q", tc.name, err, tc.want)
-		}
+		checkLoadWant(t, tc.name, w.load(t, tc.workspace, tc.inputs), tc.want)
 	}
 }
 

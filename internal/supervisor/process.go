@@ -17,7 +17,8 @@ func (s *Supervisor) shimCmd(ctx context.Context, job config.JobConfig) *exec.Cm
 }
 
 func (s *Supervisor) shimCmdFor(ctx context.Context, job config.JobConfig, unlessStopped bool, expected *eventlog.Job) *exec.Cmd {
-	args := make([]string, 0, len(s.shimCommand)+len(job.Command)+19)
+	rot := config.NormalizeLogRotation(job.LogRotation)
+	args := make([]string, 0, len(s.shimCommand)+len(job.Command)+23)
 	args = append(args, s.shimCommand[1:]...)
 	args = append(args,
 		"__job-shim",
@@ -29,6 +30,8 @@ func (s *Supervisor) shimCmdFor(ctx context.Context, job config.JobConfig, unles
 		"--lock", s.lockPath(job.Name),
 		"--record", s.recordPath(job.Name),
 		"--log", job.LogPath,
+		"--log-max-bytes", strconv.Itoa(rot.MaxBytes),
+		"--log-keep-files", strconv.Itoa(rot.KeepFiles),
 		"--max-runtime-seconds", strconv.Itoa(job.MaxRuntimeSeconds),
 		"--stop-signal", job.Stop.Signal,
 		"--stop-grace-seconds", strconv.Itoa(job.Stop.GraceSeconds),

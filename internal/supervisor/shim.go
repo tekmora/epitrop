@@ -31,6 +31,7 @@ type shimConfig struct {
 	LockPath                   string
 	RecordPath                 string
 	LogPath                    string
+	LogRotation                config.JobLogRotation
 	Command                    []string
 	Sandbox                    config.SandboxConfig
 	// EventLogMaxReplayRecords is the configured replay bound, 0 for the log's own default.
@@ -76,40 +77,11 @@ func parseShimArgs(args []string) (shimConfig, error) {
 		args = args[1:]
 	}
 	var cfg shimConfig
+	var home homeFlags
 	fs := flag.NewFlagSet("job-shim", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&cfg.EventLogDir, "event-log-dir", "", "")
-	fs.IntVar(&cfg.EventLogLockTimeoutSeconds, "event-log-lock-timeout-seconds", 0, "")
-	fs.IntVar(&cfg.EventLogMaxReplayRecords, "event-log-max-replay-records", 0, "")
-	fs.StringVar(&cfg.SigningKey, "signing-key", "", "")
-	fs.StringVar(&cfg.Name, "name", "", "")
-	fs.StringVar(&cfg.LockPath, "lock", "", "")
-	fs.StringVar(&cfg.RecordPath, "record", "", "")
-	fs.StringVar(&cfg.LogPath, "log", "", "")
-	fs.IntVar(&cfg.MaxRuntimeSeconds, "max-runtime-seconds", 0, "")
-	fs.StringVar(&cfg.StopSignal, "stop-signal", "TERM", "")
-	fs.IntVar(&cfg.StopGraceSeconds, "stop-grace-seconds", 0, "")
-	fs.BoolVar(&cfg.UnlessStopped, "unless-stopped", false, "")
-	fs.BoolVar(&cfg.CheckGeneration, "check-generation", false, "")
-	fs.StringVar(&cfg.ExpectedSince, "expected-since", "", "")
-	fs.IntVar(&cfg.ExpectedShimPID, "expected-shim-pid", 0, "")
-	fs.StringVar(&cfg.Sandbox.Mode, "sandbox-mode", "", "")
-	fs.StringVar(&cfg.Sandbox.Reason, "sandbox-reason", "", "")
-	fs.StringVar(&cfg.Sandbox.Workspace, "sandbox-workspace", "", "")
-	fs.Var((*stringListFlag)(&cfg.Sandbox.Inputs), "sandbox-input", "")
-	fs.Var((*stringListFlag)(&cfg.Sandbox.ReadOnly), "sandbox-read-only", "")
-	fs.Var((*stringListFlag)(&cfg.Sandbox.EnvAllow), "sandbox-env-allow", "")
-	fs.StringVar(&cfg.Sandbox.Network, "sandbox-network", "", "")
-	fs.Var((*stringListFlag)(&cfg.Sandbox.Destinations), "sandbox-destination", "")
-	fs.StringVar(&cfg.Sandbox.MemoryMax, "sandbox-memory-max", "", "")
-	fs.StringVar(&cfg.Sandbox.MemoryHigh, "sandbox-memory-high", "", "")
-	fs.IntVar(&cfg.Sandbox.CPUWeight, "sandbox-cpu-weight", 0, "")
-	fs.IntVar(&cfg.Sandbox.TasksMax, "sandbox-tasks-max", 0, "")
-	var home homeFlags
-	fs.StringVar(&home.source, "sandbox-home-source", "", "")
-	fs.StringVar(&home.env, "sandbox-home-env", "", "")
-	fs.Var((*stringListFlag)(&home.copies), "sandbox-home-copy", "")
-	fs.Var((*stringListFlag)(&home.binds), "sandbox-home-bind", "")
+	registerShimCoreFlags(fs, &cfg)
+	registerShimSandboxFlags(fs, &cfg.Sandbox, &home)
 	if err := fs.Parse(args); err != nil {
 		return shimConfig{}, fmt.Errorf("job-shim: parse: %w", err)
 	}
@@ -124,7 +96,47 @@ func parseShimArgs(args []string) (shimConfig, error) {
 	if err = checkShimConfig(cfg); err != nil {
 		return shimConfig{}, err
 	}
+	cfg.LogRotation = config.NormalizeLogRotation(cfg.LogRotation)
 	return cfg, nil
+}
+
+func registerShimCoreFlags(fs *flag.FlagSet, cfg *shimConfig) {
+	fs.StringVar(&cfg.EventLogDir, "event-log-dir", "", "")
+	fs.IntVar(&cfg.EventLogLockTimeoutSeconds, "event-log-lock-timeout-seconds", 0, "")
+	fs.IntVar(&cfg.EventLogMaxReplayRecords, "event-log-max-replay-records", 0, "")
+	fs.StringVar(&cfg.SigningKey, "signing-key", "", "")
+	fs.StringVar(&cfg.Name, "name", "", "")
+	fs.StringVar(&cfg.LockPath, "lock", "", "")
+	fs.StringVar(&cfg.RecordPath, "record", "", "")
+	fs.StringVar(&cfg.LogPath, "log", "", "")
+	fs.IntVar(&cfg.LogRotation.MaxBytes, "log-max-bytes", 0, "")
+	fs.IntVar(&cfg.LogRotation.KeepFiles, "log-keep-files", 0, "")
+	fs.IntVar(&cfg.MaxRuntimeSeconds, "max-runtime-seconds", 0, "")
+	fs.StringVar(&cfg.StopSignal, "stop-signal", "TERM", "")
+	fs.IntVar(&cfg.StopGraceSeconds, "stop-grace-seconds", 0, "")
+	fs.BoolVar(&cfg.UnlessStopped, "unless-stopped", false, "")
+	fs.BoolVar(&cfg.CheckGeneration, "check-generation", false, "")
+	fs.StringVar(&cfg.ExpectedSince, "expected-since", "", "")
+	fs.IntVar(&cfg.ExpectedShimPID, "expected-shim-pid", 0, "")
+}
+
+func registerShimSandboxFlags(fs *flag.FlagSet, sb *config.SandboxConfig, home *homeFlags) {
+	fs.StringVar(&sb.Mode, "sandbox-mode", "", "")
+	fs.StringVar(&sb.Reason, "sandbox-reason", "", "")
+	fs.StringVar(&sb.Workspace, "sandbox-workspace", "", "")
+	fs.Var((*stringListFlag)(&sb.Inputs), "sandbox-input", "")
+	fs.Var((*stringListFlag)(&sb.ReadOnly), "sandbox-read-only", "")
+	fs.Var((*stringListFlag)(&sb.EnvAllow), "sandbox-env-allow", "")
+	fs.StringVar(&sb.Network, "sandbox-network", "", "")
+	fs.Var((*stringListFlag)(&sb.Destinations), "sandbox-destination", "")
+	fs.StringVar(&sb.MemoryMax, "sandbox-memory-max", "", "")
+	fs.StringVar(&sb.MemoryHigh, "sandbox-memory-high", "", "")
+	fs.IntVar(&sb.CPUWeight, "sandbox-cpu-weight", 0, "")
+	fs.IntVar(&sb.TasksMax, "sandbox-tasks-max", 0, "")
+	fs.StringVar(&home.source, "sandbox-home-source", "", "")
+	fs.StringVar(&home.env, "sandbox-home-env", "", "")
+	fs.Var((*stringListFlag)(&home.copies), "sandbox-home-copy", "")
+	fs.Var((*stringListFlag)(&home.binds), "sandbox-home-bind", "")
 }
 
 func checkShimConfig(cfg shimConfig) error {
@@ -144,7 +156,7 @@ func checkShimConfig(cfg shimConfig) error {
 	return nil
 }
 
-// checkShimLimits checks the command's length, the run's deadline and how the job is stopped.
+// checkShimLimits checks the command's length, the run's deadline, stop settings and log rotation.
 func checkShimLimits(cfg shimConfig) error {
 	if len(cfg.Command) == 0 || len(cfg.Command) > config.MaxJobArgs {
 		return fmt.Errorf("job-shim: command must have 1..%d args", config.MaxJobArgs)
@@ -152,11 +164,26 @@ func checkShimLimits(cfg shimConfig) error {
 	if cfg.MaxRuntimeSeconds < 0 || cfg.MaxRuntimeSeconds > config.MaxJobRuntimeSeconds {
 		return fmt.Errorf("job-shim: max runtime must be 0..%d seconds", config.MaxJobRuntimeSeconds)
 	}
+	if err := checkShimStop(cfg); err != nil {
+		return err
+	}
+	return checkShimLogRotation(cfg.LogRotation)
+}
+
+func checkShimStop(cfg shimConfig) error {
 	if cfg.StopGraceSeconds < 0 || cfg.StopGraceSeconds > config.MaxStopGraceSeconds {
 		return fmt.Errorf("job-shim: stop grace must be 0..%d seconds", config.MaxStopGraceSeconds)
 	}
 	if _, err := signalFromName(cfg.StopSignal); cfg.StopSignal != "" && err != nil {
 		return fmt.Errorf("job-shim: stop signal: %w", err)
+	}
+	return nil
+}
+
+func checkShimLogRotation(rot config.JobLogRotation) error {
+	rot = config.NormalizeLogRotation(rot)
+	if err := config.ValidateLogRotation(rot); err != nil {
+		return fmt.Errorf("job-shim: %w", err)
 	}
 	return nil
 }
@@ -170,31 +197,33 @@ func runShim(cfg shimConfig) error {
 	if err = checkShimNotStopped(cfg); err != nil {
 		return err
 	}
-	logFile, err := openAppendLog(cfg.LogPath)
+	rotLog, err := openRotatingLog(cfg.LogPath, cfg.LogRotation)
 	if err != nil {
 		return err
 	}
-	defer closeLogForShim(logFile)
+	defer closeLogForShim(rotLog)
+	epitropLog := rotLog.lineWriter()
 	// Linux Pdeathsig is tied to the creating thread, so keep the start thread
 	// alive until the child exits or is killed on a shim error path.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	runCtx, cancel := context.WithTimeout(context.Background(), jobDeadline(cfg))
 	defer cancel()
-	proxy, err := startJobProxy(runCtx, cfg, logFile)
+	proxy, err := startJobProxy(runCtx, cfg, epitropLog)
 	if err != nil {
-		return refuseJob(cfg, logFile, err)
+		return refuseJob(cfg, epitropLog, err)
 	}
-	defer stopProxyForShim(proxy, logFile)
+	defer stopProxyForShim(proxy, epitropLog)
 	hosts, err := startJobHosts(cfg.Sandbox)
 	if err != nil {
-		return refuseJob(cfg, logFile, err)
+		return refuseJob(cfg, epitropLog, err)
 	}
-	defer stopHostsForShim(hosts, logFile)
-	cmd, started, err := startConfirmedJob(runCtx, cfg, proxy.binds(), hosts.path, logFile)
+	defer stopHostsForShim(hosts, epitropLog)
+	out, cmd, started, err := startConfirmedJob(runCtx, cfg, proxy.binds(), hosts.path, rotLog)
 	if err != nil {
-		return refuseJob(cfg, logFile, err)
+		return refuseJob(cfg, epitropLog, err)
 	}
+	defer out.abort()
 	writer, err := shimWriter(cfg)
 	if err != nil {
 		return killAndCollect(cmd, err)
@@ -202,7 +231,7 @@ func runShim(cfg shimConfig) error {
 	if err = appendStarted(writer, cfg, cmd.Process.Pid, started); err != nil {
 		return killAndCollect(cmd, err)
 	}
-	return waitAndRecordExit(runCtx, writer, cfg, cmd)
+	return waitAndRecordExit(runCtx, writer, cfg, cmd, out)
 }
 
 // errLockBusy marks a lock another process holds. holdLock on Linux wraps it; the
@@ -276,35 +305,55 @@ func stopAtDeadline(cfg shimConfig, pid int) error {
 	return signalStartedProcessGroup(pid, cfg.StopSignal)
 }
 
-// startConfirmedJob builds the job's command, starts it, writes its record and confirms its
-// scope. After any error the job is not running: one that had started is killed with its
-// process group.
-func startConfirmedJob(ctx context.Context, cfg shimConfig, proxy sandboxProxy, hosts string, logFile *os.File) (*exec.Cmd, string, error) {
+// startConfirmedJob builds the job's command, starts it with a log pipe, writes its record
+// and confirms its scope. After any error the job is not running: one that had started is
+// killed with its process group.
+func startConfirmedJob(ctx context.Context, cfg shimConfig, proxy sandboxProxy, hosts string, log *rotatingLog) (*jobOutput, *exec.Cmd, string, error) {
 	command, err := buildJobCommand(cfg.Command, cfg.Sandbox, shimBuildOptions(cfg, proxy, hosts, time.Now()))
 	if err != nil {
-		return nil, "", fmt.Errorf("job-shim: sandbox %s: %w", cfg.Name, err)
+		return nil, nil, "", fmt.Errorf("job-shim: sandbox %s: %w", cfg.Name, err)
+	}
+	out, pipeW, err := startJobOutput(log)
+	if err != nil {
+		return nil, nil, "", err
 	}
 	// #nosec G204 -- job command comes from validated operator config and is
 	// executed as argv without a shell.
 	cmd := exec.CommandContext(ctx, command.Argv[0], command.Argv[1:]...)
 	cmd.Env = command.Env
-	cmd.Stdout, cmd.Stderr = logFile, logFile
+	cmd.Stdout, cmd.Stderr = pipeW, pipeW
 	cmd.Cancel = func() error { return stopAtDeadline(cfg, cmd.Process.Pid) }
 	cmd.WaitDelay = time.Duration(cfg.StopGraceSeconds) * time.Second
 	prepareProcess(cmd)
-	if err = cmd.Start(); err != nil {
-		return nil, "", fmt.Errorf("job-shim: start %s: %w", cfg.Command[0], err)
+	startErr := cmd.Start()
+	closeErr := pipeW.Close()
+	if startErr != nil {
+		out.abort()
+		return nil, nil, "", fmt.Errorf("job-shim: start %s: %w", cfg.Command[0], startErr)
 	}
+	if closeErr != nil {
+		err = killAndCollect(cmd, fmt.Errorf("job-shim: close job pipe writer: %w", closeErr))
+		out.abort()
+		return nil, nil, "", err
+	}
+	return confirmStartedJob(cfg, cmd, command.Scope, command.Argv[0], out)
+}
+
+func confirmStartedJob(cfg shimConfig, cmd *exec.Cmd, scope, argv0 string, out *jobOutput) (*jobOutput, *exec.Cmd, string, error) {
 	started := time.Now().UTC().Format(time.RFC3339Nano)
-	if err = writeRecord(cfg, cmd.Process.Pid, started); err != nil {
-		return nil, "", killAndCollect(cmd, err)
+	if err := writeRecord(cfg, cmd.Process.Pid, started); err != nil {
+		err = killAndCollect(cmd, err)
+		out.abort()
+		return nil, nil, "", err
 	}
 	// The record comes first so that a stop during the wait can reach the job; job.started
 	// is appended only for a job confirmed inside its scope.
-	if err = confirmJobScope(cmd.Process.Pid, command.Scope, command.Argv[0]); err != nil {
-		return nil, "", killAndCollect(cmd, err)
+	if err := confirmJobScope(cmd.Process.Pid, scope, argv0); err != nil {
+		err = killAndCollect(cmd, err)
+		out.abort()
+		return nil, nil, "", err
 	}
-	return cmd, started, nil
+	return out, cmd, started, nil
 }
 
 // shimBuildOptions are the options the shim builds a job's command with, for a start at now.
@@ -405,7 +454,7 @@ func (flag *stringListFlag) Set(value string) error {
 // wait delay kills only that one. The kill comes before the first process is collected.
 // Once collected, its process id no longer names the group for certain, and the shim signals
 // no group it cannot check.
-func waitAndRecordExit(ctx context.Context, writer *eventlog.Writer, cfg shimConfig, cmd *exec.Cmd) error {
+func waitAndRecordExit(ctx context.Context, writer *eventlog.Writer, cfg shimConfig, cmd *exec.Cmd, out *jobOutput) error {
 	waitErr := awaitExitUncollected(cmd.Process.Pid)
 	payload := map[string]any{"state": string(StateDead)}
 	var killErr error
@@ -414,16 +463,17 @@ func waitAndRecordExit(ctx context.Context, writer *eventlog.Writer, cfg shimCon
 		killErr = killStartedProcessGroup(cmd.Process.Pid)
 	}
 	payload["code"] = collectedExitCode(cmd)
+	drainErr := out.drain(shimDrainTimeout(cfg.StopGraceSeconds))
 	body, marshalErr := json.Marshal(payload)
 	if marshalErr != nil {
-		return errors.Join(fmt.Errorf("job-shim: marshal exited: %w", marshalErr), waitErr, killErr)
+		return errors.Join(fmt.Errorf("job-shim: marshal exited: %w", marshalErr), waitErr, killErr, drainErr)
 	}
 	appendCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, appendErr := writer.Append(appendCtx, eventlog.Event{Type: "job.exited", TaskID: cfg.Name, Payload: body}); appendErr != nil {
-		return errors.Join(appendErr, waitErr, killErr)
+		return errors.Join(appendErr, waitErr, killErr, drainErr)
 	}
-	return errors.Join(waitErr, killErr)
+	return errors.Join(waitErr, killErr, drainErr)
 }
 
 // collectedExitCode collects the job and returns its own exit code: the code it exited
@@ -519,7 +569,7 @@ func stopProxyForShim(proxy jobProxy, logFile io.Writer) {
 	}
 }
 
-func closeLogForShim(logFile *os.File) {
+func closeLogForShim(logFile io.Closer) {
 	if err := logFile.Close(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: close job log: %v\n", err)
 	}
