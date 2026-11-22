@@ -85,7 +85,8 @@ func rotatedLogOwner(pair jobLogKeyPair, entries map[string]int) (int, bool) {
 
 // jobLogKeys returns open, the file the shim's open writes, and entry, the
 // directory entry its rotation renames, so a log_path that is itself a symlink
-// keeps its own name as entry.
+// keeps its own name as entry. A base of "", "." or ".." needs no special case,
+// because the join cleans it to the key the open resolves.
 func jobLogKeys(path string) (string, string, error) {
 	abs, err := unresolvedAbs(path)
 	if err != nil {
@@ -93,9 +94,6 @@ func jobLogKeys(path string) (string, string, error) {
 	}
 	open := resolveExistingAncestor(abs)
 	dir, base := filepath.Split(abs)
-	if base == "" || base == "." || base == ".." {
-		return open, open, nil
-	}
 	entry := filepath.Join(resolveExistingAncestor(dir), base)
 	return open, entry, nil
 }
