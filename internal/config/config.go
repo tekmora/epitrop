@@ -1053,13 +1053,9 @@ func resolveExistingAbs(path string) (string, error) {
 }
 
 func resolvePossiblyMissingAbs(path string) (string, error) {
-	abs, err := filepath.Abs(path)
+	abs, err := unresolvedAbs(path)
 	if err != nil {
-		return "", fmt.Errorf("config: abs %s: %w", path, err)
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err == nil {
-		return resolved, nil
+		return "", err
 	}
 	return resolveExistingAncestor(abs), nil
 }

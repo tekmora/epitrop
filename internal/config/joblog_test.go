@@ -117,6 +117,9 @@ func TestLoadJobLogPathsUnique(t *testing.T) {
 	t.Run("unreadable_directory_through_alias_refused", func(t *testing.T) {
 		assertUnreadableDirectoryThroughAliasRefused(t)
 	})
+	t.Run("dot_dot_after_symlink_alias_refused", func(t *testing.T) {
+		assertDotDotAfterSymlinkAliasRefused(t)
+	})
 }
 
 func assertSymlinkedDirectoryAliasRefused(t *testing.T) {
@@ -153,6 +156,39 @@ func assertUnreadableDirectoryThroughAliasRefused(t *testing.T) {
 	assertSameJobLogFileRefused(t, filepath.Join(locked, "sub", "a.log"), filepath.Join(lockAlias, "sub", "a.log"))
 }
 
+func assertDotDotAfterSymlinkAliasRefused(t *testing.T) {
+	t.Helper()
+	outside, alias := newNestedJobLogAlias(t)
+	firstPath := strings.Join([]string{alias, "..", "a.log"}, string(filepath.Separator))
+	assertSameJobLogFileRefused(t, firstPath, filepath.Join(outside, "a.log"))
+}
+
+func TestUnresolvedAbs(t *testing.T) {
+	wd, wdErr := os.Getwd()
+	if wdErr != nil {
+		t.Fatalf("Getwd() = %v, want nil", wdErr)
+	}
+	sep := string(filepath.Separator)
+	absWithDotDot := strings.Join([]string{wd, "..", "a.log"}, sep)
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"absolute_preserves_dot_dot", absWithDotDot, absWithDotDot},
+		{"relative_prepends_getwd_uncleaned", "x/../a.log", wd + sep + "x/../a.log"},
+	}
+	for i := 0; i < len(cases); i++ {
+		tc := cases[i]
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := unresolvedAbs(tc.in)
+			if err != nil || got != tc.want {
+				t.Fatalf("unresolvedAbs(%q) = %q, %v, want %q, nil", tc.in, got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveExistingAncestor(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -161,7 +197,9 @@ func TestResolveExistingAncestor(t *testing.T) {
 		{"two_missing_components_below_alias", ancestorTwoMissingBelowAlias},
 		{"existing_file_through_link", ancestorExistingFileThroughLink},
 		{"missing_file_in_real_dir", ancestorMissingFileInRealDir},
-		{"dot_dot_cleaned_before_resolution", ancestorDotDotBeforeResolution},
+		{"dot_dot_below_missing_component_cleaned", ancestorDotDotBelowMissing},
+		{"dot_dot_after_symlink_climbs_from_target", ancestorDotDotAfterSymlinkClimbs},
+		{"dot_dot_after_symlink_below_missing", ancestorDotDotAfterSymlinkBelowMissing},
 		{"unreadable_directory_through_alias", ancestorUnreadableDirThroughAlias},
 	}
 	for i := 0; i < len(cases); i++ {
@@ -194,11 +232,25 @@ func ancestorMissingFileInRealDir(t *testing.T) (string, string) {
 	return missingLog, missingLog
 }
 
-func ancestorDotDotBeforeResolution(t *testing.T) (string, string) {
+func ancestorDotDotBelowMissing(t *testing.T) (string, string) {
 	t.Helper()
 	_, realDir, aliasDir := newJobLogAliasDirs(t)
 	uncleaned := strings.Join([]string{aliasDir, "x", "..", "new", "a.log"}, string(filepath.Separator))
 	return uncleaned, filepath.Join(realDir, "new", "a.log")
+}
+
+func ancestorDotDotAfterSymlinkClimbs(t *testing.T) (string, string) {
+	t.Helper()
+	outside, alias := newNestedJobLogAlias(t)
+	uncleaned := strings.Join([]string{alias, "..", "a.log"}, string(filepath.Separator))
+	return uncleaned, filepath.Join(outside, "a.log")
+}
+
+func ancestorDotDotAfterSymlinkBelowMissing(t *testing.T) (string, string) {
+	t.Helper()
+	outside, alias := newNestedJobLogAlias(t)
+	uncleaned := strings.Join([]string{alias, "..", "new", "sub", "a.log"}, string(filepath.Separator))
+	return uncleaned, filepath.Join(outside, "new", "sub", "a.log")
 }
 
 func ancestorUnreadableDirThroughAlias(t *testing.T) (string, string) {
@@ -231,6 +283,21 @@ func newJobLogAliasDirs(t *testing.T) (string, string, string) {
 		t.Fatalf("Symlink(%s) = %v, want nil", aliasDir, err)
 	}
 	return root, realDir, aliasDir
+}
+
+func newNestedJobLogAlias(t *testing.T) (string, string) {
+	t.Helper()
+	root := newResolvedTempDir(t)
+	outside := filepath.Join(root, "outside")
+	target := filepath.Join(outside, "target")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s) = %v, want nil", target, err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", alias, err)
+	}
+	return outside, alias
 }
 
 func newLinkedJobLogFile(t *testing.T) (string, string) {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -14,9 +15,11 @@ func validateJobNamesAndLogPaths(jobs []JobConfig) error {
 	return validateJobLogPaths(jobs)
 }
 
-// Each path resolves through symlinks in its longest existing ancestor, so a
-// symlinked directory or file naming the same log is refused; a symlink created
-// after load is not seen; .. is cleaned lexically before resolution.
+// Each existing component resolves through symlinks in order, so a .. after a
+// symlink climbs from the link target, as the shim's open does; from the first
+// component that does not resolve (missing, permission denied, not a
+// directory) the rest joins on lexically; a symlink created after load is not
+// seen.
 func validateJobLogPaths(jobs []JobConfig) error {
 	seen := make(map[string]int, len(jobs))
 	for i := 0; i < len(jobs); i++ {
@@ -32,27 +35,35 @@ func validateJobLogPaths(jobs []JobConfig) error {
 	return nil
 }
 
-// resolveExistingAncestor resolves symlinks in the longest prefix of the clean
-// absolute path that filepath.EvalSymlinks can resolve, then joins the
-// unresolved rest back on. Any EvalSymlinks error (missing, permission denied,
-// or not a directory) walks one directory up so symlinks above an uncreated or
-// inaccessible component still resolve.
-func resolveExistingAncestor(abs string) string {
-	abs = filepath.Clean(abs)
-	maxSteps := strings.Count(abs, string(filepath.Separator)) + 1
-	dir := abs
-	rest := ""
-	for step := 0; step < maxSteps; step++ {
-		resolved, err := filepath.EvalSymlinks(dir)
-		if err == nil {
-			return filepath.Join(resolved, rest)
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		rest = filepath.Join(filepath.Base(dir), rest)
-		dir = parent
+// unresolvedAbs returns path unchanged when absolute; otherwise it prepends the
+// working directory without cleaning .. lexically.
+func unresolvedAbs(path string) (string, error) {
+	if filepath.IsAbs(path) {
+		return path, nil
 	}
-	return abs
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("config: abs %s: %w", path, err)
+	}
+	return wd + string(filepath.Separator) + path, nil
+}
+
+// resolveExistingAncestor resolves each existing component of abs through
+// symlinks in order, so a .. after a symlink climbs from the link target, as
+// the shim's open does; from the first component that does not resolve
+// (missing, permission denied, or not a directory) the rest joins on lexically;
+// a symlink created after load is not seen.
+func resolveExistingAncestor(abs string) string {
+	vol := filepath.VolumeName(abs)
+	rest := abs[len(vol):]
+	parts := strings.FieldsFunc(rest, func(r rune) bool { return r == '/' || r == filepath.Separator })
+	resolved := vol + string(filepath.Separator)
+	for i := 0; i < len(parts); i++ {
+		next, err := filepath.EvalSymlinks(filepath.Join(resolved, parts[i]))
+		if err != nil {
+			return filepath.Join(append([]string{resolved}, parts[i:]...)...)
+		}
+		resolved = next
+	}
+	return resolved
 }
