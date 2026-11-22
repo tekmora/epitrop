@@ -55,6 +55,7 @@ func TestSnapshotContractCheckerRefusesAWrongExpectation(t *testing.T) {
 		{"incompatible-version planted accepted", plantAccepted(bad)},
 		{"stale second reading planted known", plantStaleKnown(stale)},
 		{"valid wrong source run", plantWrongSource(valid)},
+		{"valid source_runs expect missing codex-local", plantMissingSource(valid)},
 		{"valid wrong used_percent", plantWrongUsedPercent(valid)},
 		{"incompatible-version wrong says", plantWrongSays(bad)},
 		{"unknown-headroom wrong reason", plantWrongUnknownReason(unknown)},
@@ -97,6 +98,12 @@ func plantStaleKnown(c contractCase) contractCase {
 func plantWrongSource(c contractCase) contractCase {
 	out := copyContractCase(c)
 	out.Expect.SourceRuns["codex-local"] = "fail"
+	return out
+}
+
+func plantMissingSource(c contractCase) contractCase {
+	out := copyContractCase(c)
+	delete(out.Expect.SourceRuns, "codex-local")
 	return out
 }
 
