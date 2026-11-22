@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -55,14 +54,27 @@ type readingExpect struct {
 	Reason      string   `json:"reason,omitempty"`
 }
 
+func readContractFile(t *testing.T, name string) []byte {
+	t.Helper()
+	root, err := os.OpenRoot(contractDir)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) = %v, want nil", name, err)
+	}
+	body, readErr := root.ReadFile(name)
+	if closeErr := root.Close(); closeErr != nil {
+		t.Errorf("close contract root: %v", closeErr)
+	}
+	if readErr != nil {
+		t.Fatalf("ReadFile(%s) = %v, want nil", name, readErr)
+	}
+	return body
+}
+
 func loadContractManifest(t *testing.T) contractManifest {
 	t.Helper()
-	body, err := os.ReadFile(filepath.Join(contractDir, "cases.json"))
-	if err != nil {
-		t.Fatalf("ReadFile(cases.json) = %v, want nil", err)
-	}
+	body := readContractFile(t, "cases.json")
 	var manifest contractManifest
-	if err = json.Unmarshal(body, &manifest); err != nil {
+	if err := json.Unmarshal(body, &manifest); err != nil {
 		t.Fatalf("cases.json: %v", err)
 	}
 	return manifest
@@ -73,21 +85,14 @@ func loadContractCaseBytes(t *testing.T, c contractCase) []byte {
 	if c.Generate != nil {
 		return generateCaseSnapshot(t, c.Generate)
 	}
-	body, err := os.ReadFile(filepath.Join(contractDir, c.File))
-	if err != nil {
-		t.Fatalf("ReadFile(%s) = %v, want nil", c.File, err)
-	}
-	return body
+	return readContractFile(t, c.File)
 }
 
 func generateParseFromFile(t *testing.T, fromName string) (map[string]json.RawMessage, map[string]json.RawMessage, string) {
 	t.Helper()
-	from, err := os.ReadFile(filepath.Join(contractDir, fromName))
-	if err != nil {
-		t.Fatalf("ReadFile(%s) = %v, want nil", fromName, err)
-	}
+	from := readContractFile(t, fromName)
 	var top map[string]json.RawMessage
-	if err = json.Unmarshal(from, &top); err != nil {
+	if err := json.Unmarshal(from, &top); err != nil {
 		t.Fatalf("json.Unmarshal(%s) = %v, want nil", fromName, err)
 	}
 	rawRecords, ok := top["records"]
@@ -95,7 +100,7 @@ func generateParseFromFile(t *testing.T, fromName string) (map[string]json.RawMe
 		t.Fatalf("%s has no records field", fromName)
 	}
 	var records []map[string]json.RawMessage
-	if err = json.Unmarshal(rawRecords, &records); err != nil {
+	if err := json.Unmarshal(rawRecords, &records); err != nil {
 		t.Fatalf("json.Unmarshal(%s records) = %v", fromName, err)
 	}
 	if len(records) == 0 {
@@ -107,7 +112,7 @@ func generateParseFromFile(t *testing.T, fromName string) (map[string]json.RawMe
 		t.Fatalf("%s first record has no model_id", fromName)
 	}
 	var modelID string
-	if err = json.Unmarshal(rawModel, &modelID); err != nil {
+	if err := json.Unmarshal(rawModel, &modelID); err != nil {
 		t.Fatalf("model_id in %s: %v", fromName, err)
 	}
 	return top, base, modelID

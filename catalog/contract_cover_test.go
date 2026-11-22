@@ -1,12 +1,23 @@
 package catalog
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"testing"
 )
+
+func statContractFile(name string) error {
+	root, err := os.OpenRoot(contractDir)
+	if err != nil {
+		return err
+	}
+	_, statErr := root.Stat(name)
+	closeErr := root.Close()
+	return errors.Join(statErr, closeErr)
+}
 
 func problemManifestSchemaVersion(m contractManifest) string {
 	if m.SchemaVersion != SnapshotSchemaVersion {
@@ -55,8 +66,7 @@ func problemCaseNamedFileExists(c contractCase) string {
 	if c.File == "" {
 		return ""
 	}
-	path := filepath.Join(contractDir, c.File)
-	if _, err := os.Stat(path); err != nil {
+	if err := statContractFile(c.File); err != nil {
 		return fmt.Sprintf("case %q file %q: %v", c.ID, c.File, err)
 	}
 	return ""
@@ -66,8 +76,7 @@ func problemCaseGenerateFromExists(c contractCase) string {
 	if c.Generate == nil {
 		return ""
 	}
-	from := filepath.Join(contractDir, c.Generate.From)
-	if _, err := os.Stat(from); err != nil {
+	if err := statContractFile(c.Generate.From); err != nil {
 		return fmt.Sprintf("case %q generate.from %q: %v", c.ID, c.Generate.From, err)
 	}
 	return ""

@@ -61,6 +61,8 @@ func coverPlantedManifestRows(realFolder []string) []struct {
 		{"neither file nor generate", "exactly one of file or generate", plantManifestNeitherFileGenerate, nil, false},
 		{"missing case file", "missing.snapshot.json", plantManifestMissingFile, nil, false},
 		{"missing generate.from", "generate.from", plantManifestMissingGenerateFrom, nil, false},
+		{"case file escapes the folder", "path escapes from parent", plantManifestEscapingFile, nil, false},
+		{"generate.from escapes the folder", "path escapes from parent", plantManifestEscapingGenerateFrom, nil, false},
 		{"result maybe", "unknown result", plantManifestResultMaybe, nil, false},
 		{"compliant refused", "direction", plantManifestCompliantRefused, nil, false},
 		{"only compliant", "violation", plantManifestOnlyCompliant, nil, false},
@@ -125,11 +127,28 @@ func plantManifestMissingFile(m contractManifest) contractManifest {
 	return out
 }
 
+func plantManifestEscapingFile(m contractManifest) contractManifest {
+	out := copyContractManifest(m)
+	out.Cases[0].File = "../contract/valid.snapshot.json"
+	return out
+}
+
 func plantManifestMissingGenerateFrom(m contractManifest) contractManifest {
 	out := copyContractManifest(m)
 	for i := 0; i < len(out.Cases); i++ {
 		if out.Cases[i].Generate != nil {
 			out.Cases[i].Generate.From = "missing.snapshot.json"
+			break
+		}
+	}
+	return out
+}
+
+func plantManifestEscapingGenerateFrom(m contractManifest) contractManifest {
+	out := copyContractManifest(m)
+	for i := 0; i < len(out.Cases); i++ {
+		if out.Cases[i].Generate != nil {
+			out.Cases[i].Generate.From = "../contract/valid.snapshot.json"
 			break
 		}
 	}
