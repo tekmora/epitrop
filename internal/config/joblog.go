@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+const (
+	maxLogPathResolveSteps = 4096
+	maxLogPathLinkHops     = 40
+)
+
 // validateJobNamesAndLogPaths refuses a repeated job name, then a repeated log file.
 func validateJobNamesAndLogPaths(jobs []JobConfig) error {
 	if err := validateJobNames(jobs); err != nil {
@@ -18,9 +23,13 @@ func validateJobNamesAndLogPaths(jobs []JobConfig) error {
 
 // Each existing component resolves through symlinks in order, so on Unix a ..
 // after a symlink climbs from the link target, as the shim's open does (on
-// Windows .. is already gone after normalization); from the first component
-// that does not resolve (missing, permission denied, not a directory) the rest
-// joins on lexically; a symlink created after load is not seen.
+// Windows .. is already gone after normalization). A symlink whose target does
+// not exist yet is followed to its target, because the shim's O_CREATE open
+// creates that target; at most 40 such symlinks are followed, the Linux limit
+// for one path. From the first component that still cannot resolve (missing,
+// permission denied, not a directory, unreadable symlink, or past the
+// 40-symlink cap) the rest joins on lexically; a symlink created after load is
+// not seen.
 func validateJobLogPaths(jobs []JobConfig) error {
 	seen := make(map[string]int, len(jobs))
 	for i := 0; i < len(jobs); i++ {
@@ -59,23 +68,61 @@ func unresolvedAbs(path string) (string, error) {
 	return wd + string(filepath.Separator) + path, nil
 }
 
-// resolveExistingAncestor resolves each existing component of abs through
-// symlinks in order, so on Unix a .. after a symlink climbs from the link
-// target, as the shim's open does (on Windows .. is already gone after
-// normalization); from the first component that does not resolve (missing,
-// permission denied, or not a directory) the rest joins on lexically; a
-// symlink created after load is not seen.
+// resolveExistingAncestor resolves each component of abs through symlinks in
+// order, so on Unix a .. after a symlink climbs from the link target, as the
+// shim's open does (on Windows .. is already gone after normalization). A
+// symlink whose target does not exist yet is followed to its target, because
+// the shim's O_CREATE open creates that target; at most 40 such symlinks are
+// followed, the Linux limit for one path. From the first component that still
+// cannot resolve (missing, permission denied, not a directory, unreadable
+// symlink, or past the 40-symlink cap) the rest joins on lexically; a symlink
+// created after load is not seen.
 func resolveExistingAncestor(abs string) string {
 	vol := filepath.VolumeName(abs)
-	rest := abs[len(vol):]
-	parts := strings.FieldsFunc(rest, func(r rune) bool { return r == '/' || r == filepath.Separator })
 	resolved := vol + string(filepath.Separator)
-	for i := 0; i < len(parts); i++ {
-		next, err := filepath.EvalSymlinks(filepath.Join(resolved, parts[i]))
-		if err != nil {
-			return filepath.Join(append([]string{resolved}, parts[i:]...)...)
+	pending := splitLogPathComponents(abs[len(vol):])
+	hops := 0
+	for step := 0; step < maxLogPathResolveSteps && len(pending) > 0; step++ {
+		candidate := filepath.Join(resolved, pending[0])
+		if next, err := filepath.EvalSymlinks(candidate); err == nil {
+			resolved = next
+			pending = pending[1:]
+			continue
 		}
-		resolved = next
+		target, ok := readLogPathSymlink(candidate)
+		if !ok || hops >= maxLogPathLinkHops {
+			break
+		}
+		hops++
+		resolved, pending = spliceLogPathTarget(resolved, target, pending[1:])
 	}
-	return resolved
+	return filepath.Join(append([]string{resolved}, pending...)...)
+}
+
+// splitLogPathComponents splits path on forward slashes and the host path separator.
+func splitLogPathComponents(path string) []string {
+	return strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == filepath.Separator })
+}
+
+// readLogPathSymlink returns path's link target when path is a symbolic link.
+func readLogPathSymlink(path string) (string, bool) {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return "", false
+	}
+	target, err := os.Readlink(path)
+	if err != nil || target == "" {
+		return "", false
+	}
+	return target, true
+}
+
+// spliceLogPathTarget prepends target's components before rest, restarting at target's root when absolute.
+func spliceLogPathTarget(resolved, target string, rest []string) (string, []string) {
+	if filepath.IsAbs(target) {
+		vol := filepath.VolumeName(target)
+		resolved = vol + string(filepath.Separator)
+		target = target[len(vol):]
+	}
+	return resolved, append(splitLogPathComponents(target), rest...)
 }

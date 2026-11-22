@@ -120,6 +120,9 @@ func TestLoadJobLogPathsUnique(t *testing.T) {
 	t.Run("dot_dot_after_symlink_alias_refused", func(t *testing.T) {
 		assertDotDotAfterSymlinkAliasRefused(t)
 	})
+	t.Run("dangling_file_link_alias_refused", func(t *testing.T) {
+		assertDanglingFileLinkAliasRefused(t)
+	})
 }
 
 func assertSymlinkedDirectoryAliasRefused(t *testing.T) {
@@ -161,6 +164,12 @@ func assertDotDotAfterSymlinkAliasRefused(t *testing.T) {
 	outside, alias := newNestedJobLogAlias(t)
 	firstPath := strings.Join([]string{alias, "..", "a.log"}, string(filepath.Separator))
 	assertSameJobLogFileRefused(t, firstPath, filepath.Join(outside, "a.log"))
+}
+
+func assertDanglingFileLinkAliasRefused(t *testing.T) {
+	t.Helper()
+	linkLog, realLog := newDanglingJobLogLink(t)
+	assertSameJobLogFileRefused(t, linkLog, realLog)
 }
 
 type unresolvedAbsCase struct {
@@ -215,6 +224,10 @@ func TestResolveExistingAncestor(t *testing.T) {
 		{"dot_dot_after_symlink_climbs_from_target", ancestorDotDotAfterSymlinkClimbs},
 		{"dot_dot_after_symlink_below_missing", ancestorDotDotAfterSymlinkBelowMissing},
 		{"unreadable_directory_through_alias", ancestorUnreadableDirThroughAlias},
+		{"dangling_file_link_follows_to_target", ancestorDanglingFileLink},
+		{"dangling_link_absolute_target_below_missing", ancestorDanglingLinkAbsTargetBelowMissing},
+		{"dangling_link_chain", ancestorDanglingLinkChain},
+		{"link_cycle_stops_at_hop_cap", ancestorLinkCycleStopsAtHopCap},
 	}
 	for i := 0; i < len(cases); i++ {
 		tc := cases[i]
@@ -271,6 +284,67 @@ func ancestorUnreadableDirThroughAlias(t *testing.T) (string, string) {
 	t.Helper()
 	locked, lockAlias := newLockedJobLogAliasDirs(t)
 	return filepath.Join(lockAlias, "sub", "a.log"), filepath.Join(locked, "sub", "a.log")
+}
+
+func ancestorDanglingFileLink(t *testing.T) (string, string) {
+	t.Helper()
+	return newDanglingJobLogLink(t)
+}
+
+func ancestorDanglingLinkAbsTargetBelowMissing(t *testing.T) (string, string) {
+	t.Helper()
+	root := newResolvedTempDir(t)
+	realDir := filepath.Join(root, "real")
+	if err := os.MkdirAll(realDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s) = %v, want nil", realDir, err)
+	}
+	target := filepath.Join(realDir, "new", "a.log")
+	linkLog := filepath.Join(root, "link.log")
+	if err := os.Symlink(target, linkLog); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", linkLog, err)
+	}
+	return linkLog, target
+}
+
+func ancestorDanglingLinkChain(t *testing.T) (string, string) {
+	t.Helper()
+	root := newResolvedTempDir(t)
+	firstLink := filepath.Join(root, "l1")
+	secondLink := filepath.Join(root, "l2")
+	if err := os.Symlink("l2", firstLink); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", firstLink, err)
+	}
+	if err := os.Symlink("real.log", secondLink); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", secondLink, err)
+	}
+	return firstLink, filepath.Join(root, "real.log")
+}
+
+func ancestorLinkCycleStopsAtHopCap(t *testing.T) (string, string) {
+	t.Helper()
+	root := newResolvedTempDir(t)
+	linkA := filepath.Join(root, "a")
+	linkB := filepath.Join(root, "b")
+	if err := os.Symlink("b", linkA); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", linkA, err)
+	}
+	if err := os.Symlink("a", linkB); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", linkB, err)
+	}
+	// Starting at root/a (0 hops), odd hops splice "b" and even hops splice "a";
+	// maxLogPathLinkHops = 40 completes 20 a->b->a pairs, so hop 40 leaves "a"
+	// pending and the cap stops before hop 41 at root/a.
+	return linkA, filepath.Join(root, "a")
+}
+
+func newDanglingJobLogLink(t *testing.T) (string, string) {
+	t.Helper()
+	root := newResolvedTempDir(t)
+	linkLog := filepath.Join(root, "link.log")
+	if err := os.Symlink("real.log", linkLog); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", linkLog, err)
+	}
+	return linkLog, filepath.Join(root, "real.log")
 }
 
 func newResolvedTempDir(t *testing.T) string {
