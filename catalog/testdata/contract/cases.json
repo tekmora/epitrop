@@ -133,7 +133,12 @@
       "generate": {"from": "valid.snapshot.json", "records": 25000},
       "direction": "compliant",
       "expect": {
-        "result": "accepted"
+        "result": "accepted",
+        "source_runs": {
+          "codex-local": "ok",
+          "litellm-key-budget": "ok",
+          "public-catalog": "ok"
+        }
       }
     },
     {
