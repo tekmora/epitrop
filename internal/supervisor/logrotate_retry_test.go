@@ -87,10 +87,7 @@ func TestLogRotationRetriesPendingOldestRemoval(t *testing.T) {
 	})
 	mustWriteLine(t, log, "first", "first-line-sixteen\n")
 	oldestPath := rotatedLogPath(logPath, 2)
-	if err := os.Mkdir(oldestPath, 0o700); err != nil {
-		t.Fatalf("Mkdir(%s) = %v, want nil", oldestPath, err)
-	}
-	mustWriteRawFile(t, filepath.Join(oldestPath, "blocker"), "keep\n")
+	mustBlockRemoval(t, oldestPath)
 	assertWriteLineErrContains(t, log, "second", "second-line-that-is-too-long\n", "job-shim: remove oldest log")
 	assertWriteLineErrContains(t, log, "third", "third\n", "job-shim: remove oldest log")
 	assertPathMissing(t, logPath)
@@ -100,10 +97,24 @@ func TestLogRotationRetriesPendingOldestRemoval(t *testing.T) {
 	}
 	mustWriteRawFile(t, oldestPath, "stale-oldest\n")
 	mustWriteLine(t, log, "fourth", "fourth\n")
-	mustCloseRotatingLog(t, log)
-	assertFileString(t, logPath, "fourth\n")
-	assertFileString(t, rotatedLogPath(logPath, 1), "first-line-sixteen\n")
 	assertPathMissing(t, oldestPath)
+	mustBlockRemoval(t, oldestPath)
+	mustWriteLine(t, log, "fifth", "fifth\n")
+	mustCloseRotatingLog(t, log)
+	assertFileString(t, logPath, "fourth\nfifth\n")
+	assertFileString(t, rotatedLogPath(logPath, 1), "first-line-sixteen\n")
+	info, err := os.Stat(oldestPath)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("Stat(%s) = %v, %v, want directory", oldestPath, info, err)
+	}
+}
+
+func mustBlockRemoval(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s) = %v, want nil", path, err)
+	}
+	mustWriteRawFile(t, filepath.Join(path, "blocker"), "keep\n")
 }
 
 func assertWriteLineErrContains(t *testing.T, log *rotatingLog, label, line, wantSub string) {

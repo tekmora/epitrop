@@ -33,6 +33,12 @@ func TestLoadJobLogRotatedNames(t *testing.T) {
 	t.Run("link_to_own_rotated_name_refused", func(t *testing.T) {
 		assertLinkToOwnRotatedNameRefused(t)
 	})
+	t.Run("symlinked_rotated_name_refused", func(t *testing.T) {
+		assertSymlinkedRotatedNameRefused(t)
+	})
+	t.Run("owner_through_directory_alias_refused", func(t *testing.T) {
+		assertOwnerThroughDirAliasRefused(t)
+	})
 }
 
 func assertLiteralRotatedNamesRefused(t *testing.T) {
@@ -111,6 +117,31 @@ func assertLinkToOwnRotatedNameRefused(t *testing.T) {
 		t.Fatalf("Symlink(%s) = %v, want nil", firstPath, err)
 	}
 	assertRotatedJobLogRefused(t, firstPath, filepath.Join(root, "z.log"), 0, 0)
+}
+
+func assertSymlinkedRotatedNameRefused(t *testing.T) {
+	t.Helper()
+	root := newResolvedTempDir(t)
+	// The rename of a.log replaces the link a.log.1, so the entry owns the name, not its target.
+	secondPath := filepath.Join(root, "a.log.1")
+	if err := os.Symlink("x.log", secondPath); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", secondPath, err)
+	}
+	assertRotatedJobLogRefused(t, filepath.Join(root, "a.log"), secondPath, 1, 0)
+}
+
+func assertOwnerThroughDirAliasRefused(t *testing.T) {
+	t.Helper()
+	root := newResolvedTempDir(t)
+	realDir := filepath.Join(root, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s) = %v, want nil", realDir, err)
+	}
+	aliasDir := filepath.Join(root, "alias")
+	if err := os.Symlink("real", aliasDir); err != nil {
+		t.Fatalf("Symlink(%s) = %v, want nil", aliasDir, err)
+	}
+	assertRotatedJobLogRefused(t, filepath.Join(aliasDir, "a.log"), filepath.Join(realDir, "a.log.1"), 1, 0)
 }
 
 func assertRotatedJobLogRefused(t *testing.T, firstPath, secondPath string, rotIdx, ownerIdx int) {
