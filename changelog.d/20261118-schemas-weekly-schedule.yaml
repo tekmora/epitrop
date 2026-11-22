@@ -1,2 +1,0 @@
-type: added
-title: "The Upstream schemas workflow also runs weekly on main, so a change in a live upstream document shows as its own red run instead of failing an unrelated pull request"

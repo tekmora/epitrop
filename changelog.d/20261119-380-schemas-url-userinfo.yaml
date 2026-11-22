@@ -1,3 +1,0 @@
-type: security
-title: 'The schema refresh tool refuses manifest URLs and redirect targets that carry user info, and its errors print URLs with the password redacted'
-issue: "380"

@@ -1,3 +1,0 @@
-type: fixed
-title: '`config.Load` refuses case-only and hard-link aliases of another job''s `log_path` or any job''s rotated `log_path.1` to `log_path.101`, so jobs cannot share or overwrite a rotated log file'
-issue: "442"
