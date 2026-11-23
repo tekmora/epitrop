@@ -57,6 +57,9 @@ func TestLoadJobLogPathAliases(t *testing.T) {
 	t.Run("missing_volume_identical_refused", assertMissingVolumeIdenticalRefused)
 	t.Run("missing_volume_rotated_name_refused", assertMissingVolumeRotatedNameRefused)
 	t.Run("missing_volume_case_variant_refused", assertMissingVolumeCaseVariantRefused)
+	t.Run("missing_volume_distinct_names_load", assertMissingVolumeDistinctNamesLoad)
+	t.Run("missing_volume_other_directory_loads", assertMissingVolumeOtherDirectoryLoads)
+	t.Run("missing_volume_other_drive_loads", assertMissingVolumeOtherDriveLoads)
 }
 
 func assertHardLinkJobLogRefused(t *testing.T) {
@@ -192,39 +195,57 @@ func assertDistinctCaseDirectoriesLoad(t *testing.T) {
 }
 
 func assertMissingVolumeIdenticalRefused(t *testing.T) {
-	drive := missingWindowsDrive(t)
+	drive := missingWindowsDrives(t, 1)[0]
 	logPath := fmt.Sprintf(`%c:\probe\a.log`, drive)
 	assertSameJobLogFileRefused(t, logPath, logPath)
 }
 
 func assertMissingVolumeRotatedNameRefused(t *testing.T) {
-	drive := missingWindowsDrive(t)
+	drive := missingWindowsDrives(t, 1)[0]
 	first := fmt.Sprintf(`%c:\probe\a.log`, drive)
 	second := fmt.Sprintf(`%c:\probe\a.log.1`, drive)
 	assertRotatedJobLogRefused(t, first, second, 1, 0)
 }
 
 func assertMissingVolumeCaseVariantRefused(t *testing.T) {
-	drive := missingWindowsDrive(t)
+	drive := missingWindowsDrives(t, 1)[0]
 	lowerDrive := drive + ('a' - 'A')
 	first := fmt.Sprintf(`%c:\probe\A.log`, drive)
 	second := fmt.Sprintf(`%c:\probe\a.log`, lowerDrive)
 	assertSameJobLogFileRefused(t, first, second)
 }
 
-func missingWindowsDrive(t *testing.T) byte {
+func assertMissingVolumeDistinctNamesLoad(t *testing.T) {
+	drive := missingWindowsDrives(t, 1)[0]
+	assertJobLogPairLoads(t, fmt.Sprintf(`%c:\probe\a.log`, drive), fmt.Sprintf(`%c:\probe\b.log`, drive))
+}
+
+func assertMissingVolumeOtherDirectoryLoads(t *testing.T) {
+	drive := missingWindowsDrives(t, 1)[0]
+	assertJobLogPairLoads(t, fmt.Sprintf(`%c:\one\a.log`, drive), fmt.Sprintf(`%c:\two\a.log`, drive))
+}
+
+func assertMissingVolumeOtherDriveLoads(t *testing.T) {
+	drives := missingWindowsDrives(t, 2)
+	assertJobLogPairLoads(t, fmt.Sprintf(`%c:\probe\a.log`, drives[0]), fmt.Sprintf(`%c:\probe\a.log`, drives[1]))
+}
+
+func missingWindowsDrives(t *testing.T, n int) []byte {
 	t.Helper()
 	if runtime.GOOS != "windows" {
 		t.Skip("drive-letter volumes exist only on Windows")
 	}
-	for letter := byte('Q'); letter <= 'Y'; letter++ {
+	drives := make([]byte, 0, n)
+	for letter := byte('Q'); letter <= 'Y' && len(drives) < n; letter++ {
 		root := string([]byte{letter, ':', '\\'})
-		if _, err := os.Stat(root); err != nil {
-			return letter
+		if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+			drives = append(drives, letter)
 		}
 	}
-	t.Skip("every drive root from Q:\\ to Y:\\ exists on this Windows host")
-	return 0
+	if len(drives) < n {
+		t.Skipf("only %d of %d drive roots from Q:\\ to Y:\\ are missing on this Windows host", len(drives), n)
+	}
+	return drives
 }
 
 func statAliasTempDir(t *testing.T) os.FileInfo {
