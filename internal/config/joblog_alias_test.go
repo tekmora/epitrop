@@ -238,7 +238,7 @@ func missingWindowsDrives(t *testing.T, n int) []byte {
 	drives := make([]byte, 0, n)
 	for letter := byte('Q'); letter <= 'Y' && len(drives) < n; letter++ {
 		root := string([]byte{letter, ':', '\\'})
-		if _, err := os.Stat(root); err != nil {
+		if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
 			drives = append(drives, letter)
 		}
 	}
