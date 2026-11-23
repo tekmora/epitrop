@@ -32,7 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - A slot run refuses a job with sandbox.network egress: it reaches its declared gateway (proxy) or nothing, also when a run is resumed (#139)
 - The supervisor takes its job lock through gofrs/flock, the same library as the event log lock; a job started while the lock is held gets no descriptor of the lock file, and closing a released lock twice is no error
-- The Claude ceiling store and the job record a job shim writes are replaced atomically through one shared helper: the new file is synced beside the old one, renamed into place and the folder synced, so a failed write leaves the previous file intact and no staged file behind
+- The Claude ceiling store and the job record a job shim writes are replaced atomically through one shared helper: the new file is written and synced beside the old one, renamed into place and the folder synced; a reader sees the old file or the new one, never a partial file; a failure before the rename removes the staged file and leaves the previous file in place; a failed folder sync after the rename returns an error with the new file already in place and no staged file left
 - `epitropctl sync` reads the clock once and stamps that time on the snapshot and on every record of every source; each source's `Fetch` takes the time as a parameter
 - Metric instruments come from the golusoris catalog; counters and gauges now carry floating-point values
 - The schema refresh tool refuses a manifest URL that does not use https with a host and refuses any redirect off https, and the docs record the provenance rule for unsigned upstream schema documents
