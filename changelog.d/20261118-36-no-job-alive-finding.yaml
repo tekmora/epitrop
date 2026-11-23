@@ -1,3 +1,0 @@
-type: added
-title: '`epitropctl jobs supervise` reports no job alive once per episode while recoverable and always writes a terminal exit line: unrecorded, completed (exit 0), or stopped once jobs and stopped always jobs are excluded; other failed once runs count as down without recovery, running jobs and armed cron/event jobs are alive, recoverable windowed budgets keep supervision running with a restart due time, and terminal failures exit 3 (`RestartPreventExitStatus=3` prevents retries); a job becoming alive ends the episode, and `jobs stop` keeps on-failure always jobs stopped'
-issue: "36"

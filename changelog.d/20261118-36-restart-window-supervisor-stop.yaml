@@ -1,3 +1,0 @@
-type: fixed
-title: 'A job restarts again once its oldest restart is older than the default one-hour window; every schedule records a supervisor-stop end as `job.interrupted`, an `always` job resumes without spending budget unless its policy is `never` or it was stopped on purpose since, and a job whose exit was recorded before the stop still spends budget'
-issue: "36"

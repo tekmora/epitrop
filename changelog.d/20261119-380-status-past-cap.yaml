@@ -1,3 +1,0 @@
-type: fixed
-title: 'A non-200 reply with a body larger than the byte cap reports its HTTP status instead of a body-too-large error, so the release watch and the admission probe name the status'
-issue: "380"

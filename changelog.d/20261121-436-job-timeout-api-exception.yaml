@@ -1,2 +1,0 @@
-type: changed
-title: 'The Praetor audit excuses the managed API compatibility job''s 60-minute timeout until 2026-12-01, since that workflow is locked to the engine and cannot take its 30-minute bound yet (#436)'

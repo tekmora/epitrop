@@ -1,2 +1,0 @@
-type: added
-title: 'Each supervised job bounds its active log size and keeps a fixed number of rotated log files on whole-line boundaries through jobs[].log_rotation (#404)'

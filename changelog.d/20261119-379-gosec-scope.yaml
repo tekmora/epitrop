@@ -1,2 +1,0 @@
-type: security
-title: '`make gosec` scans test files and files behind the repository’s own build tags (derived from its `//go:build` lines), requires a rule and a reason on every `#nosec`, refuses a file no scan pass reaches, and the findings this exposed are fixed or annotated (#379)'

@@ -7,7 +7,7 @@
 
   <!-- README-STANDARD badge block: one group, fixed order (VMAFx docs/README-STANDARD.md) -->
   <!-- 1 release/version -->
-  [![Release](https://img.shields.io/static/v1?label=release&message=v0.2.0&style=for-the-badge&color=3b82f6&labelColor=111a35)](https://github.com/tekmora/epitrop/releases)
+  [![Release](https://img.shields.io/static/v1?label=release&message=v0.3.0-rc.1&style=for-the-badge&color=3b82f6&labelColor=111a35)](https://github.com/tekmora/epitrop/releases)
   <!-- 3 security/scorecard -->
   [![CodeRabbit](https://img.shields.io/badge/Reviews-CodeRabbit-8b5cf6?style=for-the-badge&logo=coderabbit&logoColor=white&labelColor=111a35)](https://coderabbit.ai)
   <!-- 4 standards -->

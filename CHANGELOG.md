@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 
+## [0.3.0-rc.1] - 2026-11-22
+
+### Security
+
+- `tools/spectral/package-lock.json` moves fast-uri to 3.1.9, and the new `make lock-advisories` gate (osv-scanner, run at pre-push and in CI) fails on any published advisory in that lockfile (a dated exemption for the picomatch advisory GHSA-fc5q-39xc-vjpf ended when that advisory was withdrawn, see Fixed, so this release carries none), and `make govulncheck-osvscanner` scans the osv-scanner module itself for reachable Go vulnerabilities
+- `make gosec` scans test files and files behind the repository’s own build tags (derived from its `//go:build` lines), requires a rule and a reason on every `#nosec`, refuses a file no scan pass reaches, and the findings this exposed are fixed or annotated (#379)
+- Errors from the shared HTTP fetch helper print request URLs with the password redacted, and a URL that fails to parse is no longer echoed in the error (#380)
+- The schema refresh tool refuses manifest URLs and redirect targets that carry user info, and its errors print URLs with the password redacted (#380)
+
+### Added
+
+- Rank the task-graph frontier by four terms read from the event log (elapsed time, progress, cost, confidence), with node ID as the final tie-break. (#10)
+- A job can set restart.window_seconds, so restart.max_restarts bounds the restarts in that window instead of every restart of its life (#285)
+- epitrop-server classifies each failed job exit with the dead-letter classes and appends one `job.dead_lettered` record (#9)
+- A slot home bind can name its token's expiry with the new `expires_rfc3339`, the dotted path of an RFC 3339 time, and a missing or unparsable expiry is refused before the start; the Antigravity CLI login it was added for is refused in this release (see Changed)
+- `epitropctl jobs supervise` reports no job alive once per episode while recoverable and always writes a terminal exit line: unrecorded, completed (exit 0), or stopped once jobs and stopped always jobs are excluded; other failed once runs count as down without recovery, running jobs and armed cron/event jobs are alive, recoverable windowed budgets keep supervision running with a restart due time, and terminal failures exit 3 (`RestartPreventExitStatus=3` prevents retries); a job becoming alive ends the episode, and `jobs stop` keeps on-failure always jobs stopped (#36)
+- Publish the documentation as a site on GitHub Pages (https://tekmora.github.io/epitrop/) and lay out the README to the ecosystem standard, with a test that keeps its release badge on the newest released version.
+- The Upstream schemas workflow also runs weekly on main, so a change in a live upstream document shows as its own red run instead of failing an unrelated pull request
+- A system test restarts the supervisor while a job, the release watch and open units are active and checks each returns to its state (#399)
+- Each supervised job bounds its active log size and keeps a fixed number of rotated log files on whole-line boundaries through jobs[].log_rotation (#404)
+- catalog/testdata/contract/ pins the snapshot contract with valid, degraded, stale, and incompatible-version fixtures a consumer replays against its decoder (#29)
+
+### Changed
+
+- A slot run refuses a job with sandbox.network egress: it reaches its declared gateway (proxy) or nothing, also when a run is resumed (#139)
+- The supervisor takes its job lock through gofrs/flock, the same library as the event log lock; a job started while the lock is held gets no descriptor of the lock file, and closing a released lock twice is no error
+- The Claude ceiling store and the job record a job shim writes are replaced atomically through one shared helper: the new file is written and synced beside the old one, renamed into place and the folder synced; a reader sees the old file or the new one, never a partial file; a failure before the rename leaves the previous file in place; the helper tries to remove the staged file; if that removal fails as well the returned error names both failures and the staged file stays behind; a failed folder sync after the rename returns an error with the new file already in place and no staged file left
+- `epitropctl sync` reads the clock once and stamps that time on the snapshot and on every record of every source; each source's `Fetch` takes the time as a parameter
+- Metric instruments come from the golusoris catalog; counters and gauges now carry floating-point values
+- The schema refresh tool refuses a manifest URL that does not use https with a host and refuses any redirect off https, and the docs record the provenance rule for unsigned upstream schema documents
+- A slot home refuses the consumer Antigravity CLI login (`.gemini/antigravity-cli/antigravity-oauth-token`), in the loader and in the shim, until business authentication lands (#367)
+- The Praetor audit excuses the managed API compatibility job's 60-minute timeout until 2026-12-01, since that workflow is locked to the engine and cannot take its 30-minute bound yet (#436)
+
+### Fixed
+
+- `epitropctl slot run --detach` hands the service the caller's values of the job's `sandbox.env_allow` names, so a detached job sees the same environment as an attached one (#139)
+- The release watch reads the marker search 10 issues to a page under a 4 MiB page cap, so a sink with long issue bodies no longer fails every pass (#284)
+- Sandboxed jobs resolve localhost: every sandbox gets a read-only /etc/hosts that names only localhost, never the host's file
+- A connection refused as busy is drained under a deadline before closing, so closing a socket with unread data sends no reset (#314)
+- A request the egress proxy refuses for its form, its destination or an upstream failure is drained under a deadline before the connection closes, so the client reads the answer instead of a reset (#318)
+- Built with Go 1.27.4, which carries the fix for GO-2026-6809 in crypto/x509 certificate verification that Go 1.27.3 first shipped
+- A cron job's due time is its minute slot, also with gronx v1.20.7
+- `make gosec`, and the CI steps that now call it, scan the packages the `go` command builds: nested worktrees under `.claude/` and `.standards/` and other dot folders are no longer scanned, and a self-test proves a planted finding in the tree still fails the scan
+- A job restarts again once its oldest restart is older than the default one-hour window; every schedule records a supervisor-stop end as `job.interrupted`, an `always` job resumes without spending budget unless its policy is `never` or it was stopped on purpose since, and a job whose exit was recorded before the stop still spends budget (#36)
+- The picomatch advisory GHSA-fc5q-39xc-vjpf was withdrawn, so its exemption is gone from osv-scanner.toml and .standards.yaml and the lockfile gate excuses no advisory; the osv-scanner self-test now plants braces 3.0.2 (GHSA-grv7-fg5c-xmjg) and names a withdrawn plant as such
+- A non-200 reply with a body larger than the byte cap reports its HTTP status instead of a body-too-large error, so the release watch and the admission probe name the status (#380)
+- `config.Load` refuses case-only and hard-link aliases of another job's `log_path` or any job's rotated `log_path.1` to `log_path.101`, so jobs cannot share or overwrite a rotated log file (#442)
+
+
 ## [0.2.0] - 2026-10-18
 
 This release ships the code of `v0.2.0-rc.1` unchanged.
