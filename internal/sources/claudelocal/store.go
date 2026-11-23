@@ -157,9 +157,11 @@ func (c storedCeiling) validate(limitType string) error {
 // saveStore writes the store atomically through atomicfile: the new file is
 // written and synced beside path, renamed onto path and the folder synced; a
 // reader sees either the old store or the new one, never a partial file. A
-// failure before the rename removes the staged file and leaves the old store
-// at path; a failed folder sync after the rename returns an error with the
-// new store already at path and no staged file left.
+// failure before the rename leaves the old store at path; the helper tries to
+// remove the staged file; if that removal fails too the returned error names
+// both failures and the staged file stays behind; a failed folder sync after
+// the rename returns an error with the new store already at path and no staged
+// file left.
 func saveStore(path string, store *ceilingStore) error {
 	data, err := json.MarshalIndent(store, "", "  ")
 	if err != nil {
