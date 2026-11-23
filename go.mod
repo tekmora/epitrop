@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/adhocore/gronx v1.20.8
 	github.com/gofrs/flock v0.13.2
-	github.com/golusoris/golusoris v0.22.2
+	github.com/golusoris/golusoris v0.22.3
 	github.com/golusoris/golusoris/core v0.12.3
 	github.com/jonboulle/clockwork v0.5.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
