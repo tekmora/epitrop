@@ -6,7 +6,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestSystemJobs_Positive(t *testing.T) {
@@ -23,17 +22,7 @@ func TestSystemJobs_Positive(t *testing.T) {
 
 	checkJobLogFile(t, cfgPath)
 
-	// Wait briefly for stand-in /bin/true to exit so status reflects dead state.
-	time.Sleep(100 * time.Millisecond)
-
-	stdoutStat, stderrStat, codeStat, errStat := runSystemCLI(t, bin, "jobs", "status", "--config="+cfgPath, "idle")
-	if errStat != nil || codeStat != 0 {
-		t.Fatalf("jobs status code = %d, err = %v: %s\n%s", codeStat, errStat, stdoutStat, stderrStat)
-	}
-	wantRow := "idle\tdead\t0\t\t0\toff: jobs cli unit test\n"
-	if stdoutStat != wantRow {
-		t.Fatalf("jobs status output = %q, want %q", stdoutStat, wantRow)
-	}
+	waitForJobStatus(t, bin, cfgPath, "idle", "idle\tdead\t0\t\t0\toff: jobs cli unit test\n")
 }
 
 func checkJobLogFile(t *testing.T, cfgPath string) {

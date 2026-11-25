@@ -430,6 +430,24 @@ func waitForFile(t *testing.T, path string) {
 	}
 }
 
+// waitForJobStatus polls jobs status until the row matches want. jobs status reads running
+// while the shim still holds the job lock; the shim releases it after it records job.exited.
+func waitForJobStatus(t *testing.T, bin, cfgPath, name, want string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var stdout string
+	for i := 0; i < 200 && time.Now().Before(deadline); i++ {
+		out, stderr, code, err := runSystemCLI(t, bin, "jobs", "status", "--config="+cfgPath, name)
+		assertCLIExitZero(t, "jobs status", out, stderr, code, err)
+		if out == want {
+			return
+		}
+		stdout = out
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("jobs status %s = %q after 10 s, want %q", name, stdout, want)
+}
+
 // TestSystemUpgrade_Jobs: the current binary reports the job run v0.1.0 recorded, and starts
 // the job again on top of that state: the shim appends after the v0.1.0 records and replaces
 // the v0.1.0 job record.
@@ -458,9 +476,5 @@ func TestSystemUpgrade_Jobs(t *testing.T) {
 	if err != nil || bytes.Equal(after, before) {
 		t.Fatalf("job record after the restart = %s, err = %v, want a new record", after, err)
 	}
-	stdout, stderr, code, err = runSystemCLI(t, bin, "jobs", "status", "--config="+cfgPath, "fixture-job")
-	assertCLIExitZero(t, "jobs status", stdout, stderr, code, err)
-	if stdout != wantRow {
-		t.Fatalf("jobs status after the restart = %q, want %q", stdout, wantRow)
-	}
+	waitForJobStatus(t, bin, cfgPath, "fixture-job", wantRow)
 }
