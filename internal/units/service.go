@@ -423,7 +423,8 @@ func (s *Service) Resume(ctx context.Context) ([]ResumeRow, int, error) {
 			evidence = u.Evidence.Path
 		}
 		rows = append(rows, ResumeRow{ID: u.ID, Status: u.Status, UpdatedAt: u.UpdatedAt, Worktree: u.Worktree,
-			Branch: u.Branch, PR: u.PR, Lane: u.Lane, Relaunch: relaunch, Evidence: evidence})
+			Branch: u.Branch, PR: u.PR, Lane: u.Lane, Relaunch: relaunch, Evidence: evidence,
+			Node: u.Node, By: u.By, Assignment: u.Assignment})
 	}
 	return rows, st.UnitRecordsIgnored, nil
 }

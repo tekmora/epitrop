@@ -62,15 +62,18 @@ type NoteReadPayload struct {
 }
 
 type ResumeRow struct {
-	ID        string
-	Status    string
-	UpdatedAt string
-	Worktree  string
-	Branch    string
-	PR        int
-	Lane      string
-	Relaunch  string
-	Evidence  string
+	ID         string
+	Status     string
+	UpdatedAt  string
+	Worktree   string
+	Branch     string
+	PR         int
+	Lane       string
+	Relaunch   string
+	Evidence   string
+	Node       string
+	By         string
+	Assignment *eventlog.UnitAssignment
 }
 
 // IsValidStatus reports whether s is a status of the task graph's vocabulary, the one

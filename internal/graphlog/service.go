@@ -62,16 +62,28 @@ func Fold() eventlog.Fold {
 // replayWith replays the log with reducer, whose state a compacted log's base holds under
 // fold; a log directory without events yet is an empty state.
 func (s *Service) replayWith(ctx context.Context, fold string, reducer eventlog.Reducer) (eventlog.State, error) {
+	st, _, err := s.replayFold(ctx, fold, func() eventlog.Reducer { return reducer })
+	return st, err
+}
+
+// ReplayGraph folds graph records with a fresh reducer per attempt, returning
+// the state and its verified log position. The reducer must apply Reducer.
+func (s *Service) ReplayGraph(ctx context.Context, newReducer func() eventlog.Reducer) (eventlog.State, uint64, error) {
+	return s.replayFold(ctx, FoldName, newReducer)
+}
+
+// replayFold treats a log that has never been written as the empty prefix.
+func (s *Service) replayFold(ctx context.Context, fold string, newReducer func() eventlog.Reducer) (eventlog.State, uint64, error) {
 	if err := readyContext(ctx, "replay"); err != nil {
-		return eventlog.State{}, err
+		return eventlog.State{}, 0, err
 	}
 	events := filepath.Join(s.dir, "events")
 	if _, err := os.Stat(events); os.IsNotExist(err) {
-		return eventlog.State{}, nil
+		return eventlog.State{}, 0, nil
 	} else if err != nil {
-		return eventlog.State{}, fmt.Errorf("graphlog: stat %s: %w", events, err)
+		return eventlog.State{}, 0, fmt.Errorf("graphlog: stat %s: %w", events, err)
 	}
-	return eventlog.ReplayFoldStable(ctx, s.dir, s.signer.PublicKey(), s.limits, fold, reducer)
+	return eventlog.ReplayFoldStableAt(ctx, s.dir, s.signer.PublicKey(), s.limits, fold, newReducer)
 }
 
 // Show returns the graph the log holds and the number of stages its replay ignored.
@@ -116,7 +128,7 @@ func (s *Service) Commit(ctx context.Context, ops []graph.Event) (graph.Snapshot
 	}
 	var next *graph.Graph
 	_, err = writer.AppendChecked(ctx, func(cctx context.Context) (eventlog.Event, error) {
-		current, wErr := s.writable(cctx)
+		current, _, wErr := s.writableAt(cctx)
 		if wErr != nil {
 			return eventlog.Event{}, wErr
 		}
@@ -142,25 +154,25 @@ func (s *Service) Commit(ctx context.Context, ops []graph.Event) (graph.Snapshot
 	return snap, nil
 }
 
-// writable returns the graph the log holds, bounded by the configured depth.
-func (s *Service) writable(ctx context.Context) (*graph.Graph, error) {
-	st, err := s.Replay(ctx)
+// writableAt checks the configured depth and returns the exact graph prefix checked.
+func (s *Service) writableAt(ctx context.Context) (*graph.Graph, uint64, error) {
+	st, seq, err := s.ReplayGraph(ctx, func() eventlog.Reducer { return Reducer })
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	stored, err := Graph(st)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	snap, err := stored.Snapshot()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	current, err := graph.FromSnapshot(snap, s.maxDepth)
 	if err != nil {
-		return nil, fmt.Errorf("graphlog: the graph in the log does not hold under the configured max depth %d, raise graph.max_depth to write to it: %w", s.maxDepth, err)
+		return nil, 0, fmt.Errorf("graphlog: the graph in the log does not hold under the configured max depth %d, raise graph.max_depth to write to it: %w", s.maxDepth, err)
 	}
-	return current, nil
+	return current, seq, nil
 }
 
 func readyContext(ctx context.Context, op string) error {

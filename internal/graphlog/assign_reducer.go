@@ -21,12 +21,9 @@ type assignment struct {
 // produces, with the same checks the run record applies to it.
 func readAssignment(rec eventlog.Record) (assignment, error) {
 	if rec.Type == units.AssignedType {
-		var payload units.AssignPayload
-		if err := json.Unmarshal(rec.Payload, &payload); err != nil {
-			return assignment{}, fmt.Errorf("eventlog: seq %d: payload: %w", rec.Seq, err)
-		}
-		if err := units.ValidateAssign(rec.TaskID, payload); err != nil {
-			return assignment{}, fmt.Errorf("eventlog: seq %d: %w", rec.Seq, err)
+		payload, err := units.ReadAssignment(rec)
+		if err != nil {
+			return assignment{}, err
 		}
 		return assignment{node: payload.Node, from: graph.StatusReady, to: graph.StatusClaimed}, nil
 	}

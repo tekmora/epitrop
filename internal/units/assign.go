@@ -18,15 +18,15 @@ const (
 	// ReleasedType gives an assigned node back: claimed to ready in the graph, the unit
 	// dropped in the run record, with the reason.
 	ReleasedType = "unit.released"
+
+	// SelectionNext takes the first eligible row. SelectionNamed takes an operator's row.
+	SelectionNext  = "next"
+	SelectionNamed = "named"
 )
 
 // AssignPayload is the payload of unit.assigned. The record's task id is the unit id,
 // the repository, a colon and Node.
-type AssignPayload struct {
-	Node string `json:"node"`
-	Lane string `json:"lane"`
-	By   string `json:"by,omitempty"`
-}
+type AssignPayload = eventlog.UnitAssignment
 
 // ReleasePayload is the payload of unit.released.
 type ReleasePayload struct {
@@ -59,6 +59,24 @@ func ValidateAssign(id string, payload AssignPayload) error {
 	}
 	if payload.By != "" && !senderRegex.MatchString(payload.By) {
 		return fmt.Errorf("units: invalid sender %q", payload.By)
+	}
+	return validateSelection(payload.Selection)
+}
+
+// validateSelection accepts legacy records without a rank and checks the fields
+// shared by every version of a recorded ranking.
+func validateSelection(rank *eventlog.RankSelection) error {
+	if rank == nil {
+		return nil
+	}
+	if rank.Mode != SelectionNamed && rank.Mode != SelectionNext {
+		return fmt.Errorf("units: unknown assignment selection mode %q", rank.Mode)
+	}
+	if rank.AlgorithmVersion == "" || rank.LogPosition == 0 {
+		return fmt.Errorf("units: ranked assignment requires a version and source log position")
+	}
+	if rank.Terms.ElapsedSeconds < 0 || rank.Terms.Cost < 0 || rank.Terms.Progress < 0 {
+		return fmt.Errorf("units: negative assignment rank term")
 	}
 	return nil
 }
@@ -112,13 +130,25 @@ func ReleaseTarget(st eventlog.State, node string) (string, error) {
 	return ids[0], nil
 }
 
-func reduceUnitAssigned(st eventlog.State, rec eventlog.Record) (eventlog.State, error) {
+// ReadAssignment decodes the same assignment for both the graph and unit folds.
+func ReadAssignment(rec eventlog.Record) (AssignPayload, error) {
 	var payload AssignPayload
 	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
-		return eventlog.State{}, fmt.Errorf("eventlog: seq %d: payload: %w", rec.Seq, err)
+		return AssignPayload{}, fmt.Errorf("eventlog: seq %d: payload: %w", rec.Seq, err)
 	}
 	if err := ValidateAssign(rec.TaskID, payload); err != nil {
-		return eventlog.State{}, fmt.Errorf("eventlog: seq %d: %w", rec.Seq, err)
+		return AssignPayload{}, fmt.Errorf("eventlog: seq %d: %w", rec.Seq, err)
+	}
+	if rank := payload.Selection; rank != nil && rank.LogPosition != rec.Seq-1 {
+		return AssignPayload{}, fmt.Errorf("eventlog: seq %d: assignment ranked at %d", rec.Seq, rank.LogPosition)
+	}
+	return payload, nil
+}
+
+func reduceUnitAssigned(st eventlog.State, rec eventlog.Record) (eventlog.State, error) {
+	payload, err := ReadAssignment(rec)
+	if err != nil {
+		return eventlog.State{}, err
 	}
 	if !assignAllowed(st, rec.TaskID) {
 		st.UnitRecordsIgnored++
@@ -128,7 +158,7 @@ func reduceUnitAssigned(st eventlog.State, rec eventlog.Record) (eventlog.State,
 	// A new assignment is a new run of the unit: only the notes carry over.
 	st.Units[rec.TaskID] = eventlog.Unit{
 		ID: rec.TaskID, Status: string(graph.StatusClaimed), Lane: payload.Lane, By: payload.By,
-		Node: payload.Node, UpdatedAt: rec.Time, Notes: prev.Notes, ReadUpto: prev.ReadUpto,
+		Node: payload.Node, Assignment: &payload, UpdatedAt: rec.Time, Notes: prev.Notes, ReadUpto: prev.ReadUpto,
 	}
 	return st, nil
 }

@@ -92,9 +92,29 @@ func ReplayCheckpointedStable(ctx context.Context, dir string, pubKeyHex string,
 
 // ReplayFoldStable is ReplayFold with the same retry helper as ReplayStable.
 func ReplayFoldStable(ctx context.Context, dir string, pubKeyHex string, limits Limits, fold string, reducer Reducer) (State, error) {
-	return retryStable(ctx, stableBudget(limits), func() (State, error) {
-		return ReplayFold(ctx, dir, pubKeyHex, limits, fold, reducer)
+	st, _, err := ReplayFoldStableAt(ctx, dir, pubKeyHex, limits, fold, func() Reducer { return reducer })
+	return st, err
+}
+
+// ReplayFoldStableAt creates a reducer for each attempt so observations from a
+// discarded prefix cannot escape into the successful fold. The position comes
+// from the same verified replay as the state, even when the base is at HEAD.
+func ReplayFoldStableAt(ctx context.Context, dir string, pubKeyHex string, limits Limits, fold string, newReducer func() Reducer) (State, uint64, error) {
+	if err := readyContext(ctx, "replay"); err != nil {
+		return State{}, 0, err
+	}
+	if newReducer == nil {
+		return State{}, 0, errors.New("eventlog: reducer factory is required")
+	}
+	type result struct {
+		state State
+		seq   uint64
+	}
+	res, err := retryStable(ctx, stableBudget(limits), func() (result, error) {
+		st, seq, err := replayFoldAt(ctx, dir, pubKeyHex, limits, fold, newReducer())
+		return result{state: st, seq: seq}, err
 	})
+	return res.state, res.seq, err
 }
 
 func transientReplayError(err error) bool {
@@ -128,22 +148,28 @@ func Replay(ctx context.Context, dir string, pubKeyHex string, limits Limits, re
 // from the fold's state in the base; a base without that state fails with the base's seq.
 // Replay without a fold fails on a compacted log, since it has no state to start from.
 func ReplayFold(ctx context.Context, dir string, pubKeyHex string, limits Limits, fold string, reducer Reducer) (State, error) {
+	st, _, err := replayFoldAt(ctx, dir, pubKeyHex, limits, fold, reducer)
+	return st, err
+}
+
+// replayFoldAt returns the sequence verified against HEAD, including a base with no tail.
+func replayFoldAt(ctx context.Context, dir string, pubKeyHex string, limits Limits, fold string, reducer Reducer) (State, uint64, error) {
 	if err := readyContext(ctx, "replay"); err != nil {
-		return State{}, err
+		return State{}, 0, err
 	}
 	if !validCheckpointName(fold) {
-		return State{}, fmt.Errorf("eventlog: invalid fold name %q", fold)
+		return State{}, 0, fmt.Errorf("eventlog: invalid fold name %q", fold)
 	}
 	normalized, err := normalizeLimits(limits)
 	if err != nil {
-		return State{}, err
+		return State{}, 0, err
 	}
 	if err = checkReplayInputs(dir, pubKeyHex, reducer); err != nil {
-		return State{}, err
+		return State{}, 0, err
 	}
 	r := replayRun{eventsDir: eventsDir(dir), pubKeyHex: strings.ToLower(pubKeyHex), limits: normalized, reducer: reducer, fold: fold}
 	st, _, err := r.run()
-	return st, err
+	return st, r.headSeq, err
 }
 
 // ReplayCheckpointed replays the event log from the newest valid checkpoint of name, or full
@@ -176,6 +202,7 @@ func ReplayCheckpointed(ctx context.Context, dir string, pubKeyHex string, limit
 }
 
 type replayRun struct {
+	headSeq        uint64 // set after the cursor matches HEAD
 	eventsDir      string
 	checkpointsDir string
 	pubKeyHex      string
@@ -214,7 +241,7 @@ const maxCheckpointsScan = 16
 // run reads the base first: a compaction writes the new base before it removes the segments
 // the base covers. A replay that failed while the base moved under it says so, and a stable
 // replay tries again.
-func (r replayRun) run() (State, CheckpointUse, error) {
+func (r *replayRun) run() (State, CheckpointUse, error) {
 	b, hasBase, err := readBase(r.eventsDir, r.pubKeyHex, r.limits)
 	if err != nil {
 		return State{}, CheckpointUse{}, err
@@ -231,7 +258,7 @@ func (r replayRun) baseMoved(seq uint64) bool {
 	return err == nil && b.Seq != seq
 }
 
-func (r replayRun) runFrom(b Base, hasBase bool) (State, CheckpointUse, error) {
+func (r *replayRun) runFrom(b Base, hasBase bool) (State, CheckpointUse, error) {
 	entries, err := os.ReadDir(r.eventsDir)
 	if err != nil {
 		return State{}, CheckpointUse{}, fmt.Errorf("eventlog: read %s: %w", r.eventsDir, err)
@@ -263,6 +290,7 @@ func (r replayRun) runFrom(b Base, hasBase bool) (State, CheckpointUse, error) {
 	if err = r.applyToHead(entries, &c); err != nil {
 		return State{}, CheckpointUse{}, err
 	}
+	r.headSeq = c.last
 	return st, cp.use, nil
 }
 

@@ -208,22 +208,44 @@ func runUnitsResume(args []string) error {
 		return err
 	}
 	if ignored > 0 {
-		fmt.Fprintf(os.Stderr, "units: replay did not apply %d unit records that broke a rule (see units.UnitReducer)\n", ignored)
-	}
-	fmt.Println("id\tstatus\tupdated_at\tworktree\tbranch\tpr\tlane\trelaunch")
-	for i := 0; i < len(rows); i++ {
-		r := rows[i]
-		relaunch := r.Relaunch
-		if r.Status == "implementing" && filepath.Base(r.Evidence) == slot.StartFile {
-			dir := filepath.Dir(r.Evidence)
-			start, readErr := slot.ReadStart(dir)
-			if readErr != nil {
-				relaunch = fmt.Sprintf("no: start file unreadable: %v", readErr)
-			} else {
-				relaunch = fmt.Sprintf("no: take up with slot resume --out %s (job %s, workspace %s)", dir, start.Job, start.Workspace)
-			}
+		if _, err := fmt.Fprintf(os.Stderr, "units: replay did not apply %d unit records that broke a rule (see units.UnitReducer)\n", ignored); err != nil {
+			return fmt.Errorf("units resume: print replay warning: %w", err)
 		}
-		fmt.Printf("%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", r.ID, r.Status, r.UpdatedAt, r.Worktree, r.Branch, r.PR, r.Lane, relaunch)
+	}
+	if _, err := fmt.Println("id\tstatus\tupdated_at\tworktree\tbranch\tpr\tlane\trelaunch\tnode\tby\tassignment"); err != nil {
+		return fmt.Errorf("units resume: print header: %w", err)
+	}
+	for i := 0; i < len(rows); i++ {
+		if err := printResumeRow(rows[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// printResumeRow keeps the run's selection evidence alongside the relaunch verdict.
+func printResumeRow(r units.ResumeRow) error {
+	relaunch := r.Relaunch
+	if r.Status == "implementing" && filepath.Base(r.Evidence) == slot.StartFile {
+		dir := filepath.Dir(r.Evidence)
+		start, readErr := slot.ReadStart(dir)
+		if readErr != nil {
+			relaunch = fmt.Sprintf("no: start file unreadable: %v", readErr)
+		} else {
+			relaunch = fmt.Sprintf("no: take up with slot resume --out %s (job %s, workspace %s)", dir, start.Job, start.Workspace)
+		}
+	}
+	assignment := ""
+	if r.Assignment != nil {
+		body, err := json.Marshal(r.Assignment)
+		if err != nil {
+			return fmt.Errorf("units resume: marshal assignment: %w", err)
+		}
+		assignment = string(body)
+	}
+	if _, err := fmt.Printf("%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
+		r.ID, r.Status, r.UpdatedAt, r.Worktree, r.Branch, r.PR, r.Lane, relaunch, r.Node, r.By, assignment); err != nil {
+		return fmt.Errorf("units resume: print row: %w", err)
 	}
 	return nil
 }
@@ -243,7 +265,9 @@ func runUnitsShow(args []string) error {
 	if err != nil {
 		return fmt.Errorf("units show: marshal: %w", err)
 	}
-	fmt.Println(string(body))
+	if _, err := fmt.Println(string(body)); err != nil {
+		return fmt.Errorf("units show: print: %w", err)
+	}
 	return nil
 }
 
