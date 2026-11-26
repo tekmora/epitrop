@@ -99,7 +99,7 @@ epitropctl units assign --config config.json --repo example/project --lane build
 
 `--next` takes the first row. A named node may be any eligible row. An empty frontier refuses `--next`. If another writer advances the log before the claim, the command exits 75 without appending. Rerun the command to select from the new head.
 
-`units show` includes the original `assignment` object. The final column of `units resume` carries the same JSON for open assigned runs. It records the node, lane, optional actor (`by`) and the `selection` fields `mode` (`next` or `named`), `algorithm_version`, `log_position` and `terms`. Later changes to the unit's actor or lane preserve this assignment. Older assignment events have no recorded rank.
+`units resume` lists open units with the relaunch verdict in the final column. Pass the ID from the first column to `units show <id>` to read the original `assignment` object. It records the node, lane, optional actor (`by`) and the `selection` fields `mode` (`next` or `named`), `algorithm_version`, `log_position` and `terms`. Later changes to the unit's actor or lane preserve this assignment. Older assignment events have no recorded rank.
 
 ## Workflow
 

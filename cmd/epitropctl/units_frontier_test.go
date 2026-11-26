@@ -315,7 +315,7 @@ func (f rankedFixture) checkClaim(t *testing.T, source uint64, node string, want
 	checkAssignmentJSON(t, records[0].Payload, want)
 }
 
-// checkReopened reads show and resume through separate CLI opens and checks the original decision.
+// checkReopened checks the original assignment in show and the open unit's exact resume table.
 func (f rankedFixture) checkReopened(t *testing.T, node string, want map[string]any) {
 	t.Helper()
 	id := "r:" + node
@@ -325,8 +325,9 @@ func (f rankedFixture) checkReopened(t *testing.T, node string, want map[string]
 		}
 	})
 	var shown struct {
-		ID, Node, Status string
-		Original         json.RawMessage `json:"assignment"`
+		ID, Node, Status, Lane string
+		UpdatedAt              string          `json:"updated_at"`
+		Original               json.RawMessage `json:"assignment"`
 	}
 	if err := json.Unmarshal([]byte(out), &shown); err != nil {
 		t.Fatal(err)
@@ -340,12 +341,11 @@ func (f rankedFixture) checkReopened(t *testing.T, node string, want map[string]
 			t.Fatal(err)
 		}
 	})
-	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 2 || !strings.HasPrefix(lines[1], id+"\tclaimed\t") {
-		t.Fatalf("resume = %q, want one open unit", out)
+	const header = "id\tstatus\tupdated_at\tworktree\tbranch\tpr\tlane\trelaunch\n"
+	wantTable := header + fmt.Sprintf("%s\tclaimed\t%s\t\t\t0\t%s\tsafe\n", id, shown.UpdatedAt, shown.Lane)
+	if out != wantTable {
+		t.Fatalf("resume = %q, want %q", out, wantTable)
 	}
-	cols := strings.Split(lines[1], "\t")
-	checkAssignmentJSON(t, []byte(cols[len(cols)-1]), want)
 }
 
 // TestRankedAssignmentReplay uses fresh copies for the automatic and operator choices.

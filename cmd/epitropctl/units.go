@@ -196,6 +196,7 @@ func readIdentity(path string) (json.RawMessage, error) {
 	return json.RawMessage(strings.TrimSpace(string(body))), nil
 }
 
+// runUnitsResume prints open units in the eight-column resume table.
 func runUnitsResume(args []string) error {
 	fs := flag.NewFlagSet("units resume", flag.ContinueOnError)
 	svc, _, ctx, cancel, err := unitsCall(fs, args)
@@ -212,7 +213,7 @@ func runUnitsResume(args []string) error {
 			return fmt.Errorf("units resume: print replay warning: %w", err)
 		}
 	}
-	if _, err := fmt.Println("id\tstatus\tupdated_at\tworktree\tbranch\tpr\tlane\trelaunch\tnode\tby\tassignment"); err != nil {
+	if _, err := fmt.Println("id\tstatus\tupdated_at\tworktree\tbranch\tpr\tlane\trelaunch"); err != nil {
 		return fmt.Errorf("units resume: print header: %w", err)
 	}
 	for i := 0; i < len(rows); i++ {
@@ -223,7 +224,7 @@ func runUnitsResume(args []string) error {
 	return nil
 }
 
-// printResumeRow keeps the run's selection evidence alongside the relaunch verdict.
+// printResumeRow directs implementing units with a slot start file to slot resume.
 func printResumeRow(r units.ResumeRow) error {
 	relaunch := r.Relaunch
 	if r.Status == "implementing" && filepath.Base(r.Evidence) == slot.StartFile {
@@ -235,16 +236,8 @@ func printResumeRow(r units.ResumeRow) error {
 			relaunch = fmt.Sprintf("no: take up with slot resume --out %s (job %s, workspace %s)", dir, start.Job, start.Workspace)
 		}
 	}
-	assignment := ""
-	if r.Assignment != nil {
-		body, err := json.Marshal(r.Assignment)
-		if err != nil {
-			return fmt.Errorf("units resume: marshal assignment: %w", err)
-		}
-		assignment = string(body)
-	}
-	if _, err := fmt.Printf("%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
-		r.ID, r.Status, r.UpdatedAt, r.Worktree, r.Branch, r.PR, r.Lane, relaunch, r.Node, r.By, assignment); err != nil {
+	if _, err := fmt.Printf("%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+		r.ID, r.Status, r.UpdatedAt, r.Worktree, r.Branch, r.PR, r.Lane, relaunch); err != nil {
 		return fmt.Errorf("units resume: print row: %w", err)
 	}
 	return nil
