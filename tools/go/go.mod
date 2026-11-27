@@ -69,7 +69,7 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
-	github.com/cordanaLLM/praetor v0.0.0-20261116011817-8684218e78b8 // indirect
+	github.com/cordanaLLM/praetor v0.0.0-20261116214023-ff4c42fbbc90 // indirect
 	github.com/curioswitch/go-reassign v0.3.0 // indirect
 	github.com/daixiang0/gci v0.13.7 // indirect
 	github.com/dave/dst v0.28.0 // indirect
