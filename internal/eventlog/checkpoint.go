@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 
 	corereceipt "github.com/golusoris/golusoris/core/crypto/receipt"
 )
@@ -64,8 +65,11 @@ type DivergedLog struct {
 	HashAtCheckpointSeq string `json:"hash_at_checkpoint_seq"`
 }
 
-// WriteCheckpoint writes a signed, canonical checkpoint file and keeps at most 3 checkpoints for name.
-func (w *Writer) WriteCheckpoint(ctx context.Context, name string, seq uint64, hash string, st State) error {
+// WriteCheckpoint publishes a signed, canonical checkpoint under the log lock
+// and keeps at most three checkpoints for name. An already published checkpoint
+// for the same record takes precedence over a delayed ordinary write.
+// Do not call WriteCheckpoint from an AppendChecked callback.
+func (w *Writer) WriteCheckpoint(ctx context.Context, name string, seq uint64, hash string, st State) (err error) {
 	if err := readyContext(ctx, "write checkpoint"); err != nil {
 		return err
 	}
@@ -75,19 +79,214 @@ func (w *Writer) WriteCheckpoint(ctx context.Context, name string, seq uint64, h
 	if seq == 0 || hash == "" {
 		return errors.New("eventlog: checkpoint seq and hash are required")
 	}
+	if err = os.MkdirAll(w.eventsDir, 0o750); err != nil {
+		return fmt.Errorf("eventlog: mkdir %s: %w", w.eventsDir, err)
+	}
+	lock, err := acquireLock(ctx, w.eventsDir, w.limits.LockTimeout)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := lock.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	return w.writeCheckpointLocked(ctx, name, seq, hash, st)
+}
+
+// writeCheckpointLocked publishes an ordinary checkpoint without replacing an
+// authenticated snapshot for the same record. The caller holds the log lock.
+func (w *Writer) writeCheckpointLocked(ctx context.Context, name string, seq uint64, hash string, st State) error {
+	cpDir := filepath.Join(w.dir, "checkpoints", name)
+	fileName := checkpointFileName(seq)
+	exists, err := w.hasMatchingCheckpoint(filepath.Join(cpDir, fileName), name, seq, hash)
+	if err != nil || exists {
+		return err
+	}
 	full, err := w.buildCheckpoint(name, seq, hash, st)
 	if err != nil {
 		return err
 	}
-	cpDir := filepath.Join(w.dir, "checkpoints", name)
+	if err = ctx.Err(); err != nil {
+		return err
+	}
 	if err = os.MkdirAll(cpDir, 0o750); err != nil {
 		return fmt.Errorf("eventlog: mkdir %s: %w", cpDir, err)
 	}
-	fileName := checkpointFileName(seq)
 	if err = atomicReplace(cpDir, fileName, full, 0o600); err != nil {
 		return err
 	}
 	return pruneCheckpoints(cpDir)
+}
+
+// hasMatchingCheckpoint checks whether the existing snapshot is authenticated and
+// names the same record. Missing, oversized, or invalid snapshots may be replaced.
+func (w *Writer) hasMatchingCheckpoint(path, name string, seq uint64, hash string) (bool, error) {
+	pub := strings.ToLower(w.signer.PublicKey())
+	data, err := readFileBounded(path, w.limits.MaxRecordBytes)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, ErrRecordTooLarge) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	cp, err := decodeCheckpoint(path, data, pub)
+	return err == nil && cp.Name == name && cp.Seq == seq && cp.Hash == hash, nil
+}
+
+// RebuildCheckpoint replaces the newest usable checkpoint if accept rejects its
+// state. It replays only through that checkpoint, from the authenticated base
+// or genesis, and replaces it only if the reconstructed state is accepted.
+// It never rewrites the base or consumes records after the checkpoint.
+func (w *Writer) RebuildCheckpoint(ctx context.Context, name string, reducer Reducer, accept func(State) bool) (err error) {
+	if err = readyContext(ctx, "rebuild checkpoint"); err != nil {
+		return err
+	}
+	if !validCheckpointName(name) || reducer == nil || accept == nil {
+		return errors.New("eventlog: rebuild checkpoint needs a fold name, reducer and state predicate")
+	}
+	if _, err = os.Stat(w.eventsDir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	lock, err := acquireLock(ctx, w.eventsDir, w.limits.LockTimeout)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := lock.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+
+	return w.rebuildCheckpointLocked(ctx, name, reducer, accept)
+}
+
+// rebuildCheckpointLocked selects and repairs a rejected snapshot without
+// publishing at HEAD or pruning other snapshots. The caller holds the log lock.
+func (w *Writer) rebuildCheckpointLocked(ctx context.Context, name string, reducer Reducer, accept func(State) bool) error {
+	r := replayRun{
+		eventsDir: w.eventsDir, checkpointsDir: filepath.Join(w.dir, "checkpoints"),
+		pubKeyHex: strings.ToLower(w.signer.PublicKey()), limits: w.limits,
+		name: name, fold: name,
+		reducer: checkpointRebuildReducer(ctx, reducer),
+	}
+	b, hasBase, err := readBase(r.eventsDir, r.pubKeyHex, r.limits)
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(r.eventsDir)
+	if err != nil {
+		return err
+	}
+	r.segs, err = listSegments(r.eventsDir, r.limits.MaxReplayRecords, b.Seq)
+	if err != nil {
+		return err
+	}
+	cp := r.findCheckpoint(b.Seq)
+	if cp.seq == 0 {
+		return nil
+	}
+	var old State
+	if err = json.Unmarshal(cp.state, &old); err != nil {
+		return fmt.Errorf("eventlog: rebuild checkpoint seq %d: %w", cp.seq, err)
+	}
+	if accept(old) {
+		return nil
+	}
+	st, err := r.reconstructCheckpoint(b, hasBase, entries, cp, accept)
+	if err != nil {
+		return err
+	}
+	return w.replaceRebuiltCheckpoint(ctx, r.checkpointsDir, name, cp.seq, cp.hash, st)
+}
+
+// reconstructCheckpoint replays retained history from the base or genesis and
+// returns state only if it reaches the authenticated boundary and passes accept.
+func (r *replayRun) reconstructCheckpoint(b Base, hasBase bool, entries []os.DirEntry, cp checkpointResult, accept func(State) bool) (State, error) {
+	if err := r.verifyCheckpointRebuildBoundary(b.Seq, cp.seq, cp.hash); err != nil {
+		return State{}, err
+	}
+	st := State{Tasks: map[string]Task{}}
+	c := cursor{state: &st}
+	if err := r.start(b, hasBase, &c); err != nil {
+		return State{}, err
+	}
+	if err := r.replayCheckpointBoundary(entries, &c, cp.seq, cp.hash); err != nil {
+		return State{}, err
+	}
+	if !accept(st) {
+		return State{}, fmt.Errorf("eventlog: retained history cannot rebuild compatible checkpoint state at seq %d", cp.seq)
+	}
+	return st, nil
+}
+
+// checkpointRebuildReducer checks cancellation before each reducer call.
+func checkpointRebuildReducer(ctx context.Context, reducer Reducer) Reducer {
+	return func(st State, rec Record) (State, error) {
+		if err := ctx.Err(); err != nil {
+			return State{}, err
+		}
+		return reducer(st, rec)
+	}
+}
+
+// verifyCheckpointRebuildBoundary checks the replay budget and HEAD boundary.
+func (r *replayRun) verifyCheckpointRebuildBoundary(baseSeq, seq uint64, hash string) error {
+	cap := r.limits.MaxReplayRecords
+	if cap < 0 {
+		return fmt.Errorf("eventlog: negative max replay records %d rebuilding checkpoint seq %d", cap, seq)
+	}
+	if seq < baseSeq {
+		return fmt.Errorf("eventlog: checkpoint seq %d precedes base seq %d", seq, baseSeq)
+	}
+	if seq-baseSeq > uint64(cap) {
+		return fmt.Errorf("eventlog: max replay records %d exceeded rebuilding checkpoint seq %d", r.limits.MaxReplayRecords, seq)
+	}
+	h, hasHead, err := r.readHead()
+	if err != nil {
+		return err
+	}
+	if !hasHead || seq > h.Seq || (seq == h.Seq && hash != h.Hash) {
+		return fmt.Errorf("eventlog: checkpoint seq %d does not match HEAD boundary", seq)
+	}
+	return nil
+}
+
+// replayCheckpointBoundary replays through the checkpoint and verifies the
+// resulting sequence and hash.
+func (r *replayRun) replayCheckpointBoundary(entries []os.DirEntry, c *cursor, seq uint64, hash string) error {
+	r.checkpointEnd = seq
+	if err := r.applySegments(looseRecords(entries), c); err != nil {
+		return err
+	}
+	if err := r.applyRecords(entries, c); err != nil {
+		return err
+	}
+	if c.last != seq || c.prev != hash {
+		return fmt.Errorf("eventlog: rebuilt history does not match checkpoint seq %d", seq)
+	}
+	return nil
+}
+
+// replaceRebuiltCheckpoint signs and atomically replaces the selected snapshot.
+// The caller holds the log lock.
+func (w *Writer) replaceRebuiltCheckpoint(ctx context.Context, checkpointsDir, name string, seq uint64, hash string, st State) error {
+	full, err := w.buildCheckpoint(name, seq, hash, st)
+	if err != nil {
+		return err
+	}
+	if len(full) > w.limits.MaxRecordBytes {
+		return fmt.Errorf("%w: rebuilt checkpoint seq %d is %d bytes", ErrRecordTooLarge, seq, len(full))
+	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	return atomicReplace(filepath.Join(checkpointsDir, name), checkpointFileName(seq), full, 0o600)
 }
 
 func (w *Writer) buildCheckpoint(name string, seq uint64, hash string, st State) ([]byte, error) {

@@ -61,6 +61,9 @@ func rankReverseGraph(snap graph.Snapshot) (map[string]graph.StatusName, map[str
 
 // rankProgress counts the distinct unfinished transitive dependants of rootID.
 func rankProgress(rootID string, status map[string]graph.StatusName, reverse map[string][]string, maxNodes int) int {
+	if len(reverse[rootID]) == 0 {
+		return 0
+	}
 	visited := make(map[string]bool, maxNodes)
 	visited[rootID] = true
 	queue := make([]string, 0, maxNodes)

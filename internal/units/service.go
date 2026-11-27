@@ -96,6 +96,17 @@ func (s *Service) replayRaw(ctx context.Context) (eventlog.State, error) {
 	return st, err
 }
 
+// RebuildAssignmentCheckpoint repairs a legacy units checkpoint from verified
+// local history under the event-log lock. It does not append an event or change
+// normal read and checked-append replay policy.
+func (s *Service) RebuildAssignmentCheckpoint(ctx context.Context) error {
+	writer, err := eventlog.Open(s.dir, s.signer, s.limits)
+	if err != nil {
+		return err
+	}
+	return writer.RebuildCheckpoint(ctx, FoldName, UnitReducer, hasAssignmentEvidence)
+}
+
 // replayUnits uses the same checkpoint policy for public reads and checked appends.
 func (s *Service) replayUnits(ctx context.Context) (eventlog.State, eventlog.CheckpointUse, error) {
 	return eventlog.ReplayCheckpointedStableAccepting(ctx, s.dir, s.signer.PublicKey(), s.limits, FoldName, UnitReducer, hasAssignmentEvidence)
@@ -122,9 +133,15 @@ func (s *Service) handleDivergence(ctx context.Context, div *eventlog.Divergence
 		return fmt.Errorf("units: marshal log.diverged: %w", err)
 	}
 	_, _, _, err = s.appendCheckedRecord(ctx, func(eventlog.State) (eventlog.Event, error) {
-		// The rename runs under the log's lock. A second replay that saw the same checkpoint
-		// before the first one renamed it finds the file gone and appends nothing, so the
-		// divergence is logged once.
+		// The original observation was made without the lock. Recheck it under
+		// the append lock so a replacement or compaction cannot make the rename stale.
+		_, use, replayErr := s.replayUnits(ctx)
+		if replayErr != nil {
+			return eventlog.Event{}, replayErr
+		}
+		if use.Diverged == nil || use.Diverged.File != div.File || use.Diverged.Checkpoint != div.Checkpoint {
+			return eventlog.Event{}, errDivergenceLogged
+		}
 		refused := div.File + ".refused"
 		if renErr := os.Rename(div.File, refused); os.IsNotExist(renErr) {
 			return eventlog.Event{}, errDivergenceLogged

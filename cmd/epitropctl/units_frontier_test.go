@@ -494,6 +494,274 @@ func checkCheckpointAssignment(t *testing.T, u eventlog.Unit) {
 	}
 }
 
+// TestUnitsRebuildCheckpoint exercises ordinary CLI reads and checked writes
+// with a cap that permits rebuilding the prefix but not replaying prefix plus suffix.
+func TestUnitsRebuildCheckpoint(t *testing.T) {
+	f := newRankedFixture(t)
+	ctx := testContext(t)
+	const id = "r:s"
+	f.writeAssignmentCheckpoint(t, ctx, id, true)
+	legacy := readUnitsCheckpoint(t, f.dir, 2)
+	publishStale := staleUnitsCheckpointPublisher(t, ctx, f, legacy)
+	if _, err := f.log.Append(ctx, eventlog.Event{Type: "unit.note", TaskID: id, Payload: json.RawMessage(`{"from":"editor","text":"suffix"}`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := loadUnitsRebuildConfig(t, f, 2)
+	svc, err := newUnitsService(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Show(ctx, id); err == nil || !strings.Contains(err.Error(), "max replay records") {
+		t.Fatalf("Show before maintenance = %v, want replay cap error", err)
+	}
+	args := []string{"rebuild-checkpoint", "--config", f.path}
+	raceUnitsCheckpointRebuild(t, args, publishStale)
+	if t.Failed() {
+		return
+	}
+	repaired := readUnitsCheckpoint(t, f.dir, 2)
+	if bytes.Equal(legacy, repaired) {
+		t.Fatal("legacy checkpoint not repaired")
+	}
+	if err := publishStale(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runUnits(args); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(repaired, readUnitsCheckpoint(t, f.dir, 2)) {
+		t.Fatal("delayed publication or repeated repair changed the repaired checkpoint")
+	}
+	checkUnitsRebuildResult(t, f, svc, id)
+}
+
+// staleUnitsCheckpointPublisher captures the legacy state and its signed boundary
+// so the normal writer can attempt publication during and after repair.
+func staleUnitsCheckpointPublisher(t *testing.T, ctx context.Context, f rankedFixture, legacy []byte) func() error {
+	t.Helper()
+	var cp eventlog.Checkpoint
+	if err := json.Unmarshal(legacy, &cp); err != nil {
+		t.Fatal(err)
+	}
+	var stale eventlog.State
+	if err := json.Unmarshal(cp.State, &stale); err != nil {
+		t.Fatal(err)
+	}
+	return func() error {
+		return f.log.WriteCheckpoint(ctx, units.FoldName, cp.Seq, cp.Hash, stale)
+	}
+}
+
+// TestUnitsRebuildCheckpointRefusesUnverifiedPrefix checks that failed maintenance
+// leaves the signed checkpoint and HEAD byte-for-byte unchanged.
+func TestUnitsRebuildCheckpointRefusesUnverifiedPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		cap          int
+		removePrefix bool
+		want         string
+	}{
+		{name: "missing original record", cap: 2, removePrefix: true, want: "gap at seq 1"},
+		{name: "configured replay cap", cap: 1, want: "max replay records 1 exceeded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRankedFixture(t)
+			ctx := testContext(t)
+			f.writeAssignmentCheckpoint(t, ctx, "r:s", true)
+			legacy := readUnitsCheckpoint(t, f.dir, 2)
+			headPath := unitsRebuildHeadPath(t, f.dir)
+			head := readUnitsFixtureFile(t, f.dir, headPath)
+			loadUnitsRebuildConfig(t, f, tc.cap)
+			if tc.removePrefix {
+				removeUnitsRebuildPrefix(t, headPath)
+			}
+			err := runUnits([]string{"rebuild-checkpoint", "--config", f.path})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("rebuild-checkpoint = %v, want error containing %q", err, tc.want)
+			}
+			assertUnitsRebuildStateUnchanged(t, f.dir, headPath, legacy, head)
+		})
+	}
+}
+
+// assertUnitsRebuildStateUnchanged checks that a failed rebuild preserves the
+// signed checkpoint at sequence 2 and HEAD byte for byte.
+func assertUnitsRebuildStateUnchanged(t *testing.T, dir, headPath string, checkpoint, head []byte) {
+	t.Helper()
+	if !bytes.Equal(checkpoint, readUnitsCheckpoint(t, dir, 2)) {
+		t.Error("failed rebuild changed the signed checkpoint")
+	}
+	if !bytes.Equal(head, readUnitsFixtureFile(t, dir, headPath)) {
+		t.Error("failed rebuild changed HEAD")
+	}
+}
+
+// removeUnitsRebuildPrefix removes record 1 but leaves the checkpoint boundary
+// intact so repair selects the signed checkpoint and must verify the prefix.
+func removeUnitsRebuildPrefix(t *testing.T, headPath string) {
+	t.Helper()
+	path := filepath.Join(filepath.Dir(headPath), fmt.Sprintf("%020d.json", 1))
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// unitsRebuildHeadPath finds the HEAD written by the fixture without assuming
+// the event directory's name.
+func unitsRebuildHeadPath(t *testing.T, dir string) string {
+	t.Helper()
+	var path string
+	err := filepath.WalkDir(dir, func(candidate string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && entry.Name() == "HEAD.json" {
+			if path != "" {
+				return fmt.Errorf("multiple HEAD.json files under %s", dir)
+			}
+			path = candidate
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path == "" {
+		t.Fatalf("no HEAD.json under %s", dir)
+	}
+	return path
+}
+
+// loadUnitsRebuildConfig sets the replay cap in the fixture's config file and loads it.
+func loadUnitsRebuildConfig(t *testing.T, f rankedFixture, maxReplayRecords int) config.Config {
+	t.Helper()
+	ctx := testContext(t)
+	doc, err := config.ReadDocument(ctx, f.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, ok := doc["event_log"].(map[string]any)
+	if !ok {
+		t.Fatal("fixture config has no event_log object")
+	}
+	log["max_replay_records"] = maxReplayRecords
+	body, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(ctx, f.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EventLog.MaxReplayRecords != maxReplayRecords {
+		t.Fatalf("loaded replay limit = %d, want %d", cfg.EventLog.MaxReplayRecords, maxReplayRecords)
+	}
+	return cfg
+}
+
+// raceUnitsCheckpointRebuild runs two CLI repairs alongside a stale publication.
+func raceUnitsCheckpointRebuild(t *testing.T, args []string, publishStale func() error) {
+	t.Helper()
+	start := make(chan struct{})
+	results := make(chan error, 3)
+	for _, op := range []func() error{
+		func() error { return runUnits(args) },
+		func() error { return runUnits(args) },
+		publishStale,
+	} {
+		go func(op func() error) {
+			<-start
+			results <- op()
+		}(op)
+	}
+	close(start)
+	for i := 0; i < 3; i++ {
+		if err := <-results; err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+// readUnitsCheckpoint returns the exact publication bytes for the given sequence.
+func readUnitsCheckpoint(t *testing.T, dir string, seq uint64) []byte {
+	t.Helper()
+	path := filepath.Join(dir, "checkpoints", units.FoldName, fmt.Sprintf("%020d.json", seq))
+	return readUnitsFixtureFile(t, dir, path)
+}
+
+// readUnitsFixtureFile reads the exact bytes of path without allowing it to escape dir.
+func readUnitsFixtureFile(t *testing.T, dir, path string) []byte {
+	t.Helper()
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsLocal(rel) || rel == "." {
+		t.Fatalf("fixture file %q is not below %q", path, dir)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close fixture root %s: %v", dir, err)
+		}
+	}()
+	body, err := root.ReadFile(rel)
+	if err != nil {
+		t.Fatalf("read fixture file %s: %v", path, err)
+	}
+	return body
+}
+
+// checkUnitsRebuildResult verifies that normal reads and checked writes use the
+// repaired checkpoint and that repair did not append an event.
+func checkUnitsRebuildResult(t *testing.T, f rankedFixture, svc *units.Service, id string) {
+	t.Helper()
+	checkUnitsRebuildShow(t, f, id)
+	checkUnitsRebuildRecord(t, f, svc, id)
+}
+
+// checkUnitsRebuildShow verifies original assignment evidence and suffix replay
+// through the CLI under the configured replay cap.
+func checkUnitsRebuildShow(t *testing.T, f rankedFixture, id string) {
+	t.Helper()
+	out := captureStdoutUnits(t, func() {
+		if err := runUnits([]string{"show", id, "--config", f.path}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	shown := printedUnit(t, out)
+	checkCheckpointAssignment(t, shown)
+	if len(shown.Notes) != 1 || shown.Notes[0].Seq != 3 || shown.Notes[0].Text != "suffix" {
+		t.Fatalf("suffix not applied: %+v", shown.Notes)
+	}
+}
+
+// checkUnitsRebuildRecord verifies that a checked write preserves the original
+// evidence and is the only event appended after the suffix.
+func checkUnitsRebuildRecord(t *testing.T, f rankedFixture, svc *units.Service, id string) {
+	t.Helper()
+	ctx := testContext(t)
+	u, err := svc.Record(ctx, id, units.RecordPayload{Status: "implementing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkCheckpointAssignment(t, u)
+	if u.Status != "implementing" {
+		t.Fatalf("checked Record status = %q", u.Status)
+	}
+	records, err := f.log.ReplayAfter(ctx, 3)
+	if err != nil || len(records) != 1 || records[0].Seq != 4 || records[0].Type != "unit.recorded" {
+		t.Fatalf("records after suffix = %+v, %v", records, err)
+	}
+}
+
 // TestFrontierMembershipParity compares IDs, not order or ranking terms, at one head.
 func TestFrontierMembershipParity(t *testing.T) {
 	f := newRankedFixture(t)

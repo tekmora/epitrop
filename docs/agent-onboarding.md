@@ -101,6 +101,18 @@ epitropctl units assign --config config.json --repo example/project --lane build
 
 `units resume` lists open units with the relaunch verdict in the final column. Pass the ID from the first column to `units show <id>` to read the original `assignment` object. It records the node, lane, optional actor (`by`) and the `selection` fields `mode` (`next` or `named`), `algorithm_version`, `log_position` and `terms`. Later changes to the unit's actor or lane preserve this assignment. Older assignment events have no recorded rank.
 
+### Repair a legacy assignment checkpoint
+
+A legacy units checkpoint may retain a unit's node but omit its original `assignment` object. Units replay rejects that snapshot. Missing rank alone is not a symptom: older unranked assignments are valid.
+
+```sh
+epitropctl units rebuild-checkpoint --config FILE
+```
+
+This repairs the newest usable checkpoint in place, replaying verified local history from genesis or a signed compaction base only through that checkpoint. It appends no events and does not rewrite the base. Replay is limited by `MaxReplayRecords`, the rebuilt snapshot by `MaxRecordBytes`, and the CLI uses a 30-second context. If retained history cannot reconstruct the assignment—for example, compaction removed the original records and the base lacks the evidence—the command returns an error without replacing the checkpoint. It does not guess from the unit's current lane or actor.
+
+Rerun after a transient lock failure. Rerunning after success is a no-op if the newest usable checkpoint is still current; no usable checkpoint is also a no-op. Retrying with the same insufficient history cannot recover the missing evidence.
+
 ## Workflow
 
 Run `make verify-all` before every push; the Praetor hooks run the audit before each commit and push. CI runs gofmt, go vet, go test -race, golangci-lint, the HISS audit and the docs-drift check on every pull request, using the tools pinned in `tools/go/go.mod` (`go tool -modfile=tools/go/go.mod <tool>`). Renovate moves those pins. Do not add a relational database or a setup wizard; state flows through the event log.

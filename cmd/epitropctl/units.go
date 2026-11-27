@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -32,21 +33,22 @@ var (
 var unitsStdin io.Reader = os.Stdin
 
 var unitsCommands = map[string]func([]string) error{
-	"set":      runUnitsSet,
-	"resume":   runUnitsResume,
-	"show":     runUnitsShow,
-	"note":     runUnitsNote,
-	"inbox":    runUnitsInbox,
-	"preempt":  runUnitsPreempt,
-	"handover": runUnitsHandover,
-	"frontier": runUnitsFrontier,
-	"assign":   runUnitsAssign,
-	"release":  runUnitsRelease,
+	"set":                runUnitsSet,
+	"resume":             runUnitsResume,
+	"show":               runUnitsShow,
+	"note":               runUnitsNote,
+	"inbox":              runUnitsInbox,
+	"preempt":            runUnitsPreempt,
+	"handover":           runUnitsHandover,
+	"frontier":           runUnitsFrontier,
+	"assign":             runUnitsAssign,
+	"release":            runUnitsRelease,
+	"rebuild-checkpoint": runUnitsRebuildCheckpoint,
 }
 
 func runUnits(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("units command required: set, resume, show, note, inbox, preempt, handover, frontier, assign, or release")
+		return fmt.Errorf("units command required: set, resume, show, note, inbox, preempt, handover, frontier, assign, release, or rebuild-checkpoint")
 	}
 	if fn, ok := unitsCommands[args[0]]; ok {
 		return fn(args[1:])
@@ -90,6 +92,36 @@ func unitsCall(fs *flag.FlagSet, args []string, need ...string) (*units.Service,
 		return nil, nil, nil, nil, err
 	}
 	return svc, pos, ctx, cancel, nil
+}
+
+// runUnitsRebuildCheckpoint repairs a legacy assignment snapshot without appending.
+func runUnitsRebuildCheckpoint(args []string) error {
+	fs := flag.NewFlagSet("units rebuild-checkpoint", flag.ContinueOnError)
+	var usageErr error
+	fs.Usage = func() { usageErr = printUnitsRebuildUsage(fs) }
+	svc, pos, ctx, cancel, err := unitsCall(fs, args)
+	if err != nil {
+		if usageErr != nil {
+			return errors.Join(err, usageErr)
+		}
+		return err
+	}
+	defer cancel()
+	if len(pos) != 0 {
+		return fmt.Errorf("units rebuild-checkpoint: unexpected argument %q", pos[0])
+	}
+	return svc.RebuildAssignmentCheckpoint(ctx)
+}
+
+// printUnitsRebuildUsage writes the repair synopsis before the flag defaults.
+func printUnitsRebuildUsage(fs *flag.FlagSet) error {
+	const synopsis = "Usage: epitropctl units rebuild-checkpoint --config FILE\n" +
+		"Recover original assignment evidence from retained signed history. Does not append events or rewrite a compacted base. A current or absent usable checkpoint is a no-op.\n"
+	if _, err := io.WriteString(fs.Output(), synopsis); err != nil {
+		return fmt.Errorf("units rebuild-checkpoint: print usage: %w", err)
+	}
+	fs.PrintDefaults()
+	return nil
 }
 
 type unitsSetFlags struct {
