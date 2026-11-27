@@ -83,8 +83,14 @@ type replayCheckpointedResult struct {
 
 // ReplayCheckpointedStable is ReplayCheckpointed with the same retry helper as ReplayStable.
 func ReplayCheckpointedStable(ctx context.Context, dir string, pubKeyHex string, limits Limits, name string, reducer Reducer) (State, CheckpointUse, error) {
+	return ReplayCheckpointedStableAccepting(ctx, dir, pubKeyHex, limits, name, reducer, nil)
+}
+
+// ReplayCheckpointedStableAccepting skips checkpoints for which accept returns false.
+// A nil accept uses all valid checkpoints. The predicate does not apply to compacted bases.
+func ReplayCheckpointedStableAccepting(ctx context.Context, dir string, pubKeyHex string, limits Limits, name string, reducer Reducer, accept func(State) bool) (State, CheckpointUse, error) {
 	res, err := retryStable(ctx, stableBudget(limits), func() (replayCheckpointedResult, error) {
-		st, use, rErr := ReplayCheckpointed(ctx, dir, pubKeyHex, limits, name, reducer)
+		st, use, rErr := replayCheckpointed(ctx, dir, pubKeyHex, limits, name, reducer, accept)
 		return replayCheckpointedResult{state: st, use: use}, rErr
 	})
 	return res.state, res.use, err
@@ -92,9 +98,29 @@ func ReplayCheckpointedStable(ctx context.Context, dir string, pubKeyHex string,
 
 // ReplayFoldStable is ReplayFold with the same retry helper as ReplayStable.
 func ReplayFoldStable(ctx context.Context, dir string, pubKeyHex string, limits Limits, fold string, reducer Reducer) (State, error) {
-	return retryStable(ctx, stableBudget(limits), func() (State, error) {
-		return ReplayFold(ctx, dir, pubKeyHex, limits, fold, reducer)
+	st, _, err := ReplayFoldStableAt(ctx, dir, pubKeyHex, limits, fold, func() Reducer { return reducer })
+	return st, err
+}
+
+// ReplayFoldStableAt creates a reducer for each attempt so observations from a
+// discarded prefix cannot escape into the successful fold. The position comes
+// from the same verified replay as the state, even when the base is at HEAD.
+func ReplayFoldStableAt(ctx context.Context, dir string, pubKeyHex string, limits Limits, fold string, newReducer func() Reducer) (State, uint64, error) {
+	if err := readyContext(ctx, "replay"); err != nil {
+		return State{}, 0, err
+	}
+	if newReducer == nil {
+		return State{}, 0, errors.New("eventlog: reducer factory is required")
+	}
+	type result struct {
+		state State
+		seq   uint64
+	}
+	res, err := retryStable(ctx, stableBudget(limits), func() (result, error) {
+		st, seq, err := replayFoldAt(ctx, dir, pubKeyHex, limits, fold, newReducer())
+		return result{state: st, seq: seq}, err
 	})
+	return res.state, res.seq, err
 }
 
 func transientReplayError(err error) bool {
@@ -128,28 +154,39 @@ func Replay(ctx context.Context, dir string, pubKeyHex string, limits Limits, re
 // from the fold's state in the base; a base without that state fails with the base's seq.
 // Replay without a fold fails on a compacted log, since it has no state to start from.
 func ReplayFold(ctx context.Context, dir string, pubKeyHex string, limits Limits, fold string, reducer Reducer) (State, error) {
+	st, _, err := replayFoldAt(ctx, dir, pubKeyHex, limits, fold, reducer)
+	return st, err
+}
+
+// replayFoldAt returns the sequence verified against HEAD, including a base with no tail.
+func replayFoldAt(ctx context.Context, dir string, pubKeyHex string, limits Limits, fold string, reducer Reducer) (State, uint64, error) {
 	if err := readyContext(ctx, "replay"); err != nil {
-		return State{}, err
+		return State{}, 0, err
 	}
 	if !validCheckpointName(fold) {
-		return State{}, fmt.Errorf("eventlog: invalid fold name %q", fold)
+		return State{}, 0, fmt.Errorf("eventlog: invalid fold name %q", fold)
 	}
 	normalized, err := normalizeLimits(limits)
 	if err != nil {
-		return State{}, err
+		return State{}, 0, err
 	}
 	if err = checkReplayInputs(dir, pubKeyHex, reducer); err != nil {
-		return State{}, err
+		return State{}, 0, err
 	}
 	r := replayRun{eventsDir: eventsDir(dir), pubKeyHex: strings.ToLower(pubKeyHex), limits: normalized, reducer: reducer, fold: fold}
 	st, _, err := r.run()
-	return st, err
+	return st, r.headSeq, err
 }
 
 // ReplayCheckpointed replays the event log from the newest valid checkpoint of name, or full
 // replay if none. name also names the reducer's fold: on a compacted log a replay without a
 // checkpoint past the base starts from the fold's state in the base.
 func ReplayCheckpointed(ctx context.Context, dir string, pubKeyHex string, limits Limits, name string, reducer Reducer) (State, CheckpointUse, error) {
+	return replayCheckpointed(ctx, dir, pubKeyHex, limits, name, reducer, nil)
+}
+
+// replayCheckpointed configures replay with an optional checkpoint state predicate.
+func replayCheckpointed(ctx context.Context, dir string, pubKeyHex string, limits Limits, name string, reducer Reducer, accept func(State) bool) (State, CheckpointUse, error) {
 	if err := readyContext(ctx, "replay"); err != nil {
 		return State{}, CheckpointUse{}, err
 	}
@@ -171,17 +208,20 @@ func ReplayCheckpointed(ctx context.Context, dir string, pubKeyHex string, limit
 		reducer:        reducer,
 		name:           name,
 		fold:           name,
+		accept:         accept,
 	}
 	return r.run()
 }
 
 type replayRun struct {
+	headSeq        uint64 // set after the cursor matches HEAD
 	eventsDir      string
 	checkpointsDir string
 	pubKeyHex      string
 	limits         Limits
 	reducer        Reducer
 	name           string
+	accept         func(State) bool
 	// fold names the reducer's state in the base of a compacted log; "" has none.
 	fold string
 	// until, when set, ends the replay after that seq, which a segment must end at; the
@@ -191,6 +231,9 @@ type replayRun struct {
 	fromCursor bool
 	after      uint64
 	segs       []segment
+	// checkpointEnd is an authenticated checkpoint boundary. Unlike until, it
+	// can fall inside a segment or in the loose records.
+	checkpointEnd uint64
 }
 
 // cursor is where a replay stands: the state so far, the last seq it applied or that its
@@ -214,7 +257,7 @@ const maxCheckpointsScan = 16
 // run reads the base first: a compaction writes the new base before it removes the segments
 // the base covers. A replay that failed while the base moved under it says so, and a stable
 // replay tries again.
-func (r replayRun) run() (State, CheckpointUse, error) {
+func (r *replayRun) run() (State, CheckpointUse, error) {
 	b, hasBase, err := readBase(r.eventsDir, r.pubKeyHex, r.limits)
 	if err != nil {
 		return State{}, CheckpointUse{}, err
@@ -231,7 +274,7 @@ func (r replayRun) baseMoved(seq uint64) bool {
 	return err == nil && b.Seq != seq
 }
 
-func (r replayRun) runFrom(b Base, hasBase bool) (State, CheckpointUse, error) {
+func (r *replayRun) runFrom(b Base, hasBase bool) (State, CheckpointUse, error) {
 	entries, err := os.ReadDir(r.eventsDir)
 	if err != nil {
 		return State{}, CheckpointUse{}, fmt.Errorf("eventlog: read %s: %w", r.eventsDir, err)
@@ -247,12 +290,8 @@ func (r replayRun) runFrom(b Base, hasBase bool) (State, CheckpointUse, error) {
 		return State{}, CheckpointUse{}, err
 	}
 	cp := r.findCheckpoint(c.last)
-	if cp.seq > 0 {
-		st = State{Tasks: map[string]Task{}}
-		if err = json.Unmarshal(cp.state, &st); err != nil {
-			return State{}, CheckpointUse{}, fmt.Errorf("eventlog: unmarshal checkpoint state: %w", err)
-		}
-		c.last, c.prev = cp.seq, cp.hash
+	if err = restoreCheckpoint(cp, &c); err != nil {
+		return State{}, CheckpointUse{}, err
 	}
 	if err = r.applySegments(looseRecords(entries), &c); err != nil {
 		return State{}, CheckpointUse{}, err
@@ -260,10 +299,41 @@ func (r replayRun) runFrom(b Base, hasBase bool) (State, CheckpointUse, error) {
 	if r.until > 0 {
 		return st, cp.use, r.checkUntil(c)
 	}
+	if r.checkpointEnd > 0 {
+		if err = r.applyToCheckpointEnd(entries, &c); err != nil {
+			return State{}, CheckpointUse{}, err
+		}
+		return st, cp.use, nil
+	}
 	if err = r.applyToHead(entries, &c); err != nil {
 		return State{}, CheckpointUse{}, err
 	}
+	r.headSeq = c.last
 	return st, cp.use, nil
+}
+
+// restoreCheckpoint replaces the cursor's state and position when a checkpoint was selected.
+func restoreCheckpoint(cp checkpointResult, c *cursor) error {
+	if cp.seq == 0 {
+		return nil
+	}
+	st := State{Tasks: map[string]Task{}}
+	if err := json.Unmarshal(cp.state, &st); err != nil {
+		return fmt.Errorf("eventlog: unmarshal checkpoint state: %w", err)
+	}
+	*c.state, c.last, c.prev = st, cp.seq, cp.hash
+	return nil
+}
+
+// applyToCheckpointEnd applies loose records and checks the checkpoint sequence without reading HEAD.
+func (r replayRun) applyToCheckpointEnd(entries []os.DirEntry, c *cursor) error {
+	if err := r.applyRecords(entries, c); err != nil {
+		return err
+	}
+	if c.last != r.checkpointEnd {
+		return fmt.Errorf("eventlog: replay to checkpoint seq %d ended at seq %d", r.checkpointEnd, c.last)
+	}
+	return nil
 }
 
 // applyToHead applies the record files in entries to c and checks that the last of them is
@@ -344,10 +414,31 @@ func (r replayRun) findCheckpoint(floor uint64) checkpointResult {
 		if !ok {
 			continue
 		}
+		if !r.acceptsCheckpointState(cpPath, cp.State, &use) {
+			continue
+		}
 		use.Seq = cp.Seq
 		return checkpointResult{seq: cp.Seq, hash: cp.Hash, state: cp.State, use: use}
 	}
 	return checkpointResult{use: use}
+}
+
+// acceptsCheckpointState checks the optional state predicate and records why a checkpoint is skipped.
+// Without a predicate, it accepts the checkpoint without decoding its state.
+func (r replayRun) acceptsCheckpointState(cpPath string, raw json.RawMessage, use *CheckpointUse) bool {
+	if r.accept == nil {
+		return true
+	}
+	st := State{Tasks: map[string]Task{}}
+	if err := json.Unmarshal(raw, &st); err != nil {
+		use.Skipped = append(use.Skipped, fmt.Sprintf("%s: unmarshal checkpoint state: %v", filepath.Base(cpPath), err))
+		return false
+	}
+	if !r.accept(st) {
+		use.Skipped = append(use.Skipped, fmt.Sprintf("%s: incompatible checkpoint state", filepath.Base(cpPath)))
+		return false
+	}
+	return true
 }
 
 func filterCheckpointSeqs(entries []os.DirEntry) []uint64 {
@@ -438,23 +529,31 @@ func (r replayRun) applySegments(loose map[uint64]string, c *cursor) error {
 		if seg.last <= c.last {
 			continue
 		}
-		if r.until > 0 && seg.first > r.until {
+		if (r.until > 0 && seg.first > r.until) || (r.checkpointEnd > 0 && seg.first > r.checkpointEnd) {
 			break
 		}
-		err := readSegment(r.eventsDir, seg, r.limits.MaxRecordBytes, func(seq uint64, data []byte) error {
-			if err := sameAsLoose(r.eventsDir, loose, seq, data, seg, r.limits.MaxRecordBytes); err != nil {
-				return err
-			}
-			if seq <= c.last {
-				return nil
-			}
-			return r.apply(c, seg.name, seq, data)
-		})
-		if err != nil {
+		if err := r.applySegment(seg, loose, c); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// applySegment checks for conflicting loose copies through the checkpoint boundary,
+// including copies of records already covered by the cursor.
+func (r replayRun) applySegment(seg segment, loose map[uint64]string, c *cursor) error {
+	return readSegment(r.eventsDir, seg, r.limits.MaxRecordBytes, func(seq uint64, data []byte) error {
+		if r.checkpointEnd > 0 && seq > r.checkpointEnd {
+			return nil
+		}
+		if err := sameAsLoose(r.eventsDir, loose, seq, data, seg, r.limits.MaxRecordBytes); err != nil {
+			return err
+		}
+		if seq <= c.last {
+			return nil
+		}
+		return r.apply(c, seg.name, seq, data)
+	})
 }
 
 // applyRecords applies the record files that lie after c.
@@ -467,24 +566,29 @@ func (r replayRun) applyRecords(entries []os.DirEntry, c *cursor) error {
 		if err != nil {
 			return err
 		}
-		if seq <= c.last {
+		if seq <= c.last || (r.checkpointEnd > 0 && seq > r.checkpointEnd) {
 			continue
 		}
-		if seq != c.last+1 {
-			return fmt.Errorf("eventlog: gap at seq %d file %s", c.last+1, entry.Name())
-		}
-		data, err := readFileBounded(filepath.Join(r.eventsDir, entry.Name()), r.limits.MaxRecordBytes)
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%w: seq %d file %s", errRecordMoved, seq, entry.Name())
-		}
-		if err != nil {
-			return err
-		}
-		if err = r.apply(c, entry.Name(), seq, data); err != nil {
+		if err = r.applyRecordFile(entry.Name(), seq, c); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// applyRecordFile checks for gaps before reading and marks a vanished file for stable replay to retry.
+func (r replayRun) applyRecordFile(name string, seq uint64, c *cursor) error {
+	if seq != c.last+1 {
+		return fmt.Errorf("eventlog: gap at seq %d file %s", c.last+1, name)
+	}
+	data, err := readFileBounded(filepath.Join(r.eventsDir, name), r.limits.MaxRecordBytes)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: seq %d file %s", errRecordMoved, seq, name)
+	}
+	if err != nil {
+		return err
+	}
+	return r.apply(c, name, seq, data)
 }
 
 // apply verifies data as record seq after c and runs the reducer on it. name is the record

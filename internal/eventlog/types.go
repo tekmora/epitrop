@@ -133,6 +133,31 @@ type UnitNote struct {
 	At   string `json:"at"`
 }
 
+// RankTerms holds the four observed inputs to the frontier comparator.
+type RankTerms struct {
+	ElapsedSeconds int64 `json:"elapsed_seconds"` // Whole seconds ready through the last log record.
+	Progress       int   `json:"progress"`        // Unfinished transitive dependants.
+	Cost           int   `json:"cost"`            // Observed transitions into work statuses.
+	Confident      bool  `json:"confident"`       // All history of this node was available.
+}
+
+// RankSelection records the selected row's observed terms at the source prefix.
+type RankSelection struct {
+	Mode             string    `json:"mode"`
+	AlgorithmVersion string    `json:"algorithm_version"`
+	LogPosition      uint64    `json:"log_position"`
+	Terms            RankTerms `json:"terms"`
+}
+
+// UnitAssignment is the original assignment, including the actor and lane before
+// any later updates to the unit. Older assignments have no selection evidence.
+type UnitAssignment struct {
+	Node      string         `json:"node"`
+	Lane      string         `json:"lane"`
+	By        string         `json:"by,omitempty"`
+	Selection *RankSelection `json:"selection,omitempty"`
+}
+
 // Unit is one work unit of the run record. Lane, Target, ResolvedModel, Branch, Identity
 // and IdentityKey carry the names and meanings of Praetor's run identity, so both records
 // join without a mapping; Identity is stored as given and IdentityKey is never recomputed.
@@ -156,6 +181,8 @@ type Unit struct {
 	// Node is the task graph node the unit was assigned from; empty for a unit recorded
 	// without an assignment.
 	Node string `json:"node,omitempty"`
+	// Assignment preserves the decision that opened this run.
+	Assignment *UnitAssignment `json:"assignment,omitempty"`
 	// Released says why an assigned unit was given back to the graph.
 	Released *UnitRelease `json:"released,omitempty"`
 }

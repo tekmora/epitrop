@@ -73,7 +73,7 @@ func (s *Service) ReplayCheckpointed(ctx context.Context) (eventlog.State, event
 	} else if err != nil {
 		return eventlog.State{}, eventlog.CheckpointUse{}, fmt.Errorf("units: stat %s: %w", events, err)
 	}
-	st, use, err := eventlog.ReplayCheckpointedStable(ctx, s.dir, s.signer.PublicKey(), s.limits, FoldName, UnitReducer)
+	st, use, err := s.replayUnits(ctx)
 	if err != nil {
 		return eventlog.State{}, eventlog.CheckpointUse{}, err
 	}
@@ -92,8 +92,39 @@ func (s *Service) replayRaw(ctx context.Context) (eventlog.State, error) {
 	} else if err != nil {
 		return eventlog.State{}, fmt.Errorf("units: stat %s: %w", events, err)
 	}
-	st, _, err := eventlog.ReplayCheckpointedStable(ctx, s.dir, s.signer.PublicKey(), s.limits, FoldName, UnitReducer)
+	st, _, err := s.replayUnits(ctx)
 	return st, err
+}
+
+// RebuildAssignmentCheckpoint repairs a legacy units checkpoint from verified
+// local history under the event-log lock. It does not append an event or change
+// normal read and checked-append replay policy.
+func (s *Service) RebuildAssignmentCheckpoint(ctx context.Context) error {
+	writer, err := eventlog.Open(s.dir, s.signer, s.limits)
+	if err != nil {
+		return err
+	}
+	return writer.RebuildCheckpoint(ctx, FoldName, UnitReducer, hasAssignmentEvidence)
+}
+
+// replayUnits uses the same checkpoint policy for public reads and checked appends.
+func (s *Service) replayUnits(ctx context.Context) (eventlog.State, eventlog.CheckpointUse, error) {
+	return eventlog.ReplayCheckpointedStableAccepting(ctx, s.dir, s.signer.PublicKey(), s.limits, FoldName, UnitReducer, hasAssignmentEvidence)
+}
+
+// hasAssignmentEvidence rejects snapshots that kept the assigned node but not the
+// original assignment. Manual units have no node, and unranked assignments are valid.
+// Replay can recover evidence only from retained records or a base that preserved it.
+// If old compaction discarded the records and the base lacks the evidence, local
+// replay cannot recover it. The current lane and actor may have been edited, so do
+// not use them to guess the original assignment.
+func hasAssignmentEvidence(st eventlog.State) bool {
+	for _, u := range st.Units {
+		if u.Node != "" && u.Assignment == nil {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) handleDivergence(ctx context.Context, div *eventlog.Divergence) error {
@@ -102,9 +133,15 @@ func (s *Service) handleDivergence(ctx context.Context, div *eventlog.Divergence
 		return fmt.Errorf("units: marshal log.diverged: %w", err)
 	}
 	_, _, _, err = s.appendCheckedRecord(ctx, func(eventlog.State) (eventlog.Event, error) {
-		// The rename runs under the log's lock. A second replay that saw the same checkpoint
-		// before the first one renamed it finds the file gone and appends nothing, so the
-		// divergence is logged once.
+		// The original observation was made without the lock. Recheck it under
+		// the append lock so a replacement or compaction cannot make the rename stale.
+		_, use, replayErr := s.replayUnits(ctx)
+		if replayErr != nil {
+			return eventlog.Event{}, replayErr
+		}
+		if use.Diverged == nil || use.Diverged.File != div.File || use.Diverged.Checkpoint != div.Checkpoint {
+			return eventlog.Event{}, errDivergenceLogged
+		}
 		refused := div.File + ".refused"
 		if renErr := os.Rename(div.File, refused); os.IsNotExist(renErr) {
 			return eventlog.Event{}, errDivergenceLogged
@@ -423,7 +460,8 @@ func (s *Service) Resume(ctx context.Context) ([]ResumeRow, int, error) {
 			evidence = u.Evidence.Path
 		}
 		rows = append(rows, ResumeRow{ID: u.ID, Status: u.Status, UpdatedAt: u.UpdatedAt, Worktree: u.Worktree,
-			Branch: u.Branch, PR: u.PR, Lane: u.Lane, Relaunch: relaunch, Evidence: evidence})
+			Branch: u.Branch, PR: u.PR, Lane: u.Lane, Relaunch: relaunch, Evidence: evidence,
+			Node: u.Node, By: u.By, Assignment: u.Assignment})
 	}
 	return rows, st.UnitRecordsIgnored, nil
 }

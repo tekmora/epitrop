@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -32,21 +33,22 @@ var (
 var unitsStdin io.Reader = os.Stdin
 
 var unitsCommands = map[string]func([]string) error{
-	"set":      runUnitsSet,
-	"resume":   runUnitsResume,
-	"show":     runUnitsShow,
-	"note":     runUnitsNote,
-	"inbox":    runUnitsInbox,
-	"preempt":  runUnitsPreempt,
-	"handover": runUnitsHandover,
-	"frontier": runUnitsFrontier,
-	"assign":   runUnitsAssign,
-	"release":  runUnitsRelease,
+	"set":                runUnitsSet,
+	"resume":             runUnitsResume,
+	"show":               runUnitsShow,
+	"note":               runUnitsNote,
+	"inbox":              runUnitsInbox,
+	"preempt":            runUnitsPreempt,
+	"handover":           runUnitsHandover,
+	"frontier":           runUnitsFrontier,
+	"assign":             runUnitsAssign,
+	"release":            runUnitsRelease,
+	"rebuild-checkpoint": runUnitsRebuildCheckpoint,
 }
 
 func runUnits(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("units command required: set, resume, show, note, inbox, preempt, handover, frontier, assign, or release")
+		return fmt.Errorf("units command required: set, resume, show, note, inbox, preempt, handover, frontier, assign, release, or rebuild-checkpoint")
 	}
 	if fn, ok := unitsCommands[args[0]]; ok {
 		return fn(args[1:])
@@ -90,6 +92,36 @@ func unitsCall(fs *flag.FlagSet, args []string, need ...string) (*units.Service,
 		return nil, nil, nil, nil, err
 	}
 	return svc, pos, ctx, cancel, nil
+}
+
+// runUnitsRebuildCheckpoint repairs a legacy assignment snapshot without appending.
+func runUnitsRebuildCheckpoint(args []string) error {
+	fs := flag.NewFlagSet("units rebuild-checkpoint", flag.ContinueOnError)
+	var usageErr error
+	fs.Usage = func() { usageErr = printUnitsRebuildUsage(fs) }
+	svc, pos, ctx, cancel, err := unitsCall(fs, args)
+	if err != nil {
+		if usageErr != nil {
+			return errors.Join(err, usageErr)
+		}
+		return err
+	}
+	defer cancel()
+	if len(pos) != 0 {
+		return fmt.Errorf("units rebuild-checkpoint: unexpected argument %q", pos[0])
+	}
+	return svc.RebuildAssignmentCheckpoint(ctx)
+}
+
+// printUnitsRebuildUsage writes the repair synopsis before the flag defaults.
+func printUnitsRebuildUsage(fs *flag.FlagSet) error {
+	const synopsis = "Usage: epitropctl units rebuild-checkpoint --config FILE\n" +
+		"Recover original assignment evidence from retained signed history. Does not append events or rewrite a compacted base. A current or absent usable checkpoint is a no-op.\n"
+	if _, err := io.WriteString(fs.Output(), synopsis); err != nil {
+		return fmt.Errorf("units rebuild-checkpoint: print usage: %w", err)
+	}
+	fs.PrintDefaults()
+	return nil
 }
 
 type unitsSetFlags struct {
@@ -196,6 +228,7 @@ func readIdentity(path string) (json.RawMessage, error) {
 	return json.RawMessage(strings.TrimSpace(string(body))), nil
 }
 
+// runUnitsResume prints open units in the eight-column resume table.
 func runUnitsResume(args []string) error {
 	fs := flag.NewFlagSet("units resume", flag.ContinueOnError)
 	svc, _, ctx, cancel, err := unitsCall(fs, args)
@@ -208,22 +241,36 @@ func runUnitsResume(args []string) error {
 		return err
 	}
 	if ignored > 0 {
-		fmt.Fprintf(os.Stderr, "units: replay did not apply %d unit records that broke a rule (see units.UnitReducer)\n", ignored)
-	}
-	fmt.Println("id\tstatus\tupdated_at\tworktree\tbranch\tpr\tlane\trelaunch")
-	for i := 0; i < len(rows); i++ {
-		r := rows[i]
-		relaunch := r.Relaunch
-		if r.Status == "implementing" && filepath.Base(r.Evidence) == slot.StartFile {
-			dir := filepath.Dir(r.Evidence)
-			start, readErr := slot.ReadStart(dir)
-			if readErr != nil {
-				relaunch = fmt.Sprintf("no: start file unreadable: %v", readErr)
-			} else {
-				relaunch = fmt.Sprintf("no: take up with slot resume --out %s (job %s, workspace %s)", dir, start.Job, start.Workspace)
-			}
+		if _, err := fmt.Fprintf(os.Stderr, "units: replay did not apply %d unit records that broke a rule (see units.UnitReducer)\n", ignored); err != nil {
+			return fmt.Errorf("units resume: print replay warning: %w", err)
 		}
-		fmt.Printf("%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", r.ID, r.Status, r.UpdatedAt, r.Worktree, r.Branch, r.PR, r.Lane, relaunch)
+	}
+	if _, err := fmt.Println("id\tstatus\tupdated_at\tworktree\tbranch\tpr\tlane\trelaunch"); err != nil {
+		return fmt.Errorf("units resume: print header: %w", err)
+	}
+	for i := 0; i < len(rows); i++ {
+		if err := printResumeRow(rows[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// printResumeRow directs implementing units with a slot start file to slot resume.
+func printResumeRow(r units.ResumeRow) error {
+	relaunch := r.Relaunch
+	if r.Status == "implementing" && filepath.Base(r.Evidence) == slot.StartFile {
+		dir := filepath.Dir(r.Evidence)
+		start, readErr := slot.ReadStart(dir)
+		if readErr != nil {
+			relaunch = fmt.Sprintf("no: start file unreadable: %v", readErr)
+		} else {
+			relaunch = fmt.Sprintf("no: take up with slot resume --out %s (job %s, workspace %s)", dir, start.Job, start.Workspace)
+		}
+	}
+	if _, err := fmt.Printf("%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+		r.ID, r.Status, r.UpdatedAt, r.Worktree, r.Branch, r.PR, r.Lane, relaunch); err != nil {
+		return fmt.Errorf("units resume: print row: %w", err)
 	}
 	return nil
 }
@@ -243,7 +290,9 @@ func runUnitsShow(args []string) error {
 	if err != nil {
 		return fmt.Errorf("units show: marshal: %w", err)
 	}
-	fmt.Println(string(body))
+	if _, err := fmt.Println(string(body)); err != nil {
+		return fmt.Errorf("units show: print: %w", err)
+	}
 	return nil
 }
 

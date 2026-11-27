@@ -1,7 +1,9 @@
 package score
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand/v2"
 	"reflect"
 	"slices"
@@ -9,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golusoris/golusoris/core/clock"
+	corereceipt "github.com/golusoris/golusoris/core/crypto/receipt"
 	"github.com/tekmora/epitrop/internal/eventlog"
 	"github.com/tekmora/epitrop/internal/graph"
 	"github.com/tekmora/epitrop/internal/graphlog"
@@ -473,5 +477,100 @@ func TestRankNilFacts(t *testing.T) {
 	_, err := Rank(eventlog.State{}, nil)
 	if err == nil {
 		t.Fatalf("Rank(nil) = nil error, want error")
+	}
+}
+
+// retryGraph creates one signed prefix with a completed claim/release cycle.
+func retryGraph(t *testing.T, ctx context.Context) (*graphlog.Service, *eventlog.Writer) {
+	t.Helper()
+	clk := clock.NewFake()
+	signer, err := corereceipt.NewSignerFromSeed(make([]byte, 32), clk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	limits := eventlog.Limits{Clock: clk}
+	svc, err := graphlog.NewService(dir, signer, clk, limits, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, err := eventlog.Open(dir, signer, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.Commit(ctx, []graph.Event{addNode("s"), setStatus("s", graph.StatusReady)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.Assign(ctx, "r", "lane", "s", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.Release(ctx, "s", "retry", ""); err != nil {
+		t.Fatal(err)
+	}
+	return svc, log
+}
+
+// moveHeadOnRelease appends a tick while the reader still has the old directory listing.
+func moveHeadOnRelease(ctx context.Context, log *eventlog.Writer, reduce eventlog.Reducer) eventlog.Reducer {
+	return func(st eventlog.State, rec eventlog.Record) (eventlog.State, error) {
+		if rec.Type == units.ReleasedType {
+			if _, err := log.Append(ctx, eventlog.Event{Type: "log.tick"}); err != nil {
+				return eventlog.State{}, err
+			}
+		}
+		return reduce(st, rec)
+	}
+}
+
+// TestGraphReplayDiscardsFailedAttemptFacts advances HEAD after the first attempt has
+// folded the release. Reusing that attempt's reducer counts the same claim twice.
+func TestGraphReplayDiscardsFailedAttemptFacts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	svc, log := retryGraph(t, ctx)
+	reader, ok := any(svc).(interface {
+		ReplayGraph(context.Context, func() eventlog.Reducer) (eventlog.State, uint64, error)
+	})
+	if !ok {
+		t.Fatal("graph replay does not return the source prefix and support fresh observations per attempt")
+	}
+	var f *Facts
+	attempts := 0
+	st, seq, err := reader.ReplayGraph(ctx, func() eventlog.Reducer {
+		attempts++
+		f = NewFacts()
+		if attempts == 1 {
+			return moveHeadOnRelease(ctx, log, f.Reducer())
+		}
+		return f.Reducer()
+	})
+	if err != nil || seq != 4 || attempts != 2 {
+		t.Fatalf("replay seq %d in %d attempts: %v", seq, attempts, err)
+	}
+	rows, err := Rank(st, f)
+	if err != nil || len(rows) != 1 || rows[0].Terms.Cost != 1 {
+		t.Fatalf("rank after retry = %+v, %v; want a single observed claim", rows, err)
+	}
+}
+
+// TestRankedAssignmentRejectsMalformedEvidence plants malformed selection metadata on
+// a valid legacy payload. Both folds must reject the same record before applying it.
+func TestRankedAssignmentRejectsMalformedEvidence(t *testing.T) {
+	for _, selection := range []string{
+		`{"mode":"unknown","algorithm_version":"v1","log_position":1,"terms":{}}`,
+		`{"mode":"named","algorithm_version":"","log_position":1,"terms":{}}`,
+		`{"mode":"next","algorithm_version":"v1","log_position":0,"terms":{}}`,
+		`{"mode":"next","algorithm_version":"v1","log_position":2,"terms":{}}`,
+		`{"mode":"next","algorithm_version":"v1","log_position":1,"terms":{"cost":-1}}`,
+		`{"mode":"next","algorithm_version":"v1","log_position":1,"terms":{"elapsed_seconds":-1}}`,
+		`{"mode":"next","algorithm_version":"v1","log_position":1,"terms":{"progress":-1}}`,
+	} {
+		body := fmt.Sprintf(`{"node":"s","lane":"l","selection":%s}`, selection)
+		rec := eventlog.Record{Seq: 2, TaskID: "r:s", Type: units.AssignedType, Payload: json.RawMessage(body)}
+		for _, reduce := range []eventlog.Reducer{units.UnitReducer, graphlog.Reducer} {
+			if _, err := reduce(eventlog.State{}, rec); err == nil {
+				t.Fatalf("accepted malformed selection %s", selection)
+			}
+		}
 	}
 }

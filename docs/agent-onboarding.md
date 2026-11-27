@@ -56,7 +56,7 @@ Call models only through the router alias `cordana/auto`, the one alias the flee
 - `internal/supervisor`: declared background jobs, RT-03 sandboxed runner, lock-backed liveness, Linux shim death orphan prevention, replay-based re-adoption and per-job record counts, interruptions and supervisor stops included (`Supervisor.History`, `epitropctl jobs history`).
 - `internal/egressproxy`: the way out of a job with `sandbox.network: proxy` ([ADR-0006](adr/0006-proxy-socket-egress.md)). The shim runs a CONNECT proxy on a Unix socket outside the sandbox; it reaches the job's declared `sandbox.destinations` and nothing else. Inside the sandbox a relay carries the job's proxy requests to that socket: the hidden `epitropctl __egress-relay`, which the sandbox starts and nobody starts by hand.
 - `internal/releasewatch`: upstream release watch (`epitropctl watch run|seed`), run as a sandboxed job; files one issue per new release in the consuming repository. `--github-base`, `--huggingface-base` and `--ntfy-base` point it at local stand-ins; `GITHUB_TOKEN` goes to the `--github-base` host when one is given.
-- `internal/units`: the run record (`epitropctl units set|resume|show|note|inbox|preempt|handover|frontier|assign|release`): one entry per work unit and status in the signed log, on the task graph's status vocabulary; a relaunch verdict after a crash; an inbox read at the next status record. `units set --evidence="<path> sha256:<hex> lines:<n>"` records where the proof of a unit's result lies; the pointer stays on the unit until a new one replaces it, and `units show` prints it. `units preempt <id> --reason=… [--by=…]` halts work at the next safe point and records why. `units handover --repo=<repository> [--answers=<file>] [--resume-out=<file>]` hands one repository to the next session: its open units, the decisions their last runs asked for that the answers file does not hold, and the unread notes, without marking anything read; `--resume-out` writes the same as a slot's resume note. `units frontier` prints the graph nodes a slot may take next: units that are `ready` and whose every dependency has landed. `units assign --repo=<repository> --lane=<lane> [--by=…] <node>` takes one of them: one record moves the node to `claimed` and opens the unit `<repository>:<node>` as `claimed`, so `slot run` can start it. `units release --reason=… [--by=…] <node>` gives a claimed node back to `ready` and drops its unit with the reason.
+- `internal/units`: the run record (`epitropctl units set|resume|show|note|inbox|preempt|handover|frontier|assign|release`): one entry per work unit and status in the signed log, on the task graph's status vocabulary; a relaunch verdict after a crash; an inbox read at the next status record. `units set --evidence="<path> sha256:<hex> lines:<n>"` records where the proof of a unit's result lies; the pointer stays on the unit until a new one replaces it, and `units show` prints it. `units preempt <id> --reason=… [--by=…]` halts work at the next safe point and records why. `units handover --repo=<repository> [--answers=<file>] [--resume-out=<file>]` hands one repository to the next session: its open units, the decisions their last runs asked for that the answers file does not hold, and the unread notes, without marking anything read; `--resume-out` writes the same as a slot's resume note. See [Choose a unit](#choose-a-unit) for the ranked frontier and the two assignment modes. `units release --reason=… [--by=…] <node>` gives a claimed node back to `ready` and drops its unit with the reason.
 - `internal/graphlog`: the task graph in the signed log (`epitropctl graph show|apply`). `graph apply --config=file --file=stage.json` commits one staged change, a document `{"ops": [...]}` of `graph.node_added`, `graph.edge_added`, `graph.node_removed`, `graph.edge_removed` and `graph.status_changed` operations, as one record; a stage the graph refuses (a cycle, a chain deeper than `graph.max_depth`, a status no node may take) changes nothing. `graph show --config=file` prints the graph rebuilt from the log alone.
 - `internal/effects`: the side-effect ledger of RT-02 (`epitropctl effects list|resolve`). `Ledger.Do` runs an outbound side effect at most once per key of task id and action type and records it in the signed log; a second delivery is skipped and recorded. `effects list --config=file` prints every effect with its state; a claim that never ended or failed is open and blocks its key. `effects resolve --config=file --outcome=done|retry --by=<name> [--note=<text>] <task id> <action type>` records what became of it.
 - `internal/broker`: the in-process broker ([#9](https://github.com/tekmora/epitrop/issues/9)). Fan-out runs through golusoris `realtime/pubsub`; each subscriber has a queue of fixed capacity (1 to `MaxCapacity`, HISS-06). A publish that would overflow any subscriber's queue reaches none of them and returns `ErrFull`, which `Retryable` reports as worth retrying. `DeadLetters` classifies a failed attempt: the first class in set order with a matching signature (RE2, multi-line) takes it, and the one fallback class without signatures takes the rest. A class grants at most one retry (`MaxRetries`); a failure past it waits in the class's own bounded queue, and a full one refuses it with `ErrFull`. The `broker` config block sizes both and declares the class set (`config.DeadLetterConfig.Specs`, the declared classes in order, then the fallback); `Load` builds them through `broker.New` and `broker.NewDeadLetters`, so the config refuses what the broker would, and the schema's bounds are the package's constants. `Log` publishes log-first ([#258](https://github.com/tekmora/epitrop/issues/258), ADR-0004): under the broker's lock it checks every queue for room, appends the event to `internal/eventlog`, then delivers the signed record, so a refused publish appends nothing and a failed append reaches nobody. The topic is the event's type. `Log.SubscribeFrom` resumes a subscriber after the last seq it saw: it subscribes, then reads the records after that seq with `eventlog.ReplayAfter`, and `Resumed.Next` hands out the replayed records of the topic first and then the live ones, dropping a live copy of a replayed record. A cursor that a compaction passed fails with `eventlog.ErrCursorCompacted`. `Tail` feeds a broker from a log that other processes write ([#278](https://github.com/tekmora/epitrop/issues/278)): its first `Poll` takes the seq in `HEAD.json` (`eventlog.HeadSeq`) as its position, and each later one publishes the records after it in seq order, moving the position under the broker's lock as each is delivered, and stops at the first `ErrFull`. `Tail.Resume` subscribes and reads the position under that lock, replays the records between the cursor and the position, and takes the rest live, so no record comes twice or goes missing. `epitrop-server` serves `/events` from it.
@@ -67,6 +67,53 @@ Call models only through the router alias `cordana/auto`, the one alias the flee
 - `internal/logsetup`: the one way a binary opens the shared event log (signer, limits, the units service with Git recording and compaction as configured, the effect ledger); `epitropctl` and `epitrop-server` both use it.
 - `REUSE.toml`, `LICENSES/`: licensing (EUPL-1.2).
 - `docs/`: these documents.
+
+## Choose a unit
+
+Use `epitropctl units frontier --config config.json` to list eligible units in rank order. Each line contains the ID, a tab and the quoted title. A unit is eligible when it is ready and every direct dependency has landed. Reading the list takes no unit.
+
+Add `--json` to read the comparator version, the verified sequence of the last log record and the ordered rows. An empty frontier has `"rows":[]`. Before the first append, `log_position` is zero.
+
+```json
+{
+  "algorithm_version": "v1",
+  "log_position": 12,
+  "rows": [
+    {
+      "id": "z",
+      "title": "Task z",
+      "terms": {"progress": 2, "cost": 0, "elapsed_seconds": 0, "confident": true}
+    }
+  ]
+}
+```
+
+Version `v1` orders by most unfinished transitive dependants, fewest observed transitions into claimed, implementing, review or fix rounds, longest time ready in whole seconds, then confidence (true first) and lexical ID. Elapsed time ends at the last record. For a node inherited from a compaction base, confidence is false and only the visible history contributes to elapsed time and cost.
+
+Choose one assignment form. Both commands open the selected unit as `claimed` in the same record that claims its graph node.
+
+```sh
+epitropctl units assign --config config.json --repo example/project --lane build --by slot-1 --next
+epitropctl units assign --config config.json --repo example/project --lane build --by slot-1 b
+```
+
+`--next` takes the first row. A named node may be any eligible row. An empty frontier refuses `--next`. If another writer advances the log before the claim, the command exits 75 without appending. Rerun the command to select from the new head.
+
+`units resume` lists open units with the relaunch verdict in the final column. Pass the ID from the first column to `units show <id>` to read the original `assignment` object. It records the node, lane, optional actor (`by`) and the `selection` fields `mode` (`next` or `named`), `algorithm_version`, `log_position` and `terms`. Later changes to the unit's actor or lane preserve this assignment. Older assignment events have no recorded rank.
+
+### Repair a legacy assignment checkpoint
+
+A legacy units checkpoint may retain a unit's node but omit its original `assignment` object. Units replay rejects that snapshot. Missing rank alone is not a symptom: older unranked assignments are valid.
+
+```sh
+epitropctl units rebuild-checkpoint --config FILE
+```
+
+This repairs the newest usable checkpoint in place, replaying verified local history from genesis or a signed compaction base only through that checkpoint. It appends no events and does not rewrite the base. Replay is limited by `MaxReplayRecords`, the rebuilt snapshot by `MaxRecordBytes`, and the CLI uses a 30-second context. If retained history cannot reconstruct the assignment—for example, compaction removed the original records and the base lacks the evidence—the command returns an error without replacing the checkpoint. It does not guess from the unit's current lane or actor.
+
+If repair hits `event_log.max_replay_records`, raise it in `FILE` enough to cover both the authenticated prefix through the checkpoint and the raw entry count in `events/segments`, but no higher than `1000000`, and retry. After repair, reads must fit both the replay suffix and the raw directory entry count within the cap. `listSegments` counts entries before applying its `after` filter, so an original cap of `1` with two retained segment directory entries makes reads fail even when the replay suffix is empty. Do not raise the production default or disable validation.
+
+Rerun after a transient lock failure. Rerunning after success is a no-op if the newest usable checkpoint is still current; no usable checkpoint is also a no-op. To confirm recovery, run `epitropctl units show --config FILE <id>` for an affected unit and verify that it reports the original assignment; a no-op alone does not confirm recovery. If both read constraints fit the previous cap, restore it and run the same check with the restored config. If either constraint requires a higher cap, keep a value that covers both and verify the read with that config. If the verified original assignment cannot be reconstructed from retained history, repair is unrecoverable from that history: neither raising the cap nor retrying can recover the missing evidence.
 
 ## Workflow
 
