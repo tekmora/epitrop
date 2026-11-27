@@ -237,14 +237,14 @@ func checkpointRebuildReducer(ctx context.Context, reducer Reducer) Reducer {
 
 // verifyCheckpointRebuildBoundary checks the replay budget and HEAD boundary.
 func (r *replayRun) verifyCheckpointRebuildBoundary(baseSeq, seq uint64, hash string) error {
-	cap := r.limits.MaxReplayRecords
-	if cap < 0 {
-		return fmt.Errorf("eventlog: negative max replay records %d rebuilding checkpoint seq %d", cap, seq)
+	maxRecords := r.limits.MaxReplayRecords
+	if maxRecords < 0 {
+		return fmt.Errorf("eventlog: negative max replay records %d rebuilding checkpoint seq %d", maxRecords, seq)
 	}
 	if seq < baseSeq {
 		return fmt.Errorf("eventlog: checkpoint seq %d precedes base seq %d", seq, baseSeq)
 	}
-	if seq-baseSeq > uint64(cap) {
+	if seq-baseSeq > uint64(maxRecords) {
 		return fmt.Errorf("eventlog: max replay records %d exceeded rebuilding checkpoint seq %d", r.limits.MaxReplayRecords, seq)
 	}
 	h, hasHead, err := r.readHead()
