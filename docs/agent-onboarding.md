@@ -111,7 +111,9 @@ epitropctl units rebuild-checkpoint --config FILE
 
 This repairs the newest usable checkpoint in place, replaying verified local history from genesis or a signed compaction base only through that checkpoint. It appends no events and does not rewrite the base. Replay is limited by `MaxReplayRecords`, the rebuilt snapshot by `MaxRecordBytes`, and the CLI uses a 30-second context. If retained history cannot reconstruct the assignment—for example, compaction removed the original records and the base lacks the evidence—the command returns an error without replacing the checkpoint. It does not guess from the unit's current lane or actor.
 
-Rerun after a transient lock failure. Rerunning after success is a no-op if the newest usable checkpoint is still current; no usable checkpoint is also a no-op. Retrying with the same insufficient history cannot recover the missing evidence.
+If repair exceeds the replay record cap, temporarily set `event_log.max_replay_records` in `FILE` high enough to replay the authenticated prefix through the checkpoint, but no higher than `1000000`, and retry. Restore the previous value only if the remaining suffix fits within that limit. Do not raise the production default or disable validation.
+
+Rerun after a transient lock failure. Rerunning after success is a no-op if the newest usable checkpoint is still current; no usable checkpoint is also a no-op. Confirm recovery with `epitropctl units show` using the same config for an affected unit and verify that it reports the original assignment; a no-op alone does not confirm recovery. If the verified original assignment cannot be reconstructed from retained history, repair is unrecoverable from that history: neither raising the cap nor retrying can recover the missing evidence.
 
 ## Workflow
 

@@ -527,13 +527,20 @@ func TestUnitsRebuildCheckpoint(t *testing.T) {
 	if err := publishStale(); err != nil {
 		t.Fatal(err)
 	}
+	assertUnitsCheckpointUnchanged(t, repaired, readUnitsCheckpoint(t, f.dir, 2), "delayed publication changed the repaired checkpoint")
 	if err := runUnits(args); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(repaired, readUnitsCheckpoint(t, f.dir, 2)) {
-		t.Fatal("delayed publication or repeated repair changed the repaired checkpoint")
-	}
+	assertUnitsCheckpointUnchanged(t, repaired, readUnitsCheckpoint(t, f.dir, 2), "repeated repair changed the repaired checkpoint")
 	checkUnitsRebuildResult(t, f, svc, id)
+}
+
+// assertUnitsCheckpointUnchanged fails if the checkpoint bytes differ.
+func assertUnitsCheckpointUnchanged(t *testing.T, want, got []byte, message string) {
+	t.Helper()
+	if !bytes.Equal(want, got) {
+		t.Fatal(message)
+	}
 }
 
 // staleUnitsCheckpointPublisher captures the legacy state and its signed boundary
