@@ -73,7 +73,7 @@ func (s *Service) ReplayCheckpointed(ctx context.Context) (eventlog.State, event
 	} else if err != nil {
 		return eventlog.State{}, eventlog.CheckpointUse{}, fmt.Errorf("units: stat %s: %w", events, err)
 	}
-	st, use, err := eventlog.ReplayCheckpointedStable(ctx, s.dir, s.signer.PublicKey(), s.limits, FoldName, UnitReducer)
+	st, use, err := s.replayUnits(ctx)
 	if err != nil {
 		return eventlog.State{}, eventlog.CheckpointUse{}, err
 	}
@@ -92,8 +92,28 @@ func (s *Service) replayRaw(ctx context.Context) (eventlog.State, error) {
 	} else if err != nil {
 		return eventlog.State{}, fmt.Errorf("units: stat %s: %w", events, err)
 	}
-	st, _, err := eventlog.ReplayCheckpointedStable(ctx, s.dir, s.signer.PublicKey(), s.limits, FoldName, UnitReducer)
+	st, _, err := s.replayUnits(ctx)
 	return st, err
+}
+
+// replayUnits uses the same checkpoint policy for public reads and checked appends.
+func (s *Service) replayUnits(ctx context.Context) (eventlog.State, eventlog.CheckpointUse, error) {
+	return eventlog.ReplayCheckpointedStableAccepting(ctx, s.dir, s.signer.PublicKey(), s.limits, FoldName, UnitReducer, hasAssignmentEvidence)
+}
+
+// hasAssignmentEvidence rejects snapshots that kept the assigned node but not the
+// original assignment. Manual units have no node, and unranked assignments are valid.
+// Replay can recover evidence only from retained records or a base that preserved it.
+// If old compaction discarded the records and the base lacks the evidence, local
+// replay cannot recover it. The current lane and actor may have been edited, so do
+// not use them to guess the original assignment.
+func hasAssignmentEvidence(st eventlog.State) bool {
+	for _, u := range st.Units {
+		if u.Node != "" && u.Assignment == nil {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) handleDivergence(ctx context.Context, div *eventlog.Divergence) error {

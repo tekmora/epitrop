@@ -156,7 +156,13 @@ func (s *Service) Commit(ctx context.Context, ops []graph.Event) (graph.Snapshot
 
 // writableAt checks the configured depth and returns the exact graph prefix checked.
 func (s *Service) writableAt(ctx context.Context) (*graph.Graph, uint64, error) {
-	st, seq, err := s.ReplayGraph(ctx, func() eventlog.Reducer { return Reducer })
+	return s.writableAtWith(ctx, func() eventlog.Reducer { return Reducer })
+}
+
+// writableAtWith checks the configured depth while letting a caller observe the same
+// verified replay that supplies the graph and its log position.
+func (s *Service) writableAtWith(ctx context.Context, newReducer func() eventlog.Reducer) (*graph.Graph, uint64, error) {
+	st, seq, err := s.ReplayGraph(ctx, newReducer)
 	if err != nil {
 		return nil, 0, err
 	}

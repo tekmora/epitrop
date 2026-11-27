@@ -83,8 +83,14 @@ type replayCheckpointedResult struct {
 
 // ReplayCheckpointedStable is ReplayCheckpointed with the same retry helper as ReplayStable.
 func ReplayCheckpointedStable(ctx context.Context, dir string, pubKeyHex string, limits Limits, name string, reducer Reducer) (State, CheckpointUse, error) {
+	return ReplayCheckpointedStableAccepting(ctx, dir, pubKeyHex, limits, name, reducer, nil)
+}
+
+// ReplayCheckpointedStableAccepting skips checkpoints for which accept returns false.
+// A nil accept uses all valid checkpoints. The predicate does not apply to compacted bases.
+func ReplayCheckpointedStableAccepting(ctx context.Context, dir string, pubKeyHex string, limits Limits, name string, reducer Reducer, accept func(State) bool) (State, CheckpointUse, error) {
 	res, err := retryStable(ctx, stableBudget(limits), func() (replayCheckpointedResult, error) {
-		st, use, rErr := ReplayCheckpointed(ctx, dir, pubKeyHex, limits, name, reducer)
+		st, use, rErr := replayCheckpointed(ctx, dir, pubKeyHex, limits, name, reducer, accept)
 		return replayCheckpointedResult{state: st, use: use}, rErr
 	})
 	return res.state, res.use, err
@@ -176,6 +182,11 @@ func replayFoldAt(ctx context.Context, dir string, pubKeyHex string, limits Limi
 // replay if none. name also names the reducer's fold: on a compacted log a replay without a
 // checkpoint past the base starts from the fold's state in the base.
 func ReplayCheckpointed(ctx context.Context, dir string, pubKeyHex string, limits Limits, name string, reducer Reducer) (State, CheckpointUse, error) {
+	return replayCheckpointed(ctx, dir, pubKeyHex, limits, name, reducer, nil)
+}
+
+// replayCheckpointed configures replay with an optional checkpoint state predicate.
+func replayCheckpointed(ctx context.Context, dir string, pubKeyHex string, limits Limits, name string, reducer Reducer, accept func(State) bool) (State, CheckpointUse, error) {
 	if err := readyContext(ctx, "replay"); err != nil {
 		return State{}, CheckpointUse{}, err
 	}
@@ -197,6 +208,7 @@ func ReplayCheckpointed(ctx context.Context, dir string, pubKeyHex string, limit
 		reducer:        reducer,
 		name:           name,
 		fold:           name,
+		accept:         accept,
 	}
 	return r.run()
 }
@@ -209,6 +221,7 @@ type replayRun struct {
 	limits         Limits
 	reducer        Reducer
 	name           string
+	accept         func(State) bool
 	// fold names the reducer's state in the base of a compacted log; "" has none.
 	fold string
 	// until, when set, ends the replay after that seq, which a segment must end at; the
@@ -372,10 +385,31 @@ func (r replayRun) findCheckpoint(floor uint64) checkpointResult {
 		if !ok {
 			continue
 		}
+		if !r.acceptsCheckpointState(cpPath, cp.State, &use) {
+			continue
+		}
 		use.Seq = cp.Seq
 		return checkpointResult{seq: cp.Seq, hash: cp.Hash, state: cp.State, use: use}
 	}
 	return checkpointResult{use: use}
+}
+
+// acceptsCheckpointState checks the optional state predicate and records why a checkpoint is skipped.
+// Without a predicate, it accepts the checkpoint without decoding its state.
+func (r replayRun) acceptsCheckpointState(cpPath string, raw json.RawMessage, use *CheckpointUse) bool {
+	if r.accept == nil {
+		return true
+	}
+	st := State{Tasks: map[string]Task{}}
+	if err := json.Unmarshal(raw, &st); err != nil {
+		use.Skipped = append(use.Skipped, fmt.Sprintf("%s: unmarshal checkpoint state: %v", filepath.Base(cpPath), err))
+		return false
+	}
+	if !r.accept(st) {
+		use.Skipped = append(use.Skipped, fmt.Sprintf("%s: incompatible checkpoint state", filepath.Base(cpPath)))
+		return false
+	}
+	return true
 }
 
 func filterCheckpointSeqs(entries []os.DirEntry) []uint64 {

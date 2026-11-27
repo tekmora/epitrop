@@ -123,6 +123,7 @@ type rankedFixture struct {
 	graph  *graphlog.Service
 	log    *eventlog.Writer
 	signer *corereceipt.Signer
+	limits eventlog.Limits
 }
 
 // newRankedFixture starts with no events. Every key and path comes from graphConfig.
@@ -137,7 +138,8 @@ func newRankedFixture(t *testing.T) rankedFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	log, err := eventlog.Open(dir, signer, eventLogLimits(cfg, clk))
+	limits := eventLogLimits(cfg, clk)
+	log, err := eventlog.Open(dir, signer, limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +147,7 @@ func newRankedFixture(t *testing.T) rankedFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return rankedFixture{path: path, dir: dir, graph: svc, log: log, signer: signer}
+	return rankedFixture{path: path, dir: dir, graph: svc, log: log, signer: signer, limits: limits}
 }
 
 // stage makes all named nodes ready in one record, so all their timestamps tie.
@@ -407,13 +409,127 @@ func TestLegacyAssignmentReplay(t *testing.T) {
 	f.checkClaim(t, 1, "s", map[string]any{"node": "s", "lane": "old", "by": "operator"})
 }
 
-// savedClaim passes the saved public row to the same checked writer that units assign uses.
+// TestUnitCheckpointAssignmentEvidence checks legacy and current snapshots of the same history.
+// checkCheckpointUse verifies that legacy checkpoints are skipped and replayed
+// and that current checkpoints are reused without divergence.
+func checkCheckpointUse(t *testing.T, legacy bool, seq uint64, diverged bool, skipped int) {
+	t.Helper()
+	if diverged {
+		t.Fatal("checkpoint use diverged")
+	}
+	if legacy {
+		if seq != 0 || skipped == 0 {
+			t.Fatalf("legacy checkpoint: want skip and replay (seq 0, skipped > 0), got seq %d, skipped %d", seq, skipped)
+		}
+		return
+	}
+	if seq != 2 {
+		t.Fatalf("current checkpoint: want reuse at seq 2, got seq %d", seq)
+	}
+}
+
+func TestUnitCheckpointAssignmentEvidence(t *testing.T) {
+	for _, legacy := range []bool{true, false} {
+		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
+			f := newRankedFixture(t)
+			ctx := testContext(t)
+			const id = "r:s"
+			f.writeAssignmentCheckpoint(t, ctx, id, legacy)
+			svc, err := units.NewService(f.dir, f.signer, f.limits.Clock, f.limits)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, use, err := svc.ReplayCheckpointed(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkCheckpointUse(t, legacy, use.Seq, use.Diverged != nil, len(use.Skipped))
+			checkCheckpointAssignment(t, got.Units[id])
+			u, err := svc.Record(ctx, id, units.RecordPayload{Status: "implementing"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkCheckpointAssignment(t, u)
+		})
+	}
+}
+
+// writeAssignmentCheckpoint appends an assignment and an edit, then checkpoints both records.
+// A legacy checkpoint omits the original assignment evidence from its snapshot only.
+func (f rankedFixture) writeAssignmentCheckpoint(t *testing.T, ctx context.Context, id string, legacy bool) {
+	t.Helper()
+	for _, ev := range []eventlog.Event{
+		{Type: units.AssignedType, TaskID: id, Payload: json.RawMessage(`{"node":"s","lane":"original","by":"operator"}`)},
+		{Type: "unit.recorded", TaskID: id, Payload: json.RawMessage(`{"status":"claimed","lane":"edited","by":"editor"}`)},
+	} {
+		if _, err := f.log.Append(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := eventlog.ReplayFoldStable(ctx, f.dir, f.signer.PublicKey(), f.limits, units.FoldName, units.UnitReducer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy {
+		u := st.Units[id]
+		u.Assignment = nil
+		st.Units[id] = u
+	}
+	records, err := f.log.ReplayAfter(ctx, 1)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records after 1 = %d, %v", len(records), err)
+	}
+	hash := sha256.Sum256(fixtureCanonical(t, records[0]))
+	if err := f.log.WriteCheckpoint(ctx, units.FoldName, 2, fmt.Sprintf("%x", hash), st); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// checkCheckpointAssignment distinguishes sticky current fields from original evidence.
+func checkCheckpointAssignment(t *testing.T, u eventlog.Unit) {
+	t.Helper()
+	if u.Lane != "edited" || u.By != "editor" || u.Assignment == nil ||
+		u.Assignment.Lane != "original" || u.Assignment.By != "operator" || u.Assignment.Selection != nil {
+		t.Fatalf("current fields or original assignment lost: unit=%+v assignment=%+v", u, u.Assignment)
+	}
+}
+
+// TestFrontierMembershipParity compares IDs, not order or ranking terms, at one head.
+func TestFrontierMembershipParity(t *testing.T) {
+	f := newRankedFixture(t)
+	f.chain(t, "zxyab")
+	nodes, err := f.graph.Frontier(testContext(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := make(map[string]bool, len(nodes))
+	for _, node := range nodes {
+		plain[node.ID] = true
+	}
+	rows := f.read(t, 1).Rows
+	ranked := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		ranked[row.ID] = true
+	}
+	want := map[string]bool{"a": true, "b": true, "z": true}
+	if len(plain) != len(nodes) || len(ranked) != len(rows) || !reflect.DeepEqual(plain, want) || !reflect.DeepEqual(ranked, want) {
+		t.Fatalf("membership: wrapper=%v ranked=%v want=%v", nodes, rows, want)
+	}
+}
+
+// savedClaim prepares a next-mode claim from the first saved public row.
 func (f rankedFixture) savedClaim(t *testing.T, doc frontierDocument) func(context.Context) error {
+	t.Helper()
+	return f.savedClaimWithMode(t, doc, "next")
+}
+
+// savedClaimWithMode passes the first saved public row and the given mode to the checked writer used by units assign.
+func (f rankedFixture) savedClaimWithMode(t *testing.T, doc frontierDocument, mode string) func(context.Context) error {
 	t.Helper()
 	if len(doc.Rows) == 0 {
 		t.Fatal("no row to select")
 	}
-	body, err := json.Marshal(assignmentJSON(doc, doc.Rows[0], "next"))
+	body, err := json.Marshal(assignmentJSON(doc, doc.Rows[0], mode))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,6 +548,26 @@ func (f rankedFixture) savedClaim(t *testing.T, doc frontierDocument) func(conte
 		_, err := writer.AssignUnit(ctx, "r", p)
 		return err
 	}
+}
+
+// TestRankedAssignRejectsFalseFirstRow presents an eligible lower row with its exact terms as next.
+func TestRankedAssignRejectsFalseFirstRow(t *testing.T) {
+	f := newRankedFixture(t)
+	f.chain(t, "zxyab")
+	doc := f.read(t, 1)
+	if len(doc.Rows) < 2 || doc.Rows[0].ID != "z" || doc.Rows[1].ID != "a" {
+		t.Fatalf("unexpected rows: %+v", doc.Rows)
+	}
+	falseFirst := doc
+	falseFirst.Rows = doc.Rows[1:]
+	if err := f.savedClaim(t, falseFirst)(testContext(t)); err == nil {
+		t.Fatal("accepted a lower-ranked row as next")
+	}
+	f.read(t, doc.Seq)
+	if _, err := f.assign(t, "a"); err != nil {
+		t.Fatalf("explicit assignment of the same row: %v", err)
+	}
+	f.checkClaim(t, doc.Seq, "a", assignmentJSON(doc, doc.Rows[1], "named"))
 }
 
 // TestRankedSameHeadRace gives two consumers the same read before either takes the lock.
@@ -542,4 +678,54 @@ func TestRankedCompactedBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.checkClaim(t, 2, "a", assignmentJSON(doc, inherited, "named"))
+}
+
+// checkStaleClaimNoAppend runs a saved claim and checks that it fails without advancing the log.
+func (f rankedFixture) checkStaleClaimNoAppend(t *testing.T, seq uint64, claim func(context.Context) error) {
+	t.Helper()
+	ctx := testContext(t)
+	claimErr := claim(ctx)
+	records, err := f.log.ReplayAfter(ctx, seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimErr == nil || len(records) != 0 {
+		t.Fatalf("stale claim = %v, appended %d records; want rejection without an append", claimErr, len(records))
+	}
+}
+
+// TestRankedAssignSameHeadCompaction checks that a changed score invalidates an
+// issued selection even when compaction preserves both the head and the winner.
+func TestRankedAssignSameHeadCompaction(t *testing.T) {
+	for _, tc := range []struct {
+		mode, selector string
+	}{
+		{"next", "--next"},
+		{"named", "a"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			f := newRankedFixture(t)
+			f.stage(t, "a")
+			before := f.read(t, 1)
+			if want := []frontierRow{expectedRow("a", 0, 0, true)}; !reflect.DeepEqual(before.Rows, want) {
+				t.Fatalf("frontier before compaction = %+v, want %+v", before.Rows, want)
+			}
+			stale := f.savedClaimWithMode(t, before, tc.mode)
+
+			f.compactFixtureHead(t)
+			after := f.read(t, before.Seq)
+			if want := []frontierRow{expectedRow("a", 0, 0, false)}; !reflect.DeepEqual(after.Rows, want) {
+				t.Fatalf("frontier after compaction = %+v, want %+v", after.Rows, want)
+			}
+
+			f.checkStaleClaimNoAppend(t, before.Seq, stale)
+
+			if _, err := f.assign(t, tc.selector); err != nil {
+				t.Fatalf("fresh %s claim: %v", tc.mode, err)
+			}
+			want := assignmentJSON(after, after.Rows[0], tc.mode)
+			f.checkClaim(t, after.Seq, "a", want)
+			f.checkReopened(t, "a", want)
+		})
+	}
 }
