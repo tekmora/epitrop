@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/adhocore/gronx v1.20.8
 	github.com/gofrs/flock v0.13.2
-	github.com/golusoris/golusoris v0.22.3
+	github.com/golusoris/golusoris v0.22.4
 	github.com/golusoris/golusoris/core v0.12.3
 	github.com/jonboulle/clockwork v0.5.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
@@ -81,7 +81,7 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	golang.org/x/crypto v0.59.0 // indirect
-	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/net v0.63.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
